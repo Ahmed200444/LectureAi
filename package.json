@@ -1,11 +1,11 @@
 {
   "name": "lectureai-deploy",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "engines": {
-    "node": ">=22.13.0"
+    "node": "22.x"
   },
   "scripts": {
-    "build": "rm -rf app && mkdir -p app && tar -xzf lectureai-vercel-source.tar.gz -C app && cd app && npm install --no-audit --no-fund && npm run build"
+    "build": "rm -rf app lectureai-web-essential.tar.gz && mkdir -p app && base64 -d lectureai-web-essential.tar.gz.b64 > lectureai-web-essential.tar.gz && tar -xzf lectureai-web-essential.tar.gz -C app && cd app && npm install --no-audit --no-fund && npm run build"
   }
 }
