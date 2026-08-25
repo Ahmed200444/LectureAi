@@ -1,0 +1,70 @@
+name: Install and verify cleaned LectureAI source
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  install-and-preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Reconstruct and verify source
+        shell: bash
+        run: |
+          cat bundle2/part-* | base64 -d > /tmp/lectureai-source.tar.gz
+          tar -tzf /tmp/lectureai-source.tar.gz >/dev/null
+          tar -xzf /tmp/lectureai-source.tar.gz -C .
+          rm -rf bundle2 source-parts lectureai-vercel-source.tar.gz lectureai-web-essential.tar.gz.b64 .preflight-marker
+          rm -f .github/workflows/install-source.yml
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Lint
+        run: npm run lint
+      - name: Unit tests
+        run: npm run test
+      - name: Production build
+        run: npm run build
+      - name: Verify production output
+        shell: bash
+        run: |
+          test -f dist/client/index.html
+          test -f dist/client/manifest.webmanifest
+          test -f dist/client/sw.js
+      - name: Check Windows helper Python syntax
+        run: python -m compileall -q local-ai benchmarks
+      - name: Smoke test built site
+        shell: bash
+        run: |
+          npx vite preview --host 127.0.0.1 --port 4173 > /tmp/lectureai-preview.log 2>&1 &
+          PID=$!
+          trap 'kill $PID || true' EXIT
+          for i in {1..30}; do
+            if curl -fsS http://127.0.0.1:4173/ >/tmp/lectureai-home.html; then break; fi
+            sleep 1
+          done
+          grep -q 'LectureAI' /tmp/lectureai-home.html
+      - name: Commit verified normal source tree
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          git commit -m "Install verified LectureAI source"
+          git push origin HEAD:main
