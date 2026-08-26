@@ -1,4 +1,21 @@
 node_modules/
 app/
+dist/
+coverage/
 .vercel/
 .DS_Store
+
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+
+# Logs and local temporary files
+*.log
+*.tmp
+*.temp
+
+# Editor / OS files
+.vscode/
+.idea/
+Thumbs.db
