@@ -27,3 +27,14 @@ jobs:
           test -f sw.js
           test -f LICENSE
           test -f CONTRIBUTING.md
+          test -f SECURITY.md
+          test -f ROADMAP.md
+      - name: Reject tracked private recordings and staging archives
+        shell: bash
+        run: |
+          blocked="$(git ls-files | grep -Ei '\.(m4a|mp3|wav|webm|mp4|mov|aac|ogg|tar|tar\.gz|tgz|zip|b64)$' || true)"
+          if [ -n "$blocked" ]; then
+            echo "Blocked private-media or staging artifacts are tracked:"
+            echo "$blocked"
+            exit 1
+          fi
