@@ -1,79 +1,89 @@
-# LectureAI
+# LectureAI Open Source Core
 
 **Record. Verify. Learn.**
 
-LectureAI is a local-first university lecture recorder and study tool built for iPhone, iPad, Windows, and modern laptops. It is designed for multilingual classes and supports English, Egyptian Arabic (Masri), Modern Standard Arabic (MSA), and mixed technical vocabulary.
+LectureAI Open Source Core is a local-first web project for lecture recording and study workflows. It provides a transparent browser-based foundation that contributors can inspect, run, test, and improve without requiring a paid speech API.
 
-The project focuses on keeping the original lecture audio as the source of truth, making transcripts easy to verify against timestamps, and turning recordings into editable study material without forcing students into per-minute transcription billing or artificial recording limits.
+This repository is maintained by **Ahmed200444** and is released under the MIT License.
 
-## Why LectureAI
+## What is implemented
 
-Lecture recordings are often difficult to review, especially when a class switches between languages or uses technical terms that ordinary speech-to-text tools misunderstand. LectureAI aims to provide one workflow for recording, transcription, verification, notes, and study review while keeping user data local by default.
+The current open-source core includes:
 
-## Core principles
+- browser microphone permission and readiness checks
+- lecture audio recording with `MediaRecorder`
+- microphone-level feedback
+- recording duration tracking
+- local playback and audio export
+- device/browser diagnostics
+- iPhone, iPad, Windows, Mac, and other-device detection
+- locally saved lecture titles and study notes
+- installable/offline-capable PWA basics
+- automated JavaScript checks and unit tests through GitHub Actions
 
-- **Local-first:** recordings, transcripts, notes, course data, and glossaries are intended to stay on the user's device by default.
-- **Original audio is preserved:** preprocessing or denoising should create derived copies rather than modifying the original recording.
-- **Verify, don't blindly trust:** transcripts are editable and designed to be checked against timestamped audio.
-- **Multilingual by design:** English, Egyptian Arabic, MSA, and mixed-language technical terms are first-class use cases.
-- **No fake accuracy claims:** transcription quality varies with microphone quality, room noise, speaker distance, accents, and device/browser behavior.
-- **Student-friendly economics:** the core workflow is designed not to depend on paid per-minute runtime speech APIs.
+## What is not claimed yet
 
-## Current capabilities
+The public core does **not** currently claim to provide completed automatic lecture transcription. Multilingual transcription for English, Egyptian Arabic (Masri), Modern Standard Arabic (MSA), and mixed technical vocabulary remains an active roadmap area.
 
-- Lecture recording workflow for iPhone, iPad, and laptops
-- Microphone validation, recording recovery, and diagnostics
-- Multilingual transcription workflow for English / Masri / MSA
-- Timestamp-linked transcript and audio review
-- Editable transcripts and study notes
-- Local Windows **Maximum Accuracy** helper workflow
-- Local-first storage for lecture data
-- Progressive Web App deployment
+It also does not claim guaranteed background recording on iPhone/iPad or guaranteed transcription accuracy. Browser behavior, operating-system restrictions, microphone quality, room noise, and speaker distance can all affect results.
 
-## Project status
+## Why this project exists
 
-LectureAI is under active development. Device and browser behavior can differ, especially on mobile Safari. The project does **not** claim guaranteed transcription accuracy or guaranteed background recording on iPhone/iPad.
+Students often need more than a raw voice memo: they need to know whether the microphone is actually working, preserve a usable original recording, organize notes, and later verify AI-generated text against the source audio. LectureAI is being developed around that workflow.
 
-The repository is also being cleaned up for easier public contribution. The current deployment setup reconstructs the web application from a packaged source archive during the build. Moving the normal application source tree directly into the repository is a high-priority open-source task tracked in the roadmap.
+The open-source project focuses on four principles:
 
-## Build
+1. **Local-first by default** — core recording and notes should not require uploading private lecture data.
+2. **Original audio is the source of truth** — derived processing should never silently replace the original recording.
+3. **Cross-device behavior must be tested separately** — desktop success does not prove iPhone/iPad behavior.
+4. **No fake accuracy claims** — future transcription improvements should be measured with reproducible evaluation cases.
 
-Requirements:
+## Run locally
 
-- Node.js 22.x
-- npm
-
-Install the root deployment dependencies and run the production build:
+No third-party runtime dependencies are required for the current web core.
 
 ```bash
-npm install
-npm run build
+git clone https://github.com/Ahmed200444/LectureAi.git
+cd LectureAi
+npm run ci
 ```
 
-The current build script reconstructs the application into `app/`, installs its dependencies, and runs the application production build. A conventional contributor development workflow will replace this packaging step as the source-tree cleanup is completed.
+Then serve the repository over `localhost` or HTTPS. For example, if Python is installed:
+
+```bash
+python -m http.server 8080
+```
+
+Open `http://localhost:8080` in your browser. Microphone APIs generally require a secure context; browsers treat `localhost` as secure for development.
+
+## Tests
+
+```bash
+npm test
+```
+
+The CI workflow also performs JavaScript syntax validation and confirms that the expected public project files are present.
 
 ## Contributing
 
-Contributions are welcome. Good areas to help with include:
+Contributions are welcome. Useful areas include:
 
-- iPhone/iPad recording reliability
-- accessibility and keyboard navigation
+- iPhone/iPad recording reliability and recovery
 - browser/device diagnostics
+- accessibility and keyboard navigation
 - multilingual transcription evaluation
-- tests and regression coverage
-- documentation
-- build and contributor tooling
+- timestamp-linked transcript review
+- local storage and privacy improvements
+- regression tests and documentation
 
-Please read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request. Larger changes should begin with a GitHub issue so the approach can be discussed first.
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request. The [ROADMAP.md](ROADMAP.md) lists larger project priorities.
 
-## Roadmap
+## Privacy
 
-See [ROADMAP.md](ROADMAP.md) for current open-source, reliability, transcription-quality, and study-workflow priorities.
+Do not upload private lecture recordings, student information, credentials, API keys, or access tokens to issues or pull requests. Use synthetic, public-domain, or explicitly permitted test data.
 
-## Privacy and security
-
-Please do not upload real private lecture recordings, student information, API keys, access tokens, or other sensitive data to GitHub issues or pull requests. Security reports should follow [SECURITY.md](SECURITY.md).
+See [SECURITY.md](SECURITY.md) for security reporting guidance.
 
 ## License
 
-LectureAI is released under the [MIT License](LICENSE).
+MIT. See [LICENSE](LICENSE).

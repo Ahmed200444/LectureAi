@@ -1,11 +1,19 @@
 {
-  "name": "lectureai-deploy",
-  "version": "1.0.1",
-  "private": true,
-  "engines": {
-    "node": "22.x"
-  },
+  "name": "lectureai-open-source-core",
+  "version": "0.1.0",
+  "description": "Local-first lecture recording and study workspace for the web.",
+  "type": "module",
   "scripts": {
-    "build": "rm -rf app lectureai-web-essential.tar.gz && mkdir -p app && base64 -d lectureai-web-essential.tar.gz.b64 > lectureai-web-essential.tar.gz && tar -xzf lectureai-web-essential.tar.gz -C app && cd app && npm install --no-audit --no-fund && npm run build"
-  }
+    "check": "node --check src/app.js && node --check src/recorder.js && node --check src/storage.js && node --check src/diagnostics.js && node --check src/utils.js && node --check sw.js",
+    "test": "node --test",
+    "ci": "npm run check && npm test"
+  },
+  "keywords": [
+    "education",
+    "lecture",
+    "recording",
+    "local-first",
+    "pwa"
+  ],
+  "license": "MIT"
 }
