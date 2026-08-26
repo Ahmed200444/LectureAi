@@ -1,90 +1,80 @@
 # Contributing to LectureAI
 
-Thanks for your interest in improving LectureAI. The project is intended to be useful to students across phones, tablets, and laptops, so reliability, privacy, accessibility, and clear testing matter as much as adding features.
+Thanks for helping improve LectureAI. The project welcomes bug fixes, tests, documentation, accessibility improvements, and well-scoped features.
 
-## Before you start
+## Before starting
 
 1. Read the README and ROADMAP.
 2. Search existing issues before opening a new one.
-3. For a bug fix, add clear reproduction details when possible.
-4. For a larger feature or architectural change, open an issue first so the approach can be discussed before implementation.
+3. For larger behavior or architecture changes, open an issue first and describe how you plan to test the change.
+4. Never use a private class recording or another person's personal data as public test material.
+
+## Development setup
+
+The current open-source web core has no third-party runtime dependencies.
+
+```bash
+npm run ci
+```
+
+To use microphone features, serve the repository from `localhost` or HTTPS. One simple development server is:
+
+```bash
+python -m http.server 8080
+```
+
+Then open `http://localhost:8080`.
 
 ## Good contribution areas
 
-- iPhone/iPad recording reliability and recovery
-- laptop/browser microphone diagnostics
+- iPhone/iPad recording behavior and recovery
+- Windows/Mac/browser microphone diagnostics
 - accessibility and keyboard navigation
-- multilingual transcription evaluation for English, Egyptian Arabic (Masri), MSA, and code-switching
-- transcript/timestamp verification UX
-- automated tests and regression coverage
-- documentation and contributor tooling
-- source-tree and build cleanup
+- automated regression tests
+- PWA/offline behavior
+- local-first storage
+- multilingual transcription benchmarks and evaluation tooling
+- timestamp-linked transcript review
+- documentation
 
-## Current repository note
+## Pull requests
 
-The current deployment repository still reconstructs the application from a packaged source archive during the build. A roadmap task is to move the normal Vite/React/TypeScript source tree directly into the repository so contributors can work with a conventional development setup.
-
-Until that cleanup is complete, please open or claim an issue before making large application-code changes.
-
-## Local build
-
-Requirements:
-
-- Node.js 22.x
-- npm
-
-From the repository root:
-
-```bash
-npm install
-npm run build
-```
-
-The current build process reconstructs the application into `app/` and runs its production build.
-
-## Branches and commits
-
-Use a short, descriptive branch name such as:
-
-- `fix/recording-recovery`
-- `feat/transcript-review`
-- `docs/contributor-setup`
-- `test/mobile-recording`
-
-Keep commits focused and use short messages that describe the change, for example `Fix microphone recovery after interruption`.
-
-## Pull request expectations
-
-A pull request should explain:
+A good pull request should explain:
 
 - what changed
-- why the change is needed
+- why the change is useful
 - how it was tested
-- which devices/browsers are affected
-- any privacy, storage, recording, or transcription implications
+- which browsers/devices were tested when relevant
+- any privacy, recording, storage, or network implications
 
-When relevant, test on more than one device class rather than assuming desktop behavior matches iPhone or iPad behavior.
+Please keep pull requests focused. Small fixes are easier to review and safer to merge.
 
 ## Project safeguards
 
-Contributions should preserve these project rules:
+Contributions should preserve these rules:
 
-- Never modify or overwrite the original lecture audio as part of preprocessing. Create derived copies instead.
-- Do not require a paid per-minute speech API for the core workflow.
-- Do not introduce artificial recording caps into the core experience.
+- Do not silently overwrite the original lecture recording.
+- Do not require a paid per-minute speech service for the core recording workflow.
+- Do not add artificial recording caps to the open-source core.
 - Do not claim guaranteed transcription accuracy.
-- Do not claim guaranteed iPhone/iPad background recording.
-- Do not commit API keys, tokens, passwords, private recordings, student information, or other sensitive data.
-- Use only recordings or datasets that you have permission to use in tests.
+- Do not claim guaranteed background recording on iPhone/iPad.
+- Do not commit passwords, tokens, API keys, `.env` files, private recordings, or student information.
+- Use only synthetic, public-domain, or explicitly permitted data in public tests.
 
 ## AI-assisted contributions
 
-AI-assisted development is allowed, but contributors are responsible for reviewing, understanding, testing, and taking responsibility for the code they submit. Please do not submit large generated changes that have not been checked against the project behavior.
+AI-assisted development is allowed, but the contributor is responsible for reviewing, understanding, and testing the submitted code. Large generated changes that have not been checked should not be submitted.
 
-## Reporting security issues
+## Commit style
 
-Do not disclose exploitable security details in a public issue. Follow the process in [SECURITY.md](SECURITY.md).
+Use concise, descriptive messages, for example:
 
-## Conduct
+- `Fix recording stop state on Safari`
+- `Add microphone diagnostics test`
+- `Improve notes keyboard navigation`
 
-By participating in the project, you agree to follow [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
+## Security and conduct
+
+For security-sensitive problems, follow [SECURITY.md](SECURITY.md) instead of publishing exploit details in an issue.
+
+Participation is governed by [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).

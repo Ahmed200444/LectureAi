@@ -1,44 +1,54 @@
 # LectureAI Roadmap
 
-This roadmap describes the project's current priorities. It is not a promise of release dates; priorities may change as testing and contributor feedback uncover more important work.
+This roadmap describes current open-source priorities. It is not a promise of release dates.
 
-## 1. Open-source readiness
+## Current foundation
 
-- Move the normal Vite/React/TypeScript application source tree directly into the repository instead of reconstructing it from a packaged archive.
-- Add a simple, reproducible local development command.
-- Add automated typecheck, lint, test, and production-build checks for pull requests.
-- Audit the repository for secrets, credentials, private recordings, and generated deployment artifacts before public release.
-- Keep contributor documentation and issue templates current.
+The open-source core now provides a conventional, inspectable web source tree with browser recording, microphone diagnostics, local notes, PWA basics, unit tests, and GitHub Actions validation.
 
-## 2. Recording reliability
+## 1. Recording reliability
 
-- Continue testing microphone permissions and device detection across iPhone, iPad, Windows, and other laptops.
-- Improve recovery when a recording is interrupted by browser or operating-system behavior.
-- Improve diagnostics when a microphone is unavailable, blocked, muted, or misconfigured.
-- Preserve the untouched original recording as the source of truth while allowing derived preprocessing copies.
+- Expand iPhone/iPad Safari testing for permission changes, interruptions, locking, navigation, and recovery.
+- Add repeatable recording regression tests where browser APIs can be safely mocked.
+- Improve messages when an operating-system or browser restriction cannot be worked around.
+- Preserve exported original audio as the source of truth.
 
-## 3. Transcription quality and verification
+## 2. Multilingual transcription
 
-- Build repeatable evaluation cases for English, Egyptian Arabic (Masri), MSA, and code-switched technical lectures.
-- Measure transcription changes instead of relying only on subjective impressions.
-- Improve technical-term and glossary handling.
-- Keep timestamp-linked audio review fast so users can verify uncertain transcript segments.
-- Avoid claims of guaranteed accuracy; document known limitations by device and environment.
+- Define an open transcription interface that does not lock the project to one paid provider.
+- Build a reproducible evaluation set for English, Egyptian Arabic (Masri), MSA, and code-switched technical lectures.
+- Measure word/segment errors and document qualitative failures such as names and technical terms.
+- Add glossary support for course-specific terminology.
+- Keep accuracy claims tied to reproducible tests rather than marketing language.
 
-## 4. Study workflow
+## 3. Timestamp-linked review
 
-- Improve transcript editing and note organization.
-- Make it easier to move from a verified transcript to useful study notes.
-- Improve search and navigation through longer lectures.
-- Keep the core workflow local-first and usable without per-minute transcription billing.
+- Associate transcript segments with recording timestamps.
+- Add click-to-seek review from transcript text to source audio.
+- Make uncertain segments easy to correct manually.
+- Preserve edits separately from raw model output where practical.
+
+## 4. Local-first study workflow
+
+- Improve longer-form note organization.
+- Add local lecture history without requiring a cloud account.
+- Explore IndexedDB for persistent local recording metadata and optional local blobs.
+- Add export/import for user-controlled backups.
 
 ## 5. Accessibility and quality
 
-- Improve keyboard navigation and focus behavior.
-- Review labels, contrast, responsive layout, and screen-reader behavior.
-- Expand automated regression tests around recording, recovery, storage, and transcript editing.
-- Keep mobile and desktop behavior covered separately where browser capabilities differ.
+- Audit keyboard navigation, screen-reader labels, focus management, contrast, and touch targets.
+- Add automated accessibility checks where practical.
+- Expand unit and browser-level regression coverage.
+- Keep mobile and desktop test results separate when platform behavior differs.
 
-## Contributing to the roadmap
+## 6. Contributor experience
 
-If you want to work on one of these items, check the open issues first. If no issue exists, open one describing the problem, proposed approach, and how you would test it.
+- Add device-specific testing documentation.
+- Add screenshots or short permitted demo media.
+- Improve issue labels and newcomer tasks as real needs are identified.
+- Keep CI fast and dependency-light.
+
+## Contributing
+
+If you want to work on an item, check open issues first. If none exists, open an issue describing the problem, proposed approach, and testing plan before starting a large change.
