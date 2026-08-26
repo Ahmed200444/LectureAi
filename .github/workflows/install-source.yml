@@ -22,7 +22,23 @@ jobs:
       - name: Reconstruct and verify source
         shell: bash
         run: |
-          cat bundle2/part-* | base64 --decode --ignore-garbage > /tmp/lectureai-source.tar.gz
+          python - <<'PY'
+          from pathlib import Path
+          import base64
+          import re
+
+          parts = sorted(Path("bundle2").glob("part-*"))
+          raw = b"".join(path.read_bytes() for path in parts)
+          # Keep only Base64 alphabet characters. Padding is regenerated once at
+          # the end so chunk-boundary padding/line-ending artifacts cannot break
+          # the staged archive reconstruction.
+          payload = re.sub(rb"[^A-Za-z0-9+/]", b"", raw)
+          padding = b"=" * ((-len(payload)) % 4)
+          print(f"Reconstructing from {len(parts)} chunks; payload bytes={len(payload)}; padding={len(padding)}")
+          decoded = base64.b64decode(payload + padding, validate=True)
+          Path("/tmp/lectureai-source.tar.gz").write_bytes(decoded)
+          print(f"Decoded archive bytes={len(decoded)}")
+          PY
           tar -tzf /tmp/lectureai-source.tar.gz >/dev/null
           tar -xzf /tmp/lectureai-source.tar.gz -C .
           rm -rf bundle2 source-parts lectureai-vercel-source.tar.gz lectureai-web-essential.tar.gz.b64 .preflight-marker
