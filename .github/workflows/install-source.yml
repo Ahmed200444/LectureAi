@@ -22,7 +22,7 @@ jobs:
       - name: Reconstruct and verify source
         shell: bash
         run: |
-          cat bundle2/part-* | base64 -d > /tmp/lectureai-source.tar.gz
+          cat bundle2/part-* | base64 --decode --ignore-garbage > /tmp/lectureai-source.tar.gz
           tar -tzf /tmp/lectureai-source.tar.gz >/dev/null
           tar -xzf /tmp/lectureai-source.tar.gz -C .
           rm -rf bundle2 source-parts lectureai-vercel-source.tar.gz lectureai-web-essential.tar.gz.b64 .preflight-marker
