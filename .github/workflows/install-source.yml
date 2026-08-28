@@ -12,7 +12,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -22,9 +21,9 @@ jobs:
         run: |
           set -euo pipefail
           rm -f /tmp/lectureai-source.b64 /tmp/lectureai-source.tar.gz
-
-          for i in $(seq -w 0 11); do cat "preflight-bundle/part-0${i}" >> /tmp/lectureai-source.b64; done
-
+          cat preflight-bundle/part-{000..008} >> /tmp/lectureai-source.b64
+          cat preflight-fixes/part-009-0 preflight-fixes/part-009-1 >> /tmp/lectureai-source.b64
+          cat preflight-bundle/part-010 preflight-bundle/part-011 >> /tmp/lectureai-source.b64
           cat preflight-fixes/part-012-0-0 preflight-fixes/part-012-0-1 preflight-fixes/part-012-1 >> /tmp/lectureai-source.b64
           cat preflight-fixes/part-013-0 preflight-fixes/part-013-1 >> /tmp/lectureai-source.b64
           cat preflight-fixes/part-014-0 preflight-fixes/part-014-1 >> /tmp/lectureai-source.b64
@@ -33,47 +32,33 @@ jobs:
           cat preflight-bundle/part-017 >> /tmp/lectureai-source.b64
           cat preflight-fixes/part-018-0 preflight-fixes/part-018-1 >> /tmp/lectureai-source.b64
           cat preflight-bundle/part-019 preflight-bundle/part-020 >> /tmp/lectureai-source.b64
-
           base64 --decode /tmp/lectureai-source.b64 > /tmp/lectureai-source.tar.gz
           echo "3e155e900ecccce55272611bb63a8bfbb4182d2de283e5fcf18d6ec930c31a46  /tmp/lectureai-source.tar.gz" | sha256sum -c -
           tar -tzf /tmp/lectureai-source.tar.gz >/dev/null
-
           mkdir clean-source
           tar -xzf /tmp/lectureai-source.tar.gz -C clean-source
 
       - name: Install dependencies
         working-directory: clean-source
         run: npm install --no-audit --no-fund
-
       - name: Typecheck
         working-directory: clean-source
         run: npm run typecheck
-
       - name: Lint
         working-directory: clean-source
         run: npm run lint
-
       - name: Unit tests
         working-directory: clean-source
         run: npm run test
-
       - name: Production build
         working-directory: clean-source
         run: npm run build
-
       - name: Verify production output
         working-directory: clean-source
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -f dist/client/index.html
-          test -f dist/client/manifest.webmanifest
-          test -f dist/client/sw.js
-
+        run: test -f dist/client/index.html && test -f dist/client/manifest.webmanifest && test -f dist/client/sw.js
       - name: Check Windows helper Python syntax
         working-directory: clean-source
         run: python -m py_compile local-ai/*.py benchmarks/evaluate.py
-
       - name: Smoke test built site
         working-directory: clean-source
         shell: bash
