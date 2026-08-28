@@ -37,8 +37,8 @@ export function ServiceWorkerRegister() {
   }, []);
 
   if (!updateReady) return null;
-  return <div className="pwa-update-banner" role="status">
+  return <div role="status" style={{ position: 'fixed', zIndex: 1200, left: 16, right: 16, bottom: 16, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14, padding: '12px 14px', border: '1px solid rgba(33,79,61,.18)', borderRadius: 14, background: '#fff', boxShadow: '0 10px 35px rgba(20,36,28,.16)', fontSize: 14 }}>
     <span>LectureAI update ready. Reload to use the newest recorder and transcription fixes.</span>
-    <button onClick={() => window.location.reload()}><RefreshCw size={15} /> Reload</button>
+    <button onClick={() => window.location.reload()} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, border: 0, borderRadius: 10, padding: '9px 12px', background: '#214f3d', color: '#fff', fontWeight: 700, whiteSpace: 'nowrap' }}><RefreshCw size={15} /> Reload</button>
   </div>;
 }
