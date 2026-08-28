@@ -1,40 +1,45 @@
 import type { TranscriptionProgress } from './transcription.ts';
+import { audioFileExtension, normalizeAudioMimeType } from './device.ts';
 
-type WorkerMessage = {
-  type: 'model-progress' | 'model-ready' | 'transcription-progress' | 'result' | 'error';
-  id?: string;
-  progress?: number;
-  loaded?: number;
-  total?: number;
-  model?: string;
-  message?: string;
-  payload?: unknown;
-};
+const PHONE_MODEL = 'whisper-base' as const;
 
-let sharedWorker: Worker | null = null;
+type BrowserWhisperInstance = Awaited<ReturnType<typeof createWhisper>>;
+let sharedWhisperPromise: Promise<BrowserWhisperInstance> | null = null;
 
-function worker() {
-  if (!sharedWorker) sharedWorker = new Worker(new URL('./phone-transcriber.worker.ts', import.meta.url), { type: 'module', name: 'lectureai-phone-transcriber' });
-  return sharedWorker;
+async function createWhisper() {
+  const { BrowserWhisper } = await import('browser-whisper');
+  return new BrowserWhisper({ model: PHONE_MODEL });
 }
 
-async function decodeTo16Khz(blob: Blob) {
-  const AudioContextClass = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-  if (!AudioContextClass) throw new Error('This browser cannot decode the saved recording for on-device transcription.');
-  const context = new AudioContextClass();
-  try {
-    const decoded = await context.decodeAudioData(await blob.arrayBuffer());
-    const outputLength = Math.max(1, Math.ceil(decoded.duration * 16_000));
-    const offline = new OfflineAudioContext(1, outputLength, 16_000);
-    const source = offline.createBufferSource();
-    source.buffer = decoded;
-    source.connect(offline.destination);
-    source.start();
-    const rendered = await offline.startRendering();
-    return new Float32Array(rendered.getChannelData(0));
-  } finally {
-    await context.close().catch(() => undefined);
-  }
+function getWhisper() {
+  sharedWhisperPromise ??= createWhisper();
+  return sharedWhisperPromise;
+}
+
+function asAudioFile(lectureId: string, audio: Blob) {
+  const originalName = audio instanceof File ? audio.name : '';
+  const mimeType = normalizeAudioMimeType(audio.type, originalName);
+  const extension = audioFileExtension(mimeType, originalName);
+  const filename = originalName || `lecture-${lectureId}.${extension}`;
+  return audio instanceof File && audio.type === mimeType
+    ? audio
+    : new File([audio], filename, { type: mimeType, lastModified: Date.now() });
+}
+
+function progressForStage(stage: string, progress: number) {
+  const normalized = Math.max(0, Math.min(1, Number.isFinite(progress) ? progress : 0));
+  if (stage === 'loading') return Math.round(8 + normalized * 45);
+  if (stage === 'decoding') return Math.round(53 + normalized * 12);
+  if (stage === 'transcribing') return Math.round(65 + normalized * 27);
+  return Math.round(8 + normalized * 84);
+}
+
+function messageForStage(stage: string, progress: number) {
+  const percent = Math.round(Math.max(0, Math.min(1, progress || 0)) * 100);
+  if (stage === 'loading') return `Loading the private multilingual phone model… ${percent}%`;
+  if (stage === 'decoding') return `Decoding the saved lecture in small audio chunks… ${percent}%`;
+  if (stage === 'transcribing') return `Transcribing English, Egyptian Arabic, MSA, and technical terms locally… ${percent}%`;
+  return 'Preparing private on-device transcription…';
 }
 
 export async function transcribeOnPhone(
@@ -43,31 +48,45 @@ export async function transcribeOnPhone(
   onProgress: (update: TranscriptionProgress) => void,
   onModelReady: () => void,
 ) {
-  onProgress({ progress: 6, message: 'Preparing the saved recording for on-device transcription…' });
-  const pcm = await decodeTo16Khz(audio);
-  const id = `${lectureId}-${crypto.randomUUID()}`;
+  if (typeof window === 'undefined' || typeof File === 'undefined') throw new Error('Phone transcription is only available in a browser.');
+  if (!window.crossOriginIsolated) {
+    throw new Error('Private phone transcription is not initialized correctly on this site. Reload the latest LectureAI version and try again.');
+  }
 
-  return new Promise<unknown>((resolve, reject) => {
-    const instance = worker();
-    const listener = (event: MessageEvent<WorkerMessage>) => {
-      const message = event.data;
-      if (message.type === 'model-progress') {
-        const downloaded = message.total ? ` · ${Math.round((message.loaded || 0) / 1024 / 1024)} of ${Math.round(message.total / 1024 / 1024)} MB` : '';
-        onProgress({ progress: Math.max(8, Math.min(65, Math.round((message.progress || 0) * .55) + 8)), message: `Downloading or loading the multilingual phone model${downloaded}…` });
-      } else if (message.type === 'model-ready') {
+  onProgress({ progress: 5, message: 'Preparing the saved recording for private on-device transcription…' });
+  const file = asAudioFile(lectureId, audio);
+  const whisper = await getWhisper();
+  let modelReadyReported = false;
+  let lastProgress = 5;
+
+  const stream = whisper.transcribe(file, {
+    onProgress: ({ stage, progress }: { stage: string; progress: number }) => {
+      if (stage !== 'loading' && !modelReadyReported) {
+        modelReadyReported = true;
         onModelReady();
-        onProgress({ progress: 68, message: 'Phone model ready · transcribing English and Arabic locally…' });
-      } else if (message.type === 'transcription-progress') {
-        onProgress({ progress: message.progress || 72, message: message.message || 'Transcribing on this device…' });
-      } else if (message.id === id && message.type === 'result') {
-        instance.removeEventListener('message', listener);
-        resolve(message.payload);
-      } else if (message.id === id && message.type === 'error') {
-        instance.removeEventListener('message', listener);
-        reject(new Error(message.message || 'On-device transcription failed.'));
       }
-    };
-    instance.addEventListener('message', listener);
-    instance.postMessage({ id, audio: pcm }, [pcm.buffer]);
+      const mapped = Math.max(lastProgress, progressForStage(stage, progress));
+      lastProgress = mapped;
+      onProgress({ progress: mapped, message: messageForStage(stage, progress) });
+    },
   });
+
+  const chunks = await stream.collect();
+  if (!modelReadyReported) onModelReady();
+  const segments = chunks
+    .filter((chunk: { text?: string }) => Boolean(chunk.text?.trim()))
+    .map((chunk: { text: string; start: number; end: number }, index: number) => ({
+      id: `${lectureId}-phone-${index + 1}`,
+      start: Math.max(0, Number(chunk.start) || 0),
+      end: Math.max(Number(chunk.start) || 0, Number(chunk.end) || Number(chunk.start) || 0),
+      text: chunk.text.trim(),
+      // browser-whisper currently exposes segment text/timestamps but not a
+      // calibrated confidence score. Zero keeps these segments reviewable
+      // instead of inventing certainty.
+      confidence: 0,
+      speaker: 'Professor',
+    }));
+
+  onProgress({ progress: 92, message: 'On-device transcript complete · preparing editable notes…' });
+  return { engine: 'browser-whisper', model: PHONE_MODEL, segments };
 }
