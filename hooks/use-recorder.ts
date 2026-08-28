@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { deleteAudioChunks, finalizeAudio, saveAudioChunk } from '../lib/db';
-import { assertLiveMicrophoneStream, validatePlayableAudio, waitForAudibleInput } from '../lib/audio-validation';
+import { assertLiveMicrophoneStream, validatePlayableAudio } from '../lib/audio-validation';
 import { preferredRecordingMimeType } from '../lib/device';
 
 type WakeLockSentinelLike = { release: () => Promise<void> };
@@ -68,6 +68,14 @@ export function useRecorder() {
     context.createMediaStreamSource(stream).connect(analyser);
     const samples = new Uint8Array(analyser.frequencyBinCount);
     const update = () => {
+      if (context.state !== 'running') {
+        // iOS standalone PWAs can briefly suspend WebAudio while the MediaRecorder
+        // keeps capturing correctly. A suspended meter is not a muted microphone.
+        setLevel(0);
+        quietSinceRef.current = null;
+        frameRef.current = requestAnimationFrame(update);
+        return;
+      }
       analyser.getByteTimeDomainData(samples);
       const rms = Math.sqrt(samples.reduce((sum, sample) => sum + ((sample - 128) / 128) ** 2, 0) / samples.length);
       const normalized = Math.min(1, rms * 5);
@@ -75,10 +83,12 @@ export function useRecorder() {
       if (recorderRef.current?.state === 'recording') {
         if (rms < 0.0015) {
           quietSinceRef.current ??= Date.now();
-          if (Date.now() - quietSinceRef.current > 10_000) setError('No microphone input has been detected for several seconds. Check the microphone indicator and phone position.');
+          if (Date.now() - quietSinceRef.current > 10_000) {
+            setError('No sound has reached the recorder for 10 seconds. Speak near the phone and check that the microphone is unobstructed.');
+          }
         } else {
           quietSinceRef.current = null;
-          setError((current) => current.startsWith('No microphone input') ? '' : current);
+          setError((current) => current.startsWith('No sound has reached') ? '' : current);
         }
       }
       frameRef.current = requestAnimationFrame(update);
@@ -91,26 +101,44 @@ export function useRecorder() {
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
       throw new Error('This browser does not support reliable microphone recording.');
     }
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: true, channelCount: 1 }, video: false });
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: true, channelCount: 1 },
+      video: false,
+    });
     try {
       const track = assertLiveMicrophoneStream(stream);
-      track.addEventListener('mute', () => setError('The microphone became muted. Recording checkpoints remain preserved; check microphone permission or input settings.'));
       track.addEventListener('ended', () => setError('The microphone audio track ended unexpectedly. Finish the lecture to preserve saved checkpoints.'));
-      await waitForAudibleInput(stream);
+      // Do not reject Safari's transient track.muted flag. The MediaRecorder output and
+      // live analyser are the authoritative checks for real captured audio.
 
       streamRef.current = stream;
       lectureIdRef.current = lectureId;
       chunkIndexRef.current = 0;
       pendingWritesRef.current = [];
-      const mimeType = preferredRecordingMimeType();
-      mimeTypeRef.current = mimeType;
-      const recorder = mimeType ? new MediaRecorder(stream, { mimeType, audioBitsPerSecond: 128_000 }) : new MediaRecorder(stream);
+      const requestedMimeType = preferredRecordingMimeType();
+      let recorder: MediaRecorder;
+      try {
+        recorder = requestedMimeType
+          ? new MediaRecorder(stream, { mimeType: requestedMimeType, audioBitsPerSecond: 128_000 })
+          : new MediaRecorder(stream);
+      } catch {
+        // Some Safari builds advertise a MIME type but reject constructor options.
+        recorder = new MediaRecorder(stream);
+      }
       recorderRef.current = recorder;
+      mimeTypeRef.current = recorder.mimeType || requestedMimeType;
       recorder.ondataavailable = (event) => {
         if (!event.data.size) return;
         const index = chunkIndexRef.current++;
         setChunkCount(index + 1);
-        const write = saveAudioChunk({ id: `${lectureId}-${String(index).padStart(8, '0')}`, lectureId, index, blob: event.data, mimeType: recorder.mimeType, createdAt: new Date().toISOString() });
+        const write = saveAudioChunk({
+          id: `${lectureId}-${String(index).padStart(8, '0')}`,
+          lectureId,
+          index,
+          blob: event.data,
+          mimeType: recorder.mimeType || mimeTypeRef.current,
+          createdAt: new Date().toISOString(),
+        });
         pendingWritesRef.current.push(write);
         write.catch(() => setError('A recording checkpoint could not be saved. Check available storage.'));
       };
@@ -203,6 +231,14 @@ export function useRecorder() {
     stopMeters();
     return { blob, duration: elapsedRef.current, mimeType: blob.type };
   }, [stopMeters]);
+
+  useEffect(() => {
+    const resumeMeter = () => {
+      if (document.visibilityState === 'visible') void audioContextRef.current?.resume().catch(() => undefined);
+    };
+    document.addEventListener('visibilitychange', resumeMeter);
+    return () => document.removeEventListener('visibilitychange', resumeMeter);
+  }, []);
 
   useEffect(() => () => {
     if (recorderRef.current && recorderRef.current.state !== 'inactive') {
