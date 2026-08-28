@@ -29,8 +29,6 @@ async function decodeTo16Khz(blob: Blob) {
   const AudioContextClass = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
   if (!AudioContextClass) throw new Error('This browser cannot decode the saved recording for on-device transcription.');
 
-  // Ask the decoder for 16 kHz up front. This avoids keeping a full 44.1/48 kHz
-  // lecture plus a second resampled copy in iPhone memory whenever the browser honors it.
   let context: AudioContext;
   try {
     context = new AudioContextClass({ sampleRate: 16_000 });
@@ -58,6 +56,45 @@ async function decodeTo16Khz(blob: Blob) {
   } finally {
     await context.close().catch(() => undefined);
   }
+}
+
+export async function preparePhoneTranscriptionModel(onProgress: (update: TranscriptionProgress) => void) {
+  const id = `prepare-${crypto.randomUUID()}`;
+  return new Promise<{ model: string }>((resolve, reject) => {
+    const instance = worker();
+    const cleanUp = () => {
+      instance.removeEventListener('message', listener);
+      instance.removeEventListener('error', workerError);
+      instance.removeEventListener('messageerror', messageError);
+    };
+    const fail = (message: string, reset = false) => {
+      cleanUp();
+      if (reset) resetWorker(instance);
+      reject(new Error(message));
+    };
+    const workerError = () => fail('The phone model could not be prepared, usually because the browser ran low on memory. You can still record without the model and transcribe later on Windows.', true);
+    const messageError = () => fail('The browser could not communicate with the on-device speech worker.', true);
+    const listener = (event: MessageEvent<WorkerMessage>) => {
+      const message = event.data;
+      if (message.type === 'model-progress') {
+        const downloaded = message.total ? ` · ${Math.round((message.loaded || 0) / 1024 / 1024)} of ${Math.round(message.total / 1024 / 1024)} MB` : '';
+        onProgress({ progress: Math.max(5, Math.min(95, Math.round(message.progress || 0))), message: `Preparing multilingual Whisper for offline use${downloaded}…` });
+      } else if (message.type === 'model-ready') {
+        onProgress({ progress: 96, message: `Model loaded: ${message.model || 'multilingual Whisper'}…` });
+      } else if (message.id === id && message.type === 'result') {
+        cleanUp();
+        const model = String((message.payload as { model?: unknown } | undefined)?.model || 'multilingual Whisper');
+        onProgress({ progress: 100, message: `${model} is cached and ready on this device.` });
+        resolve({ model });
+      } else if (message.id === id && message.type === 'error') {
+        fail(message.message || 'The on-device model could not be prepared.');
+      }
+    };
+    instance.addEventListener('message', listener);
+    instance.addEventListener('error', workerError);
+    instance.addEventListener('messageerror', messageError);
+    instance.postMessage({ id, mode: 'prepare' });
+  });
 }
 
 export async function transcribeOnPhone(
@@ -104,6 +141,6 @@ export async function transcribeOnPhone(
     instance.addEventListener('message', listener);
     instance.addEventListener('error', workerError);
     instance.addEventListener('messageerror', messageError);
-    instance.postMessage({ id, audio: pcm }, [pcm.buffer]);
+    instance.postMessage({ id, mode: 'transcribe', audio: pcm }, [pcm.buffer]);
   });
 }
