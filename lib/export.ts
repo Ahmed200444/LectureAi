@@ -1,4 +1,5 @@
 import type { Course, Lecture } from './types';
+import { isIOSDevice, normalizeAudioMimeType } from './device';
 import { formatDuration, formatTime, friendlyDate, safeFilename } from './format';
 
 function download(blob: Blob, filename: string) {
@@ -73,5 +74,20 @@ function escapePrint(value: string) {
 }
 
 export function downloadBlob(blob: Blob, filename: string) {
-  download(blob, safeFilename(filename));
+  const safe = safeFilename(filename);
+  if (isIOSDevice() && blob.type.toLowerCase().startsWith('audio/')) {
+    const shareNavigator = navigator as Navigator & {
+      canShare?: (data: { files?: File[] }) => boolean;
+      share?: (data: { title?: string; files?: File[] }) => Promise<void>;
+    };
+    const type = normalizeAudioMimeType(blob.type, safe);
+    const file = new File([blob], safe, { type });
+    if (shareNavigator.share && shareNavigator.canShare?.({ files: [file] })) {
+      void shareNavigator.share({ title: safe, files: [file] }).catch((error: unknown) => {
+        if (!(error instanceof DOMException && error.name === 'AbortError')) download(blob, safe);
+      });
+      return;
+    }
+  }
+  download(blob, safe);
 }
