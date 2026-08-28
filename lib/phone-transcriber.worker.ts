@@ -3,7 +3,9 @@
 import { env, pipeline } from '@huggingface/transformers';
 
 const workerScope = self as unknown as DedicatedWorkerGlobalScope;
-const MODEL = 'Xenova/whisper-small';
+const PRIMARY_MODEL = 'Xenova/whisper-small';
+const FALLBACK_MODEL = 'Xenova/whisper-base';
+const LAST_RESORT_MODEL = 'Xenova/whisper-tiny';
 
 env.allowLocalModels = false;
 env.allowRemoteModels = true;
@@ -11,27 +13,45 @@ env.useBrowserCache = true;
 
 type ProgressInfo = { status?: string; progress?: number; loaded?: number; total?: number; file?: string };
 type ASROutput = { text: string; chunks?: Array<{ timestamp: [number, number]; text: string }> };
+type Transcriber = Awaited<ReturnType<typeof pipeline<'automatic-speech-recognition'>>>;
 
-let transcriberPromise: Promise<Awaited<ReturnType<typeof pipeline<'automatic-speech-recognition'>>>> | null = null;
+let transcriberPromise: Promise<Transcriber> | null = null;
+let activeModel = PRIMARY_MODEL;
 
 function progressCallback(info: ProgressInfo) {
   const progress = info.status === 'progress_total' || info.status === 'progress' ? Math.round(info.progress || 0) : undefined;
   workerScope.postMessage({ type: 'model-progress', progress, loaded: info.loaded, total: info.total, file: info.file, status: info.status });
 }
 
+async function loadModel(model: string) {
+  return pipeline('automatic-speech-recognition', model, { progress_callback: progressCallback });
+}
+
 async function getTranscriber() {
   if (!transcriberPromise) {
-    transcriberPromise = pipeline('automatic-speech-recognition', MODEL, { progress_callback: progressCallback });
+    activeModel = PRIMARY_MODEL;
+    transcriberPromise = loadModel(PRIMARY_MODEL).catch(async () => {
+      activeModel = FALLBACK_MODEL;
+      return loadModel(FALLBACK_MODEL).catch(async () => {
+        activeModel = LAST_RESORT_MODEL;
+        return loadModel(LAST_RESORT_MODEL);
+      });
+    });
   }
   const transcriber = await transcriberPromise;
-  workerScope.postMessage({ type: 'model-ready', model: MODEL });
+  workerScope.postMessage({ type: 'model-ready', model: activeModel });
   return transcriber;
 }
 
-workerScope.addEventListener('message', async (event: MessageEvent<{ id: string; audio: Float32Array }>) => {
-  const { id, audio } = event.data;
+workerScope.addEventListener('message', async (event: MessageEvent<{ id: string; audio?: Float32Array; mode?: 'prepare' | 'transcribe' }>) => {
+  const { id, audio, mode = 'transcribe' } = event.data;
   try {
     const transcriber = await getTranscriber();
+    if (mode === 'prepare') {
+      workerScope.postMessage({ type: 'result', id, payload: { prepared: true, model: activeModel } });
+      return;
+    }
+    if (!audio?.length) throw new Error('No decoded audio was provided for transcription.');
     workerScope.postMessage({ type: 'transcription-progress', progress: 72, message: 'Running multilingual speech recognition on this device…' });
     const output = await transcriber(audio, {
       task: 'transcribe',
@@ -49,7 +69,7 @@ workerScope.addEventListener('message', async (event: MessageEvent<{ id: string;
       confidence: 0,
       speaker: 'Professor',
     })) : output.text.trim() ? [{ id: `${id}-phone-1`, start: 0, end: audio.length / 16_000, text: output.text.trim(), confidence: 0, speaker: 'Professor' }] : [];
-    workerScope.postMessage({ type: 'result', id, payload: { engine: 'transformers.js', model: MODEL, segments } });
+    workerScope.postMessage({ type: 'result', id, payload: { engine: 'transformers.js', model: activeModel, segments } });
   } catch (error) {
     workerScope.postMessage({ type: 'error', id, message: error instanceof Error ? error.message : 'On-device transcription failed.' });
   }

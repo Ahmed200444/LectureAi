@@ -18,6 +18,13 @@ export function isIOSDevice() {
   return kind === 'iphone' || kind === 'ipad';
 }
 
+export function isStandaloneApp() {
+  if (typeof window === 'undefined' || typeof navigator === 'undefined') return false;
+  const iosStandalone = Boolean((navigator as Navigator & { standalone?: boolean }).standalone);
+  const displayModeStandalone = typeof window.matchMedia === 'function' && window.matchMedia('(display-mode: standalone)').matches;
+  return iosStandalone || displayModeStandalone;
+}
+
 export function isPhoneOrTabletDevice() {
   return ['iphone', 'ipad', 'android-phone', 'android-tablet'].includes(detectDeviceKind());
 }

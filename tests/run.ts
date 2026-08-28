@@ -1,5 +1,6 @@
 import 'fake-indexeddb/auto';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { addAttachment, deleteAudioChunks, deleteLectureData, finalizeAudio, getAttachment, getAudio, getAudioChunks, getDatabase, initializeDatabase, loadLibrary, saveAudioChunk, saveLecture } from '../lib/db.ts';
 import { formatBytes, formatTime, safeFilename } from '../lib/format.ts';
 import { generateNotesHtml } from '../lib/notes.ts';
@@ -149,6 +150,34 @@ test('recovers an interrupted transcription without creating a duplicate lecture
   assert.equal(recovered?.status, 'transcription-queued');
   assert.equal((await db.getAll('lectures')).filter((item) => item.id === lecture.id).length, 1);
   await db.delete('lectures', lecture.id);
+});
+
+
+test('keeps mobile recording unlimited by policy while guarding against silent audio', () => {
+  const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const flow = readFileSync(new URL('../components/RecordingFlow.tsx', import.meta.url), 'utf8');
+  const recorder = readFileSync(new URL('../hooks/use-recorder.ts', import.meta.url), 'utf8');
+  const exporter = readFileSync(new URL('../lib/export.ts', import.meta.url), 'utf8');
+  const manifest = readFileSync(new URL('../public/manifest.webmanifest', import.meta.url), 'utf8');
+  assert.doesNotMatch(app, /8 GB local safety limit/);
+  assert.match(app, /no artificial recording-duration or monthly-minute quota/);
+  assert.match(recorder, /waitForAudibleInput/);
+  assert.match(recorder, /recorder\.start\(5_000\)/);
+  assert.match(flow, /disabled=\{!micVerified\}/);
+  assert.match(flow, /Audio playback verified/);
+  assert.match(flow, /Verify saved lecture audio/);
+  assert.match(exporter, /nav\.share/);
+  assert.match(manifest, /"display": "standalone"/);
+});
+
+test('keeps multilingual phone transcription fallbacks and predownload support', () => {
+  const worker = readFileSync(new URL('../lib/phone-transcriber.worker.ts', import.meta.url), 'utf8');
+  const phone = readFileSync(new URL('../lib/phone-transcription.ts', import.meta.url), 'utf8');
+  assert.match(worker, /whisper-small/);
+  assert.match(worker, /whisper-base/);
+  assert.match(worker, /whisper-tiny/);
+  assert.match(worker, /mode === 'prepare'/);
+  assert.match(phone, /preparePhoneTranscriptionModel/);
 });
 
 let failed = 0;

@@ -3,7 +3,7 @@
 import { Check, Clipboard, RefreshCw, TriangleAlert } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { microphonePermissionState } from '../lib/audio-validation';
-import { detectDeviceKind, deviceLabel, preferredRecordingMimeType } from '../lib/device';
+import { detectDeviceKind, deviceLabel, isStandaloneApp, preferredRecordingMimeType } from '../lib/device';
 import { phoneTranscriptionSupported, windowsHelperHealth } from '../lib/transcription';
 
 type DiagnosticState = {
@@ -32,7 +32,7 @@ export function Diagnostics() {
       device: deviceLabel(),
       kind: detectDeviceKind(),
       secureContext: window.isSecureContext,
-      standalone: window.matchMedia?.('(display-mode: standalone)').matches || Boolean((navigator as Navigator & { standalone?: boolean }).standalone),
+      standalone: isStandaloneApp(),
       microphonePermission: await microphonePermissionState(),
       mediaRecorder: typeof MediaRecorder !== 'undefined',
       mimeType: preferredRecordingMimeType() || 'browser default / unavailable',

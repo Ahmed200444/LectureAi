@@ -1,5 +1,6 @@
 import type { Course, Lecture } from './types';
 import { formatDuration, formatTime, friendlyDate, safeFilename } from './format';
+import { isIOSDevice, isStandaloneApp } from './device';
 
 function download(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
@@ -12,6 +13,27 @@ function download(blob: Blob, filename: string) {
   window.setTimeout(() => URL.revokeObjectURL(url), 2000);
 }
 
+function shareOrDownload(blob: Blob, filename: string, title: string) {
+  const safe = safeFilename(filename);
+  if (typeof navigator !== 'undefined' && typeof File !== 'undefined' && (isIOSDevice() || isStandaloneApp())) {
+    const nav = navigator as Navigator & {
+      canShare?: (data: ShareData) => boolean;
+      share?: (data: ShareData) => Promise<void>;
+    };
+    const file = new File([blob], safe, { type: blob.type || 'application/octet-stream' });
+    const data: ShareData = { files: [file], title };
+    const canShareFiles = !nav.canShare || nav.canShare(data);
+    if (nav.share && canShareFiles) {
+      void nav.share(data).catch((error: unknown) => {
+        if (error instanceof DOMException && error.name === 'AbortError') return;
+        download(blob, safe);
+      });
+      return;
+    }
+  }
+  download(blob, safe);
+}
+
 function htmlToText(html: string) {
   const documentFragment = new DOMParser().parseFromString(html, 'text/html');
   return documentFragment.body.innerText.trim();
@@ -19,6 +41,11 @@ function htmlToText(html: string) {
 
 function transcriptMarkdown(lecture: Lecture) {
   return lecture.segments.map((segment) => `**${formatTime(segment.startTime)} – ${formatTime(segment.endTime)}**\n\n${segment.editedText || segment.originalText}`).join('\n\n');
+}
+
+function transcriptText(course: Course, lecture: Lecture) {
+  const transcript = lecture.segments.map((segment) => `[${formatTime(segment.startTime)} - ${formatTime(segment.endTime)}]\n${segment.editedText || segment.originalText}`).join('\n\n');
+  return `${metadata(course, lecture)}\n\n${transcript}`;
 }
 
 function metadata(course: Course, lecture: Lecture) {
@@ -29,12 +56,15 @@ export function exportMarkdown(course: Course, lecture: Lecture, kind: 'notes' |
   const notes = htmlToText(lecture.notesCurrent).split('\n').map((line) => line.trim()).filter(Boolean).join('\n\n');
   const transcript = transcriptMarkdown(lecture);
   const body = kind === 'notes' ? notes : kind === 'transcript' ? transcript : `## Edited Lecture Notes\n\n${notes}\n\n---\n\n## Full Transcript\n\n${transcript}`;
-  download(new Blob([`# ${course.name}\n\n## ${lecture.title}\n\n${metadata(course, lecture)}\n\n---\n\n${body}\n`], { type: 'text/markdown;charset=utf-8' }), `${safeFilename(lecture.title)}-${kind}.md`);
+  const blob = new Blob([`# ${course.name}\n\n## ${lecture.title}\n\n${metadata(course, lecture)}\n\n---\n\n${body}\n`], { type: 'text/markdown;charset=utf-8' });
+  const filename = `${safeFilename(lecture.title)}-${kind}.md`;
+  if (kind === 'transcript') shareOrDownload(blob, filename, 'LectureAI transcript');
+  else download(blob, filename);
 }
 
 export function exportTranscriptText(course: Course, lecture: Lecture) {
-  const transcript = lecture.segments.map((segment) => `[${formatTime(segment.startTime)} - ${formatTime(segment.endTime)}]\n${segment.editedText || segment.originalText}`).join('\n\n');
-  download(new Blob([`${metadata(course, lecture)}\n\n${transcript}`], { type: 'text/plain;charset=utf-8' }), `${safeFilename(lecture.title)}-transcript.txt`);
+  const blob = new Blob([transcriptText(course, lecture)], { type: 'text/plain;charset=utf-8' });
+  shareOrDownload(blob, `${safeFilename(lecture.title)}-transcript.txt`, 'LectureAI transcript');
 }
 
 export function exportBackupJson(payload: unknown) {
@@ -57,7 +87,9 @@ export async function exportDocx(course: Course, lecture: Lecture) {
     ]),
   ];
   const documentFile = new Document({ sections: [{ properties: {}, children }] });
-  download(await Packer.toBlob(documentFile), `${safeFilename(lecture.title)}.docx`);
+  const blob = await Packer.toBlob(documentFile);
+  if (isIOSDevice() || isStandaloneApp()) shareOrDownload(blob, `${safeFilename(lecture.title)}.docx`, 'LectureAI notes and transcript');
+  else download(blob, `${safeFilename(lecture.title)}.docx`);
 }
 
 export function printPdf(course: Course, lecture: Lecture) {
@@ -73,5 +105,5 @@ function escapePrint(value: string) {
 }
 
 export function downloadBlob(blob: Blob, filename: string) {
-  download(blob, safeFilename(filename));
+  shareOrDownload(blob, filename, 'LectureAI original recording');
 }
