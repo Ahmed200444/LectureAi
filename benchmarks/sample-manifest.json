@@ -1,0 +1,10 @@
+[
+  {
+    "model": "large-v3",
+    "language": "en-egyptian-ar-code-switch",
+    "condition": "row-1-3",
+    "reference": "Here we're creating a pointer يعني المتغير ده بيشاور على memory address.",
+    "hypothesis": "Replace this with the model transcript.",
+    "manual_review": "Check technical English preservation and Arabic script."
+  }
+]
