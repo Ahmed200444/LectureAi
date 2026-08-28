@@ -1,5 +1,6 @@
 import type { Course, Lecture } from './types';
 import { formatDuration, formatTime, friendlyDate, safeFilename } from './format';
+import { isIOSDevice, isStandaloneApp } from './device';
 
 function download(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
@@ -73,5 +74,21 @@ function escapePrint(value: string) {
 }
 
 export function downloadBlob(blob: Blob, filename: string) {
-  download(blob, safeFilename(filename));
+  const safe = safeFilename(filename);
+  if (typeof navigator !== 'undefined' && typeof File !== 'undefined' && (isIOSDevice() || isStandaloneApp())) {
+    const nav = navigator as Navigator & {
+      canShare?: (data: ShareData) => boolean;
+      share?: (data: ShareData) => Promise<void>;
+    };
+    const file = new File([blob], safe, { type: blob.type || 'application/octet-stream' });
+    const data: ShareData = { files: [file], title: 'LectureAI original recording' };
+    if (nav.share && nav.canShare?.(data)) {
+      void nav.share(data).catch((error: unknown) => {
+        if (error instanceof DOMException && error.name === 'AbortError') return;
+        download(blob, safe);
+      });
+      return;
+    }
+  }
+  download(blob, safe);
 }
