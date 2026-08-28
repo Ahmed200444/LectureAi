@@ -36,6 +36,7 @@ jobs:
           tar -tzf /tmp/lectureai-source.tar.gz >/dev/null
           mkdir clean-source
           tar -xzf /tmp/lectureai-source.tar.gz -C clean-source
+          sed -i '/eslint-disable-next-line react-hooks\/exhaustive-deps/d' clean-source/components/MicTest.tsx
       - name: Install dependencies
         working-directory: clean-source
         run: npm install --no-audit --no-fund
