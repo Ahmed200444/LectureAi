@@ -11,7 +11,7 @@
     "start": "vite preview",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types tests/run.ts",
+    "test": "node --experimental-strip-types tests/run.ts && node --experimental-strip-types tests/ios-audio-run.ts",
     "check": "npm run typecheck && npm run lint && npm run test && npm run build"
   },
   "dependencies": {
