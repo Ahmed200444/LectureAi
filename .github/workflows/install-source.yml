@@ -87,64 +87,10 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          find . -mindepth 1 -maxdepth 1 ! -name .git ! -name clean-source -exec rm -rf {} +
+          find . -mindepth 1 -maxdepth 1 ! -name .git ! -name .github ! -name clean-source -exec rm -rf {} +
           shopt -s dotglob
           cp -a clean-source/. .
           rm -rf clean-source
-          mkdir -p .github/workflows
-          cat > .github/workflows/ci.yml <<'EOF'
-          name: LectureAI CI
-
-          on:
-            push:
-              branches: [main, preflight-clean]
-            pull_request:
-
-          permissions:
-            contents: read
-
-          jobs:
-            check:
-              runs-on: ubuntu-latest
-              steps:
-                - uses: actions/checkout@v4
-                - uses: actions/setup-node@v4
-                  with:
-                    node-version: 22
-                - name: Install dependencies
-                  shell: bash
-                  run: |
-                    set -euo pipefail
-                    for attempt in 1 2 3; do
-                      if npm install --no-audit --no-fund; then exit 0; fi
-                      if [ "$attempt" = 3 ]; then exit 1; fi
-                      rm -rf node_modules
-                      sleep 5
-                    done
-                - run: npm run typecheck
-                - run: npm run lint
-                - run: npm run test
-                - run: npm run build
-                - name: Verify production output
-                  run: test -f dist/client/index.html && test -f dist/client/manifest.webmanifest && test -f dist/client/sw.js
-                - name: Check Windows helper Python syntax
-                  run: python -m py_compile local-ai/*.py benchmarks/evaluate.py
-                - name: Smoke test built site
-                  shell: bash
-                  run: |
-                    set -euo pipefail
-                    python -m http.server 4173 --directory dist/client >/tmp/lectureai-http.log 2>&1 &
-                    server_pid=$!
-                    trap 'kill $server_pid || true' EXIT
-                    for i in {1..20}; do
-                      if curl -fsS http://127.0.0.1:4173/ >/tmp/lectureai-home.html; then break; fi
-                      sleep 0.5
-                    done
-                    grep -qi '<div id="root"></div>' /tmp/lectureai-home.html
-                    curl -fsS http://127.0.0.1:4173/manifest.webmanifest >/dev/null
-                    curl -fsS http://127.0.0.1:4173/sw.js >/dev/null
-          EOF
-          sed -i 's/^          //' .github/workflows/ci.yml
           git add -A
           git commit -m "Normalize verified LectureAI source"
           git push origin HEAD:preflight-clean
