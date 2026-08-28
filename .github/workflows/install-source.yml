@@ -15,16 +15,15 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-
       - name: Reconstruct verified source archive
         shell: bash
         run: |
           set -euo pipefail
           rm -f /tmp/lectureai-source.b64 /tmp/lectureai-source.tar.gz
           cat preflight-bundle/part-{000..008} >> /tmp/lectureai-source.b64
-          cat preflight-fixes/part-009-0 preflight-fixes/part-009-1 >> /tmp/lectureai-source.b64
+          cat preflight-fixes/part-009-0 preflight-fixes/part-009-1-0 preflight-fixes/part-009-1-1 >> /tmp/lectureai-source.b64
           cat preflight-bundle/part-010 preflight-bundle/part-011 >> /tmp/lectureai-source.b64
-          cat preflight-fixes/part-012-0-0 preflight-fixes/part-012-0-1 preflight-fixes/part-012-1 >> /tmp/lectureai-source.b64
+          cat preflight-fixes/part-012-0-0 preflight-fixes/part-012-0-1-0 preflight-fixes/part-012-0-1-1 preflight-fixes/part-012-1 >> /tmp/lectureai-source.b64
           cat preflight-fixes/part-013-0 preflight-fixes/part-013-1 >> /tmp/lectureai-source.b64
           cat preflight-fixes/part-014-0 preflight-fixes/part-014-1 >> /tmp/lectureai-source.b64
           cat preflight-bundle/part-015 >> /tmp/lectureai-source.b64
@@ -37,7 +36,6 @@ jobs:
           tar -tzf /tmp/lectureai-source.tar.gz >/dev/null
           mkdir clean-source
           tar -xzf /tmp/lectureai-source.tar.gz -C clean-source
-
       - name: Install dependencies
         working-directory: clean-source
         run: npm install --no-audit --no-fund
