@@ -46,7 +46,10 @@ export function MicTest() {
       if (sampleUrl) { URL.revokeObjectURL(sampleUrl); setSampleUrl(''); }
       const stream = await navigator.mediaDevices.getUserMedia(microphoneCaptureConstraints());
       const track = assertLiveMicrophoneStream(stream);
-      if (track.muted && !await waitForMicrophoneUnmuted(track, 3000)) throw new Error('The microphone stayed unavailable after permission was granted. Check the microphone indicator or audio input route, then retry.');
+      if (!isIOSDevice() && track.muted && !await waitForMicrophoneUnmuted(track, 3000)) {
+        throw new Error('The microphone stayed unavailable after permission was granted. Check the microphone/audio input route, then retry.');
+      }
+      if (isIOSDevice() && track.muted) void waitForMicrophoneUnmuted(track, 1200);
       streamRef.current = stream;
       const mimeType = preferredRecordingMimeType();
       const options = mediaRecorderOptions(mimeType);
@@ -54,8 +57,8 @@ export function MicTest() {
       recorderRef.current = recorder;
       recorder.ondataavailable = (event) => { if (event.data.size) chunksRef.current.push(event.data); };
       recorder.onstop = () => { void finishSample(recorder); };
-      // A single complete blob is the most reliable way to validate Safari's
-      // actual encoded sample. Main lecture recording still uses checkpoints.
+      // One complete encoded sample is the authority on iPhone/iPad. Safari's
+      // live track.muted and Web Audio meter can be temporarily misleading.
       recorder.start();
       setTesting(true);
       const started = Date.now();
@@ -94,7 +97,7 @@ export function MicTest() {
       const url = URL.createObjectURL(blob);
       setSampleUrl(url);
       const peak = peakRef.current;
-      if (!signal.audible) setMessage('The saved sample is playable but contains almost no audio signal. Check the iPhone microphone opening, Bluetooth input, and permission, then repeat the test.');
+      if (!signal.audible) setMessage(`The saved ${deviceLabel()} sample is playable but contains almost no audio signal. Check the microphone opening, Bluetooth input, and permission, then repeat the test.`);
       else if (peak > 0.93) setMessage('Saved audio is present, but the live meter reached a high level. Play it back and move the device farther away only if speech sounds distorted.');
       else setMessage('Saved audio signal verified. Play this exact sample and confirm that you can clearly hear the speech before class.');
     } catch (error) {
