@@ -2,7 +2,7 @@ name: LectureAI CI
 
 on:
   push:
-    branches: [main, preflight-clean]
+    branches: [main, preflight-clean, fix/iphone-audio-transcription]
   pull_request:
 
 permissions:
