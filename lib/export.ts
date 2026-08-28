@@ -13,6 +13,31 @@ function download(blob: Blob, filename: string) {
   window.setTimeout(() => URL.revokeObjectURL(url), 2000);
 }
 
+function shareType(blob: Blob, filename: string) {
+  if (blob.type.toLowerCase().startsWith('audio/') || /\.(m4a|mp4|aac|webm|wav|mp3|ogg|flac)$/i.test(filename)) {
+    return normalizeAudioMimeType(blob.type, filename);
+  }
+  return blob.type || 'application/octet-stream';
+}
+
+function shareOrDownload(blob: Blob, filename: string, title = 'LectureAI export') {
+  const safe = safeFilename(filename);
+  if (isIOSDevice()) {
+    const shareNavigator = navigator as Navigator & {
+      canShare?: (data: { files?: File[] }) => boolean;
+      share?: (data: { title?: string; files?: File[] }) => Promise<void>;
+    };
+    const file = new File([blob], safe, { type: shareType(blob, safe) });
+    if (shareNavigator.share && shareNavigator.canShare?.({ files: [file] })) {
+      void shareNavigator.share({ title, files: [file] }).catch((error: unknown) => {
+        if (!(error instanceof DOMException && error.name === 'AbortError')) download(blob, safe);
+      });
+      return;
+    }
+  }
+  download(blob, safe);
+}
+
 function htmlToText(html: string) {
   const documentFragment = new DOMParser().parseFromString(html, 'text/html');
   return documentFragment.body.innerText.trim();
@@ -30,16 +55,16 @@ export function exportMarkdown(course: Course, lecture: Lecture, kind: 'notes' |
   const notes = htmlToText(lecture.notesCurrent).split('\n').map((line) => line.trim()).filter(Boolean).join('\n\n');
   const transcript = transcriptMarkdown(lecture);
   const body = kind === 'notes' ? notes : kind === 'transcript' ? transcript : `## Edited Lecture Notes\n\n${notes}\n\n---\n\n## Full Transcript\n\n${transcript}`;
-  download(new Blob([`# ${course.name}\n\n## ${lecture.title}\n\n${metadata(course, lecture)}\n\n---\n\n${body}\n`], { type: 'text/markdown;charset=utf-8' }), `${safeFilename(lecture.title)}-${kind}.md`);
+  shareOrDownload(new Blob([`# ${course.name}\n\n## ${lecture.title}\n\n${metadata(course, lecture)}\n\n---\n\n${body}\n`], { type: 'text/markdown;charset=utf-8' }), `${safeFilename(lecture.title)}-${kind}.md`, `${lecture.title} — ${kind}`);
 }
 
 export function exportTranscriptText(course: Course, lecture: Lecture) {
   const transcript = lecture.segments.map((segment) => `[${formatTime(segment.startTime)} - ${formatTime(segment.endTime)}]\n${segment.editedText || segment.originalText}`).join('\n\n');
-  download(new Blob([`${metadata(course, lecture)}\n\n${transcript}`], { type: 'text/plain;charset=utf-8' }), `${safeFilename(lecture.title)}-transcript.txt`);
+  shareOrDownload(new Blob([`${metadata(course, lecture)}\n\n${transcript}`], { type: 'text/plain;charset=utf-8' }), `${safeFilename(lecture.title)}-transcript.txt`, `${lecture.title} — transcript`);
 }
 
 export function exportBackupJson(payload: unknown) {
-  download(new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }), `LectureAI-backup-${new Date().toISOString().slice(0, 10)}.json`);
+  shareOrDownload(new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }), `LectureAI-backup-${new Date().toISOString().slice(0, 10)}.json`, 'LectureAI backup');
 }
 
 export async function exportDocx(course: Course, lecture: Lecture) {
@@ -58,7 +83,7 @@ export async function exportDocx(course: Course, lecture: Lecture) {
     ]),
   ];
   const documentFile = new Document({ sections: [{ properties: {}, children }] });
-  download(await Packer.toBlob(documentFile), `${safeFilename(lecture.title)}.docx`);
+  shareOrDownload(await Packer.toBlob(documentFile), `${safeFilename(lecture.title)}.docx`, `${lecture.title} — notes and transcript`);
 }
 
 export function printPdf(course: Course, lecture: Lecture) {
@@ -74,20 +99,5 @@ function escapePrint(value: string) {
 }
 
 export function downloadBlob(blob: Blob, filename: string) {
-  const safe = safeFilename(filename);
-  if (isIOSDevice() && blob.type.toLowerCase().startsWith('audio/')) {
-    const shareNavigator = navigator as Navigator & {
-      canShare?: (data: { files?: File[] }) => boolean;
-      share?: (data: { title?: string; files?: File[] }) => Promise<void>;
-    };
-    const type = normalizeAudioMimeType(blob.type, safe);
-    const file = new File([blob], safe, { type });
-    if (shareNavigator.share && shareNavigator.canShare?.({ files: [file] })) {
-      void shareNavigator.share({ title: safe, files: [file] }).catch((error: unknown) => {
-        if (!(error instanceof DOMException && error.name === 'AbortError')) download(blob, safe);
-      });
-      return;
-    }
-  }
-  download(blob, safe);
+  shareOrDownload(blob, filename, filename);
 }
