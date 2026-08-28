@@ -107,7 +107,7 @@ export function useRecorder() {
       const track = assertLiveMicrophoneStream(stream);
       track.addEventListener('ended', () => setError('The microphone audio track ended unexpectedly. Finish the lecture to preserve saved checkpoints.'));
       const audible = await waitForAudibleInput(stream, 5000);
-      if (!audible) {
+      if (audible === false) {
         throw new Error('Microphone permission is on, but LectureAI could not detect real sound. Speak near the iPhone/iPad, make sure the microphone is not covered, then try again.');
       }
 
@@ -188,6 +188,8 @@ export function useRecorder() {
     if (!stream) throw new Error('The microphone stream is no longer available. Start a new recording.');
     stream.getAudioTracks().forEach((track) => { track.enabled = true; });
     assertLiveMicrophoneStream(stream);
+    const audible = await waitForAudibleInput(stream, 4000);
+    if (audible === false) throw new Error('The microphone is available, but no live sound was detected after continuing. Speak near the device and try again.');
     await audioContextRef.current?.resume().catch(() => undefined);
     const resumed = new Promise<void>((resolve) => recorder.addEventListener('resume', () => resolve(), { once: true }));
     recorder.resume();

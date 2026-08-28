@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { LectureDetail } from '../components/LectureDetail';
 import { RecordingFlow } from '../components/RecordingFlow';
 import { Diagnostics } from '../components/Diagnostics';
+import { PhoneModelManager } from '../components/PhoneModelManager';
 import { clearAllDataForDevelopmentTest, createBackup, getAudio, initializeDatabase, loadLibrary, saveCourse, saveImportedAudio, saveLecture, saveSettings } from '../lib/db';
 import { exportBackupJson } from '../lib/export';
 import { formatBytes, formatDuration, formatTime, friendlyDate } from '../lib/format';
@@ -178,21 +179,29 @@ export default function LectureAI() {
   async function importRecording(file: File) {
     try {
       if (!file.size) throw new Error('The selected recording is empty.');
-      if (file.size > 8 * 1024 * 1024 * 1024) throw new Error('The recording exceeds the 8 GB local safety limit.');
-      const verified = await validatePlayableAudio(file);
+      const estimate = await navigator.storage?.estimate().catch(() => undefined);
+      const free = estimate?.quota ? Math.max(0, estimate.quota - (estimate.usage || 0)) : undefined;
+      if (typeof free === 'number' && free > 0 && file.size > free) {
+        throw new Error(`This device currently reports only ${formatBytes(free)} of browser storage free, which is not enough to preserve this ${formatBytes(file.size)} recording.`);
+      }
+      const extension = file.name.split('.').pop()?.toLowerCase() || '';
+      const inferredType = file.type || ({ m4a: 'audio/mp4', mp4: 'audio/mp4', aac: 'audio/aac', wav: 'audio/wav', webm: 'audio/webm', mp3: 'audio/mpeg', ogg: 'audio/ogg', flac: 'audio/flac' } as Record<string, string>)[extension] || 'application/octet-stream';
+      const importedFile = file.type ? file : new File([file], file.name, { type: inferredType, lastModified: file.lastModified });
+      const verified = await validatePlayableAudio(importedFile);
       const now = new Date().toISOString();
       const id = crypto.randomUUID();
       const title = file.name.replace(/\.[^.]+$/, '').trim() || `Imported lecture ${new Date().toLocaleDateString()}`;
       const lecture: Lecture = {
-        id, courseId: '', title, date: now, duration: verified.duration || 0, size: file.size, mimeType: file.type,
-        status: 'transcription-queued', statusMessage: 'Imported original audio · transcription queued', processingProgress: 0,
+        id, courseId: '', title, date: now, duration: verified.duration || 0, size: importedFile.size, mimeType: inferredType,
+        status: 'transcription-queued', statusMessage: verified.browserDecoded ? 'Imported original audio · browser playback verified · transcription queued' : 'Imported original audio preserved · browser preview unavailable, Windows helper/FFmpeg will validate and transcribe it', processingProgress: 0,
         segments: [], englishTranslation: [], arabicTranslation: [], bookmarks: [], attachments: [], notesOriginal: '', notesCurrent: '', noteVersions: [], createdAt: now, updatedAt: now,
       };
-      await saveImportedAudio(id, file);
+      await navigator.storage?.persist?.().catch(() => false);
+      await saveImportedAudio(id, importedFile);
       await saveLecture(lecture);
       await refresh();
       openLecture(lecture);
-      notify(`Recording imported on ${deviceLabel()}. Maximum Accuracy will start automatically when the Windows helper is ready.`, 'success');
+      notify(verified.browserDecoded ? `Recording imported and playback-verified on ${deviceLabel()}.` : 'Recording imported intact. The Windows helper will perform the authoritative media decode.', 'success');
     } catch (error) {
       notify(error instanceof Error ? error.message : 'Could not import the recording.', 'warning');
     }
@@ -226,7 +235,7 @@ export default function LectureAI() {
         {view === 'lectures' && <LecturesView lectures={lectures} courses={courses} onOpen={openLecture} onRecord={beginRecording} onImport={() => recordingImportRef.current?.click()} />}
         {view === 'courses' && <CoursesView courses={courses} lectures={lectures} onAdd={() => setCourseModal(true)} onOpenLecture={openLecture} />}
         {view === 'search' && <SearchView courses={courses} lectures={lectures} onOpen={openLecture} />}
-        {view === 'settings' && <SettingsView courses={courses} lectures={lectures} storage={storage} installAvailable={Boolean(installPrompt)} onInstall={installApp} onBackup={async () => exportBackupJson(await createBackup())} />}
+        {view === 'settings' && <SettingsView courses={courses} lectures={lectures} storage={storage} installAvailable={Boolean(installPrompt)} phoneModelInstalled={Boolean(settings.phoneModelInstalled)} onPhoneModelReady={() => void handleSettingsChange({ ...settings, phoneModelInstalled: true, preferredMode: 'phone' })} onInstall={installApp} onBackup={async () => exportBackupJson(await createBackup())} />}
       </section>
 
       <input ref={recordingImportRef} type="file" accept="audio/*,.m4a,.mp4,.webm,.wav,.mp3,.ogg,.flac,.aac" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void importRecording(file); event.target.value = ''; }} />
@@ -289,9 +298,9 @@ function SearchView({ courses, lectures, onOpen }: { courses: Course[]; lectures
   return <><PageHeader eyebrow="Find anything" title="Search your library" /><div className="search-box"><Search size={22} /><input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search transcripts, notes, courses, definitions…" /></div>{normalized.length < 2 ? <section className="search-empty"><Search size={31} /><h2>Search everything stored locally</h2><p>Try “recursion”, “derivative”, a professor name, or an Arabic term.</p></section> : <div className="search-results"><p className="result-count">{results.length} lecture{results.length === 1 ? '' : 's'} found</p>{results.map(({ lecture, course, metadataMatch, notesMatch, segments }) => <article key={lecture.id} className="search-result"><button className="search-result-head" onClick={() => onOpen(lecture)}><span className="course-icon">{course?.icon || 'L'}</span><span><small>{course?.code} · {course?.name}</small><strong>{lecture.title}</strong></span><ChevronRight size={18} /></button>{segments.map((segment) => <button key={segment.id} className="search-hit" onClick={() => onOpen(lecture)}><time>{formatTime(segment.startTime)}</time><span dir="auto">{segment.editedText || segment.originalText}</span></button>)}{metadataMatch && !segments.length && <button className="search-hit" onClick={() => onOpen(lecture)}><BookOpen size={16} /><span>Course or lecture information matches “{query}”.</span></button>}{notesMatch && <button className="search-hit" onClick={() => onOpen(lecture)}><Sparkles size={16} /><span>Edited lecture notes contain “{query}”.</span></button>}</article>)}</div>}</>;
 }
 
-function SettingsView({ courses, lectures, storage, installAvailable, onInstall, onBackup }: { courses: Course[]; lectures: Lecture[]; storage: { quota?: number; usage?: number }; installAvailable: boolean; onInstall: () => void; onBackup: () => void }) {
+function SettingsView({ courses, lectures, storage, installAvailable, phoneModelInstalled, onPhoneModelReady, onInstall, onBackup }: { courses: Course[]; lectures: Lecture[]; storage: { quota?: number; usage?: number }; installAvailable: boolean; phoneModelInstalled: boolean; onPhoneModelReady: () => void; onInstall: () => void; onBackup: () => void }) {
   const totalSize = lectures.reduce((sum, lecture) => sum + lecture.size, 0);
-  return <><PageHeader eyebrow="Local-first controls" title="Settings & privacy" /><div className="settings-grid"><section className="settings-card"><span className="soft-icon"><ShieldCheck size={20} /></span><h2>Privacy</h2><p>LectureAI stores recordings, transcripts, notes, and course metadata in this browser by default. It does not send transcript content to analytics or paid AI services.</p><div className="settings-status"><Check size={15} /> No cloud account required</div></section><section className="settings-card"><span className="soft-icon"><HardDrive size={20} /></span><h2>Storage</h2><p>{lectures.length} lectures · {courses.length} courses · {formatBytes(totalSize)} known audio.</p><div className="storage-bar"><i style={{ width: `${storage.quota ? ((storage.usage || 0) / storage.quota) * 100 : 0}%` }} /></div><small>{storage.quota ? `${formatBytes(storage.usage || 0)} browser usage of ${formatBytes(storage.quota)}` : 'Storage estimate is not exposed by this browser.'}</small></section><section className="settings-card"><span className="soft-icon"><Archive size={20} /></span><h2>Manual backup</h2><p>Export course metadata, glossaries, bookmarks, transcripts, and notes. Original audio is exported separately from each lecture.</p><button className="secondary-button" onClick={onBackup}><DownloadIcon /> Export local backup</button></section><section className="settings-card"><span className="soft-icon"><Upload size={20} /></span><h2>Install LectureAI</h2><p>Install the PWA for a focused, full-screen experience. On iPhone/iPad, keep the app visible during long recordings because iOS/iPadOS can suspend web apps in the background.</p><button className="secondary-button" onClick={onInstall}>{installAvailable ? 'Install app' : 'iPhone install instructions'}</button></section><section className="settings-card wide-card"><span className="soft-icon"><Cpu size={20} /></span><h2>Local AI connection</h2><p>The included Windows helper detects CPU, NVIDIA GPU/VRAM, RAM, disk space, and recommends a Whisper model. It listens only on 127.0.0.1 and never uploads audio.</p><code>start-lectureai.bat</code><div className="model-choices"><div><strong>Fast</strong><span>small · lower memory</span></div><div><strong>Balanced</strong><span>medium · stronger mixed speech</span></div><div className="recommended"><strong>Maximum accuracy</strong><span>large-v3 · best practical local quality</span></div></div></section><Diagnostics /></div></>;
+  return <><PageHeader eyebrow="Local-first controls" title="Settings & privacy" /><div className="settings-grid"><section className="settings-card"><span className="soft-icon"><ShieldCheck size={20} /></span><h2>Privacy</h2><p>LectureAI stores recordings, transcripts, notes, and course metadata in this browser by default. It does not send transcript content to analytics or paid AI services.</p><div className="settings-status"><Check size={15} /> No cloud account required</div></section><section className="settings-card"><span className="soft-icon"><HardDrive size={20} /></span><h2>Storage</h2><p>{lectures.length} lectures · {courses.length} courses · {formatBytes(totalSize)} known audio. LectureAI has no artificial recording-duration or monthly-minute quota.</p><div className="storage-bar"><i style={{ width: `${storage.quota ? ((storage.usage || 0) / storage.quota) * 100 : 0}%` }} /></div><small>{storage.quota ? `${formatBytes(storage.usage || 0)} browser usage of ${formatBytes(storage.quota)}` : 'Storage estimate is not exposed by this browser.'}</small></section><section className="settings-card"><span className="soft-icon"><Archive size={20} /></span><h2>Manual backup</h2><p>Export course metadata, glossaries, bookmarks, transcripts, and notes. Original audio is exported separately from each lecture.</p><button className="secondary-button" onClick={onBackup}><DownloadIcon /> Export local backup</button></section><section className="settings-card"><span className="soft-icon"><Upload size={20} /></span><h2>Install LectureAI</h2><p>Install the PWA for a focused, full-screen experience. On iPhone/iPad, keep the app visible during long recordings because iOS/iPadOS can suspend web apps in the background.</p><button className="secondary-button" onClick={onInstall}>{installAvailable ? 'Install app' : 'iPhone install instructions'}</button></section><section className="settings-card wide-card"><span className="soft-icon"><Cpu size={20} /></span><h2>Local AI connection</h2><p>The included Windows helper detects CPU, NVIDIA GPU/VRAM, RAM, disk space, and recommends a Whisper model. It listens only on 127.0.0.1 and never uploads audio.</p><code>start-lectureai.bat</code><div className="model-choices"><div><strong>Fast</strong><span>small · lower memory</span></div><div><strong>Balanced</strong><span>medium · stronger mixed speech</span></div><div className="recommended"><strong>Maximum accuracy</strong><span>large-v3 · best practical local quality</span></div></div></section><PhoneModelManager installed={phoneModelInstalled} onInstalled={onPhoneModelReady} /><Diagnostics /></div></>;
 }
 
 function DownloadIcon() { return <Archive size={17} />; }

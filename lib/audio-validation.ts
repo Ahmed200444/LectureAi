@@ -11,15 +11,15 @@ export function assertLiveMicrophoneStream(stream: MediaStream) {
   return track;
 }
 
-export async function waitForAudibleInput(stream: MediaStream, timeoutMs = 4000, threshold = 0.0015) {
+export async function waitForAudibleInput(stream: MediaStream, timeoutMs = 4000, threshold = 0.0015): Promise<boolean | null> {
   const AudioContextClass = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-  if (!AudioContextClass) return false;
+  if (!AudioContextClass) return null;
   const context = new AudioContextClass();
   try {
     await context.resume().catch(() => undefined);
     // Installed iOS PWAs can temporarily keep WebAudio suspended after a permission
     // transition. That must not be mistaken for a disabled microphone.
-    if (context.state !== 'running') return false;
+    if (context.state !== 'running') return null;
     const analyser = context.createAnalyser();
     analyser.fftSize = 256;
     context.createMediaStreamSource(stream).connect(analyser);

@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from 'react';
 import { assertLiveMicrophoneStream, validatePlayableAudio } from '../lib/audio-validation';
 import { deviceLabel, isStandaloneApp, preferredRecordingMimeType } from '../lib/device';
 
-export function MicTest() {
+export function MicTest({ onVerified, onReset }: { onVerified?: () => void; onReset?: () => void }) {
   const [testing, setTesting] = useState(false);
   const [seconds, setSeconds] = useState(0);
   const [level, setLevel] = useState(0);
@@ -39,6 +39,7 @@ export function MicTest() {
       setSeconds(0);
       setLevel(0);
       setConfirmed(false);
+      onReset?.();
       peakRef.current = 0;
       meterReliableRef.current = true;
       chunksRef.current = [];
@@ -132,7 +133,7 @@ export function MicTest() {
       <div className="button-row compact">
         {!testing ? <button className="secondary-button" type="button" onClick={startTest}><Mic size={16} /> Start sample</button> : <button className="secondary-button danger-text" type="button" onClick={stopTest}><Square size={15} /> Stop sample</button>}
         {sampleUrl && <audio src={sampleUrl} controls aria-label="Microphone test playback" className="sample-player" />}
-        {sampleUrl && !confirmed && <button className="primary-button" type="button" onClick={() => setConfirmed(true)}><Check size={15} /> I can hear the sample</button>}
+        {sampleUrl && !confirmed && <button className="primary-button" type="button" onClick={() => { setConfirmed(true); onVerified?.(); }}><Check size={15} /> I can hear the sample</button>}
       </div>
     </section>
   );

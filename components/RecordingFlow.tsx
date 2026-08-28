@@ -24,11 +24,45 @@ export function RecordingFlow({ courses, onClose, onSaved, onOpenLecture }: Reco
   const [lecture, setLecture] = useState<Lecture | null>(null);
   const [storage, setStorage] = useState<{ quota?: number; usage?: number }>({});
   const [visibilityWarning, setVisibilityWarning] = useState(false);
+  const [storageWarning, setStorageWarning] = useState('');
   const [setupError, setSetupError] = useState('');
+  const [micVerified, setMicVerified] = useState(false);
+  const [savedAudioUrl, setSavedAudioUrl] = useState('');
   const recorder = useRecorder();
   const course = useMemo(() => courses.find((item) => item.id === courseId), [courseId, courses]);
 
   useEffect(() => { navigator.storage?.estimate().then(setStorage).catch(() => undefined); }, []);
+  useEffect(() => {
+    if (stage !== 'saved' || !lecture || lecture.status === 'interrupted') { setSavedAudioUrl(''); return; }
+    let cancelled = false;
+    let url = '';
+    void getAudio(lecture.id).then((audio) => {
+      if (!audio || cancelled) return;
+      url = URL.createObjectURL(audio.blob);
+      setSavedAudioUrl(url);
+    }).catch(() => undefined);
+    return () => { cancelled = true; if (url) URL.revokeObjectURL(url); };
+  }, [stage, lecture]);
+  useEffect(() => {
+    if (stage !== 'recording') return;
+    let cancelled = false;
+    const checkStorage = async () => {
+      try {
+        const estimate = await navigator.storage?.estimate();
+        if (!estimate || cancelled) return;
+        setStorage(estimate);
+        const free = Math.max(0, (estimate.quota || 0) - (estimate.usage || 0));
+        if (estimate.quota && free < 100 * 1024 * 1024) {
+          setStorageWarning(`Only ${formatBytes(free)} of estimated browser storage remains. LectureAI will not impose a time limit, but the device needs free space to keep saving checkpoints.`);
+        } else {
+          setStorageWarning('');
+        }
+      } catch { /* Storage estimates are best effort. */ }
+    };
+    void checkStorage();
+    const timer = window.setInterval(() => void checkStorage(), 30_000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [stage]);
   useEffect(() => {
     const handleVisibility = () => setVisibilityWarning(document.hidden && recorder.isRecording);
     const handleUnload = (event: BeforeUnloadEvent) => { if (recorder.isRecording || recorder.isPaused) { event.preventDefault(); event.returnValue = ''; } };
@@ -46,7 +80,9 @@ export function RecordingFlow({ courses, onClose, onSaved, onOpenLecture }: Reco
     };
     try {
       setSetupError('');
-      // Verify a live microphone before creating a real lecture in the library.
+      await navigator.storage?.persist?.().catch(() => false);
+      // recorder.start performs an automated signal check when WebAudio is available;
+      // MicTest has already required playback confirmation of a real recorded sample.
       await recorder.start(newLecture.id);
       await saveLecture(newLecture);
       setLecture(newLecture);
@@ -95,6 +131,8 @@ export function RecordingFlow({ courses, onClose, onSaved, onOpenLecture }: Reco
 
   function prepareNewRecording() {
     setLecture(null);
+    setMicVerified(false);
+    setSavedAudioUrl('');
     setTitle(`Lecture ${new Date().toLocaleDateString('en', { month: 'short', day: 'numeric' })}`);
     setVisibilityWarning(false);
     setStage('setup');
@@ -104,12 +142,12 @@ export function RecordingFlow({ courses, onClose, onSaved, onOpenLecture }: Reco
     if (!lecture) return;
     try {
       const result = await recorder.stop();
-      const updated: Lecture = { ...lecture, duration: result.duration, size: result.blob.size, mimeType: result.mimeType, status: 'transcription-queued', statusMessage: 'Recording safely saved · transcription queued', processingProgress: 0, updatedAt: new Date().toISOString() };
+      const updated: Lecture = { ...lecture, duration: result.duration, size: result.blob.size, mimeType: result.mimeType, status: 'transcription-queued', statusMessage: `Audio playback verified · ${recorder.chunkCount} checkpoint${recorder.chunkCount === 1 ? '' : 's'} saved · ready to transcribe`, processingProgress: 0, updatedAt: new Date().toISOString() };
       setLecture(updated);
       await saveLecture(updated);
       onSaved(updated);
       if (startAnother) prepareNewRecording();
-      else onOpenLecture(updated);
+      else setStage('saved');
     } catch (error) {
       const updated: Lecture = { ...lecture, status: 'interrupted', statusMessage: error instanceof Error ? error.message : 'Recording stopped unexpectedly. Recover saved chunks from the library.' };
       setLecture(updated);
@@ -136,7 +174,8 @@ export function RecordingFlow({ courses, onClose, onSaved, onOpenLecture }: Reco
           <div className="big-meter" aria-label={`Audio level ${Math.round(recorder.level * 100)} percent`}><i style={{ width: `${recorder.isPaused ? 0 : Math.max(1, recorder.level * 100)}%` }} /></div>
           <p className={`level-label ${!recorder.isPaused && recorder.level < .04 ? 'warn' : ''}`}>{recorder.isPaused ? 'Stopped safely — continuing will add audio to this same recording.' : recorder.level < .04 ? 'Audio is quiet — check phone position' : recorder.level > .94 ? 'Clipping risk — move the phone farther away' : 'Audio level looks good'}</p>
           <div className="checkpoint-status"><ShieldCheck size={16} /> {recorder.chunkCount} secure checkpoints saved</div>
-          {visibilityWarning && <div className="inline-warning"><AlertTriangle size={17} /> iOS may suspend browser recording in the background. Return to LectureAI and keep the screen awake.</div>}
+          {visibilityWarning && <div className="inline-warning"><AlertTriangle size={17} /> iOS/iPadOS may suspend browser recording in the background. Return to LectureAI and keep the screen awake.</div>}
+          {storageWarning && <div className="inline-warning"><AlertTriangle size={17} /> {storageWarning}</div>}
           {recorder.error && <div className="inline-warning"><AlertTriangle size={17} /> {recorder.error}</div>}
           {recorder.isPaused ? <div className="recording-actions paused-actions">
             <button className="continue-button" onClick={resumeCurrent}><Play size={21} fill="currentColor" /> Continue current recording</button>
@@ -152,12 +191,16 @@ export function RecordingFlow({ courses, onClose, onSaved, onOpenLecture }: Reco
   if (stage === 'saved' && lecture) {
     return (
       <div className="modal-backdrop"><section className="modal-card post-save" role="dialog" aria-modal="true" aria-labelledby="saved-title">
-        <span className="success-icon"><Check size={30} /></span><p className="eyebrow">Original audio preserved</p><h2 id="saved-title">Lecture saved successfully</h2><p>{lecture.statusMessage}</p>
+        <span className="success-icon"><Check size={30} /></span><p className="eyebrow">Original audio preserved</p><h2 id="saved-title">{lecture.status === 'interrupted' ? 'Recording needs recovery' : 'Recording verified & saved'}</h2><p>{lecture.statusMessage}</p>
+        {lecture.status === 'interrupted' ? <div className="inline-warning"><AlertTriangle size={17} /> Saved checkpoints were kept. Open the lecture to recover them before transcription.</div> : <div className="inline-note"><ShieldCheck size={16} /> LectureAI reloaded the assembled audio successfully before marking this recording as saved.</div>}
+        {savedAudioUrl && <audio className="sample-player" src={savedAudioUrl} controls aria-label="Verify saved lecture audio" />}
         <dl className="save-details"><div><dt>Duration</dt><dd>{formatTime(lecture.duration, true)}</dd></div><div><dt>Size</dt><dd>{formatBytes(lecture.size)}</dd></div><div><dt>Marks</dt><dd>{lecture.bookmarks.length}</dd></div></dl>
         <div className="post-actions">
-          <button className="primary-button" onClick={() => onOpenLecture(lecture)}><HardDrive size={18} /> Maximum accuracy</button>
-          <button className="secondary-button" onClick={() => onOpenLecture(lecture)}><Mic size={18} /> Transcribe on phone</button>
-          <button className="secondary-button" onClick={exportAudio}><Download size={18} /> Export original audio</button>
+          {lecture.status === 'interrupted' ? <button className="primary-button" onClick={() => onOpenLecture(lecture)}><HardDrive size={18} /> Open recovery</button> : <>
+            <button className="primary-button" onClick={() => onOpenLecture(lecture)}><HardDrive size={18} /> Maximum accuracy</button>
+            <button className="secondary-button" onClick={() => onOpenLecture(lecture)}><Mic size={18} /> Transcribe on phone</button>
+            <button className="secondary-button" onClick={exportAudio}><Download size={18} /> Share / export original audio</button>
+          </>}
           <button className="secondary-button" onClick={prepareNewRecording}><FilePlus2 size={18} /> Start a new recording</button>
         </div>
         <button className="text-button" onClick={onClose}>Back to library</button>
@@ -171,11 +214,12 @@ export function RecordingFlow({ courses, onClose, onSaved, onOpenLecture }: Reco
       <p className="eyebrow">New recording</p><h2 id="record-title">Prepare your lecture</h2><p className="modal-intro">Original audio is saved in frequent local checkpoints. There is no artificial recording limit.</p>
       <label className="field-label">Lecture title<input value={title} onChange={(event) => setTitle(event.target.value)} /></label>
       <label className="field-label">Course<select value={courseId} onChange={(event) => setCourseId(event.target.value)}><option value="">No course</option>{courses.map((item) => <option key={item.id} value={item.id}>{item.code} — {item.name}</option>)}</select></label>
-      <MicTest />
+      <MicTest onVerified={() => setMicVerified(true)} onReset={() => setMicVerified(false)} />
       {setupError && <div className="inline-warning"><AlertTriangle size={17} /> {setupError}</div>}
       <div className="storage-line"><HardDrive size={16} /><span>{storage.quota ? `${formatBytes(Math.max(0, (storage.quota || 0) - (storage.usage || 0)))} estimated free browser storage` : 'Storage will be checked during recording'}</span></div>
-      <div className="inline-note"><Bookmark size={16} /> Keep the phone on the desk with its microphone unobstructed. Rows 1–3 are the primary accuracy target.</div>
-      <button className="primary-button wide" onClick={begin}><span className="record-dot" /> Start a new recording</button>
+      <div className="inline-note"><Bookmark size={16} /> Keep the iPhone/iPad microphone unobstructed and LectureAI visible. Recording has no LectureAI time quota; available storage, battery, and iOS/iPadOS background rules are the practical limits.</div>
+      {!micVerified && <small>Record the microphone sample and confirm you can hear it before starting. This prevents a silent lecture from being accepted by mistake.</small>}
+      <button className="primary-button wide" onClick={begin} disabled={!micVerified}><span className="record-dot" /> Start a new recording</button>
     </section></div>
   );
 }
