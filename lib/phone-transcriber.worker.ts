@@ -5,6 +5,7 @@ import { env, pipeline } from '@huggingface/transformers';
 const workerScope = self as unknown as DedicatedWorkerGlobalScope;
 const PRIMARY_MODEL = 'Xenova/whisper-small';
 const FALLBACK_MODEL = 'Xenova/whisper-base';
+const LAST_RESORT_MODEL = 'Xenova/whisper-tiny';
 
 env.allowLocalModels = false;
 env.allowRemoteModels = true;
@@ -30,11 +31,11 @@ async function getTranscriber() {
   if (!transcriberPromise) {
     activeModel = PRIMARY_MODEL;
     transcriberPromise = loadModel(PRIMARY_MODEL).catch(async () => {
-      // Keep on-phone transcription available on iOS devices that cannot hold the
-      // Small model in memory. Base remains multilingual and the original audio is
-      // never altered, so Maximum Accuracy can still be run later on Windows.
       activeModel = FALLBACK_MODEL;
-      return loadModel(FALLBACK_MODEL);
+      return loadModel(FALLBACK_MODEL).catch(async () => {
+        activeModel = LAST_RESORT_MODEL;
+        return loadModel(LAST_RESORT_MODEL);
+      });
     });
   }
   const transcriber = await transcriberPromise;
@@ -42,10 +43,15 @@ async function getTranscriber() {
   return transcriber;
 }
 
-workerScope.addEventListener('message', async (event: MessageEvent<{ id: string; audio: Float32Array }>) => {
-  const { id, audio } = event.data;
+workerScope.addEventListener('message', async (event: MessageEvent<{ id: string; audio?: Float32Array; mode?: 'prepare' | 'transcribe' }>) => {
+  const { id, audio, mode = 'transcribe' } = event.data;
   try {
     const transcriber = await getTranscriber();
+    if (mode === 'prepare') {
+      workerScope.postMessage({ type: 'result', id, payload: { prepared: true, model: activeModel } });
+      return;
+    }
+    if (!audio?.length) throw new Error('No decoded audio was provided for transcription.');
     workerScope.postMessage({ type: 'transcription-progress', progress: 72, message: 'Running multilingual speech recognition on this device…' });
     const output = await transcriber(audio, {
       task: 'transcribe',
