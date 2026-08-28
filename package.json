@@ -1,11 +1,40 @@
 {
-  "name": "lectureai-deploy",
-  "version": "1.0.1",
+  "name": "lectureai",
+  "version": "0.1.0",
   "private": true,
   "engines": {
     "node": "22.x"
   },
   "scripts": {
-    "build": "rm -rf app lectureai-web-essential.tar.gz && mkdir -p app && base64 -d lectureai-web-essential.tar.gz.b64 > lectureai-web-essential.tar.gz && tar -xzf lectureai-web-essential.tar.gz -C app && cd app && npm install --no-audit --no-fund && npm run build"
-  }
+    "dev": "vite --port 3000",
+    "build": "vite build",
+    "start": "vite preview",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types tests/run.ts",
+    "check": "npm run typecheck && npm run lint && npm run test && npm run build"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^4.2.0",
+    "docx": "^9.7.1",
+    "dompurify": "^3.4.14",
+    "idb": "^8.0.3",
+    "lucide-react": "^1.34.0",
+    "react": "19.2.6",
+    "react-dom": "19.2.6"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "4.2.1",
+    "@types/node": "22.19.19",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.2",
+    "eslint": "9.39.4",
+    "fake-indexeddb": "^6.2.5",
+    "tailwindcss": "4.2.1",
+    "typescript": "5.9.3",
+    "typescript-eslint": "^8.40.0",
+    "vite": "8.0.13"
+  },
+  "type": "module"
 }
