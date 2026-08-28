@@ -3,7 +3,7 @@
 import { Check, Mic, Square, Volume1, Volume2, VolumeX } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { assertLiveMicrophoneStream, validatePlayableAudio } from '../lib/audio-validation';
-import { deviceLabel, preferredRecordingMimeType } from '../lib/device';
+import { deviceLabel, isStandaloneApp, preferredRecordingMimeType } from '../lib/device';
 
 export function MicTest() {
   const [testing, setTesting] = useState(false);
@@ -11,7 +11,7 @@ export function MicTest() {
   const [level, setLevel] = useState(0);
   const [sampleUrl, setSampleUrl] = useState('');
   const [confirmed, setConfirmed] = useState(false);
-  const [message, setMessage] = useState(`Record a 12-second sample from the ${deviceLabel()} position you will use during class.`);
+  const [message, setMessage] = useState(`Record a 12-second sample from the ${deviceLabel()} position you will use during class${isStandaloneApp() ? ' in the installed LectureAI app' : ''}.`);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<Blob[]>([]);
@@ -20,6 +20,7 @@ export function MicTest() {
   const frameRef = useRef<number | null>(null);
   const contextRef = useRef<AudioContext | null>(null);
   const peakRef = useRef(0);
+  const meterReliableRef = useRef(true);
 
   function cleanUp() {
     if (timerRef.current) clearInterval(timerRef.current);
@@ -39,13 +40,19 @@ export function MicTest() {
       setLevel(0);
       setConfirmed(false);
       peakRef.current = 0;
+      meterReliableRef.current = true;
       chunksRef.current = [];
       if (sampleUrl) { URL.revokeObjectURL(sampleUrl); setSampleUrl(''); }
       const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: true, channelCount: 1 }, video: false });
       assertLiveMicrophoneStream(stream);
       streamRef.current = stream;
       const mimeType = preferredRecordingMimeType();
-      const recorder = mimeType ? new MediaRecorder(stream, { mimeType, audioBitsPerSecond: 128_000 }) : new MediaRecorder(stream);
+      let recorder: MediaRecorder;
+      try {
+        recorder = mimeType ? new MediaRecorder(stream, { mimeType, audioBitsPerSecond: 128_000 }) : new MediaRecorder(stream);
+      } catch {
+        recorder = new MediaRecorder(stream);
+      }
       recorderRef.current = recorder;
       recorder.ondataavailable = (event) => { if (event.data.size) chunksRef.current.push(event.data); };
       recorder.onstop = () => { void finishSample(recorder); };
@@ -54,10 +61,17 @@ export function MicTest() {
       const started = Date.now();
       timerRef.current = setInterval(() => setSeconds(Math.min(12, (Date.now() - started) / 1000)), 200);
       timeoutRef.current = setTimeout(() => stopTest(), 12_000);
-      const AudioContextClass = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      const AudioContextClass = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      if (!AudioContextClass) { meterReliableRef.current = false; return; }
       const context = new AudioContextClass();
       contextRef.current = context;
-      void context.resume().catch(() => undefined);
+      await context.resume().catch(() => undefined);
+      if (context.state !== 'running') {
+        // The recording can still be valid in iOS standalone mode even if the visual
+        // WebAudio meter is temporarily suspended.
+        meterReliableRef.current = false;
+        return;
+      }
       const analyser = context.createAnalyser();
       analyser.fftSize = 256;
       context.createMediaStreamSource(stream).connect(analyser);
@@ -85,7 +99,8 @@ export function MicTest() {
       const url = URL.createObjectURL(blob);
       setSampleUrl(url);
       const peak = peakRef.current;
-      if (peak < 0.03) setMessage('Very little audio was detected. Check microphone permission/position and repeat the test.');
+      if (!meterReliableRef.current) setMessage('Sample saved. The iPhone visual meter was unavailable, so play the sample and confirm that you can clearly hear the speech.');
+      else if (peak < 0.03) setMessage('The meter detected a quiet sample. Play it back; if speech is hard to hear, check microphone position and repeat the test.');
       else if (peak > 0.93) setMessage('Sample saved, but clipping was detected. Play it back, then move the device farther away if speech sounds distorted.');
       else setMessage('Sample saved. Play it back and confirm that you can clearly hear the speech before class.');
     } catch (error) {
