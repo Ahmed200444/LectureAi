@@ -1,4 +1,4 @@
-const CACHE_NAME = 'lectureai-shell-v4';
+const CACHE_NAME = 'lectureai-shell-v5';
 const CORE = ['/', '/manifest.webmanifest', '/icon-192.png', '/icon-512.png'];
 
 self.addEventListener('install', (event) => {
@@ -14,12 +14,15 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(request.url);
   if (request.method !== 'GET' || url.origin !== self.location.origin) return;
 
+  // Navigation is network-first so an installed iPhone/iPad app picks up fixes
+  // as soon as it is online. The latest successful response becomes the offline
+  // shell and retains the COOP/COEP response headers used by local Whisper.
   if (request.mode === 'navigate') {
     event.respondWith(fetch(request).then((response) => {
-    if (response.ok) {
-      const copy = response.clone();
-      caches.open(CACHE_NAME).then((cache) => cache.put('/', copy));
-    }
+      if (response.ok) {
+        const copy = response.clone();
+        caches.open(CACHE_NAME).then((cache) => cache.put('/', copy));
+      }
       return response;
     }).catch(() => caches.match('/')));
     return;
