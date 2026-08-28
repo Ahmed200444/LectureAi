@@ -2,11 +2,11 @@ name: LectureAI CI
 
 on:
   push:
-    branches: [main, preflight-clean]
+    branches: [main, preflight-clean, fix-ios-audio-pwa-transcription]
   pull_request:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   check:
@@ -16,6 +16,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+
+      - name: Apply mobile finishing patch
+        if: github.ref == 'refs/heads/fix-ios-audio-pwa-transcription'
+        run: python tools/apply-mobile-finish.py
 
       - name: Install dependencies
         shell: bash
@@ -53,3 +57,18 @@ jobs:
           grep -qi '<div id="root"></div>' /tmp/lectureai-home.html
           curl -fsS http://127.0.0.1:4173/manifest.webmanifest >/dev/null
           curl -fsS http://127.0.0.1:4173/sw.js >/dev/null
+
+      - name: Commit verified mobile fixes
+        if: github.ref == 'refs/heads/fix-ios-audio-pwa-transcription'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo 'No generated changes to commit.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/App.tsx components/RecordingFlow.tsx components/MicTest.tsx hooks/use-recorder.ts lib/audio-validation.ts tests/run.ts benchmarks/mobile-acceptance.md
+          git commit -m 'Finish mobile recording and transcription safeguards'
+          git push origin HEAD:fix-ios-audio-pwa-transcription
