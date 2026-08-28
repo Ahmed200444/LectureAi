@@ -19,7 +19,11 @@ jobs:
 
       - name: Apply mobile finishing patch
         if: github.ref == 'refs/heads/fix-ios-audio-pwa-transcription'
-        run: python tools/apply-mobile-finish.py
+        shell: bash
+        run: |
+          set -euo pipefail
+          sed -i 's/phoneModelInstalled={settings.phoneModelInstalled}/phoneModelInstalled={Boolean(settings.phoneModelInstalled)}/g' tools/apply-mobile-finish.py
+          python tools/apply-mobile-finish.py
 
       - name: Install dependencies
         shell: bash
