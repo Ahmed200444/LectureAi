@@ -24,6 +24,9 @@ type HelperJob = {
 function audioFilename(mimeType: string) {
   if (mimeType.includes('mp4') || mimeType.includes('m4a')) return 'lecture.m4a';
   if (mimeType.includes('wav')) return 'lecture.wav';
+  if (mimeType.includes('mpeg')) return 'lecture.mp3';
+  if (mimeType.includes('ogg')) return 'lecture.ogg';
+  if (mimeType.includes('flac')) return 'lecture.flac';
   return 'lecture.webm';
 }
 
@@ -129,7 +132,8 @@ export function phoneTranscriptionSupported() {
   return typeof window !== 'undefined'
     && typeof Worker !== 'undefined'
     && typeof WebAssembly !== 'undefined'
-    && typeof (window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext) !== 'undefined';
+    && typeof File !== 'undefined'
+    && window.crossOriginIsolated === true;
 }
 
 export function isPhoneOrTablet() {
