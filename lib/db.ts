@@ -1,6 +1,7 @@
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb';
 import type { AppSettings, AudioChunk, Course, Lecture, StoredAttachment, StoredAudio } from './types.ts';
 import { generateNotesHtml } from './notes.ts';
+import { normalizeAudioMimeType } from './device.ts';
 
 const LEGACY_DEMO_COURSE_ID = 'course-calculus';
 const LEGACY_DEMO_LECTURE_ID = 'lecture-chain-rule';
@@ -127,7 +128,11 @@ export async function getAudio(lectureId: string) {
 }
 
 export async function saveImportedAudio(lectureId: string, blob: Blob) {
-  return (await getDatabase()).put('audioFiles', { lectureId, blob, mimeType: blob.type || 'application/octet-stream', size: blob.size, createdAt: new Date().toISOString() });
+  const db = await getDatabase();
+  const filename = blob instanceof File ? blob.name : '';
+  const mimeType = normalizeAudioMimeType(blob.type, filename);
+  const normalizedBlob = blob.type === mimeType ? blob : new Blob([blob], { type: mimeType });
+  return db.put('audioFiles', { lectureId, blob: normalizedBlob, mimeType, size: normalizedBlob.size, createdAt: new Date().toISOString() });
 }
 
 export async function addAttachment(attachment: StoredAttachment) {
