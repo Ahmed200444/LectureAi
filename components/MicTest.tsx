@@ -2,8 +2,8 @@
 
 import { Check, Mic, Square, Volume1, Volume2, VolumeX } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
-import { assertLiveMicrophoneStream, validatePlayableAudio } from '../lib/audio-validation';
-import { deviceLabel, preferredRecordingMimeType } from '../lib/device';
+import { assertLiveMicrophoneStream, validateAudibleSample, validatePlayableAudio, waitForMicrophoneUnmuted } from '../lib/audio-validation';
+import { deviceLabel, isIOSDevice, mediaRecorderOptions, microphoneCaptureConstraints, preferredRecordingMimeType } from '../lib/device';
 
 export function MicTest() {
   const [testing, setTesting] = useState(false);
@@ -27,6 +27,9 @@ export function MicTest() {
     if (frameRef.current) cancelAnimationFrame(frameRef.current);
     streamRef.current?.getTracks().forEach((track) => track.stop());
     contextRef.current?.close().catch(() => undefined);
+    timerRef.current = null;
+    timeoutRef.current = null;
+    frameRef.current = null;
     streamRef.current = null;
     contextRef.current = null;
   }
@@ -41,15 +44,19 @@ export function MicTest() {
       peakRef.current = 0;
       chunksRef.current = [];
       if (sampleUrl) { URL.revokeObjectURL(sampleUrl); setSampleUrl(''); }
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: true, channelCount: 1 }, video: false });
-      assertLiveMicrophoneStream(stream);
+      const stream = await navigator.mediaDevices.getUserMedia(microphoneCaptureConstraints());
+      const track = assertLiveMicrophoneStream(stream);
+      if (track.muted && !await waitForMicrophoneUnmuted(track, 3000)) throw new Error('The microphone stayed unavailable after permission was granted. Check the microphone indicator or audio input route, then retry.');
       streamRef.current = stream;
       const mimeType = preferredRecordingMimeType();
-      const recorder = mimeType ? new MediaRecorder(stream, { mimeType, audioBitsPerSecond: 128_000 }) : new MediaRecorder(stream);
+      const options = mediaRecorderOptions(mimeType);
+      const recorder = options ? new MediaRecorder(stream, options) : new MediaRecorder(stream);
       recorderRef.current = recorder;
       recorder.ondataavailable = (event) => { if (event.data.size) chunksRef.current.push(event.data); };
       recorder.onstop = () => { void finishSample(recorder); };
-      recorder.start(500);
+      // A single complete blob is the most reliable way to validate Safari's
+      // actual encoded sample. Main lecture recording still uses checkpoints.
+      recorder.start();
       setTesting(true);
       const started = Date.now();
       timerRef.current = setInterval(() => setSeconds(Math.min(12, (Date.now() - started) / 1000)), 200);
@@ -65,7 +72,7 @@ export function MicTest() {
       const update = () => {
         analyser.getByteTimeDomainData(data);
         const rms = Math.sqrt(data.reduce((sum, value) => sum + ((value - 128) / 128) ** 2, 0) / data.length);
-        const nextLevel = Math.min(1, rms * 5);
+        const nextLevel = Math.min(1, rms * (isIOSDevice() ? 12 : 5));
         peakRef.current = Math.max(peakRef.current, nextLevel);
         setLevel(nextLevel);
         frameRef.current = requestAnimationFrame(update);
@@ -80,14 +87,16 @@ export function MicTest() {
 
   async function finishSample(recorder: MediaRecorder) {
     try {
-      const blob = new Blob(chunksRef.current, { type: recorder.mimeType });
+      const blobType = chunksRef.current.find((chunk) => chunk.type)?.type || recorder.mimeType || preferredRecordingMimeType();
+      const blob = new Blob(chunksRef.current, { type: blobType });
       await validatePlayableAudio(blob, 7000);
+      const signal = await validateAudibleSample(blob);
       const url = URL.createObjectURL(blob);
       setSampleUrl(url);
       const peak = peakRef.current;
-      if (peak < 0.03) setMessage('Very little audio was detected. Check microphone permission/position and repeat the test.');
-      else if (peak > 0.93) setMessage('Sample saved, but clipping was detected. Play it back, then move the device farther away if speech sounds distorted.');
-      else setMessage('Sample saved. Play it back and confirm that you can clearly hear the speech before class.');
+      if (!signal.audible) setMessage('The saved sample is playable but contains almost no audio signal. Check the iPhone microphone opening, Bluetooth input, and permission, then repeat the test.');
+      else if (peak > 0.93) setMessage('Saved audio is present, but the live meter reached a high level. Play it back and move the device farther away only if speech sounds distorted.');
+      else setMessage('Saved audio signal verified. Play this exact sample and confirm that you can clearly hear the speech before class.');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'The microphone sample could not be reloaded.');
     } finally {
@@ -111,7 +120,7 @@ export function MicTest() {
     <section className="mic-test" aria-label="Microphone test">
       <div className="mic-test-head">
         <span className="soft-icon"><Mic size={18} /></span>
-        <div><strong>Test microphone</strong><p>{confirmed ? 'Microphone working — you confirmed the recorded sample is audible.' : message}</p></div>
+        <div><strong>Test microphone</strong><p>{confirmed ? 'Microphone working — the saved recording contains audio and you confirmed playback.' : message}</p></div>
       </div>
       {testing && <div className="meter-row"><LevelIcon size={17} /><div className="level-track"><i style={{ width: `${Math.max(2, level * 100)}%` }} /></div><span>{Math.ceil(seconds)} / 12s</span></div>}
       <div className="button-row compact">
