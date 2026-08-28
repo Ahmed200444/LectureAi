@@ -2,11 +2,6 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "buildCommand": "npm run build",
   "outputDirectory": "dist/client",
-  "git": {
-    "deploymentEnabled": {
-      "fix-ios-audio-pwa-transcription": false
-    }
-  },
   "rewrites": [
     { "source": "/(.*)", "destination": "/index.html" }
   ]
