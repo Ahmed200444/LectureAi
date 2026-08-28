@@ -6,7 +6,7 @@ on:
   pull_request:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   check:
@@ -22,22 +22,11 @@ jobs:
         run: |
           set -euo pipefail
           for attempt in 1 2 3; do
-            if npm install --no-audit --no-fund; then break; fi
+            if npm install --no-audit --no-fund; then exit 0; fi
             if [ "$attempt" = 3 ]; then exit 1; fi
             rm -rf node_modules
             sleep 5
           done
-
-      - name: Refresh dependency lockfile on fix branch
-        if: github.ref_name == 'fix/iphone-audio-transcription' && github.actor != 'github-actions[bot]'
-        shell: bash
-        run: |
-          if git diff --quiet -- package-lock.json; then exit 0; fi
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add package-lock.json
-          git commit -m 'Refresh iOS transcription lockfile [skip ci]'
-          git push origin HEAD:fix/iphone-audio-transcription
 
       - run: npm run typecheck
       - run: npm run lint
