@@ -2,8 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { deleteAudioChunks, finalizeAudio, saveAudioChunk } from '../lib/db';
-import { assertLiveMicrophoneStream, validatePlayableAudio, waitForAudibleInput } from '../lib/audio-validation';
-import { preferredRecordingMimeType } from '../lib/device';
+import { assertLiveMicrophoneStream, validatePlayableAudio, waitForAudibleInput, waitForMicrophoneUnmuted } from '../lib/audio-validation';
+import { isIOSDevice, mediaRecorderOptions, microphoneCaptureConstraints, preferredRecordingMimeType } from '../lib/device';
 
 type WakeLockSentinelLike = { release: () => Promise<void> };
 
@@ -27,6 +27,7 @@ export function useRecorder() {
   const lectureIdRef = useRef('');
   const mimeTypeRef = useRef('');
   const quietSinceRef = useRef<number | null>(null);
+  const muteWarningTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const startDurationTimer = useCallback(() => {
     if (intervalRef.current) clearInterval(intervalRef.current);
@@ -45,8 +46,10 @@ export function useRecorder() {
   const stopMeters = useCallback(() => {
     if (frameRef.current) cancelAnimationFrame(frameRef.current);
     if (intervalRef.current) clearInterval(intervalRef.current);
+    if (muteWarningTimerRef.current) clearTimeout(muteWarningTimerRef.current);
     frameRef.current = null;
     intervalRef.current = null;
+    muteWarningTimerRef.current = null;
     audioContextRef.current?.close().catch(() => undefined);
     audioContextRef.current = null;
     streamRef.current?.getTracks().forEach((track) => track.stop());
@@ -67,18 +70,22 @@ export function useRecorder() {
     analyser.fftSize = 256;
     context.createMediaStreamSource(stream).connect(analyser);
     const samples = new Uint8Array(analyser.frequencyBinCount);
+    const ios = isIOSDevice();
     const update = () => {
       analyser.getByteTimeDomainData(samples);
       const rms = Math.sqrt(samples.reduce((sum, sample) => sum + ((sample - 128) / 128) ** 2, 0) / samples.length);
-      const normalized = Math.min(1, rms * 5);
+      const normalized = Math.min(1, rms * (ios ? 12 : 5));
       setLevel(normalized);
       if (recorderRef.current?.state === 'recording') {
-        if (rms < 0.0015) {
+        const silenceThreshold = ios ? 0.00045 : 0.001;
+        if (rms < silenceThreshold) {
           quietSinceRef.current ??= Date.now();
-          if (Date.now() - quietSinceRef.current > 10_000) setError('No microphone input has been detected for several seconds. Check the microphone indicator and phone position.');
+          if (Date.now() - quietSinceRef.current > 15_000) {
+            setError('Audio meter is not detecting speech. Recording is still active; check the microphone opening, Bluetooth input, and phone position.');
+          }
         } else {
           quietSinceRef.current = null;
-          setError((current) => current.startsWith('No microphone input') ? '' : current);
+          setError((current) => current.startsWith('Audio meter is not detecting speech') ? '' : current);
         }
       }
       frameRef.current = requestAnimationFrame(update);
@@ -91,26 +98,48 @@ export function useRecorder() {
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
       throw new Error('This browser does not support reliable microphone recording.');
     }
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: true, channelCount: 1 }, video: false });
+    const stream = await navigator.mediaDevices.getUserMedia(microphoneCaptureConstraints());
     try {
       const track = assertLiveMicrophoneStream(stream);
-      track.addEventListener('mute', () => setError('The microphone became muted. Recording checkpoints remain preserved; check microphone permission or input settings.'));
+      if (track.muted && !await waitForMicrophoneUnmuted(track, 3000)) {
+        throw new Error('The microphone stayed unavailable after permission was granted. Check the iPhone microphone indicator or audio input route, then retry.');
+      }
+
+      const warnIfStillMuted = () => {
+        if (muteWarningTimerRef.current) clearTimeout(muteWarningTimerRef.current);
+        muteWarningTimerRef.current = setTimeout(() => {
+          if (track.muted && recorderRef.current?.state === 'recording') {
+            setError('The microphone input is temporarily unavailable. Recording checkpoints remain preserved; return to LectureAI and check the iPhone microphone/audio route.');
+          }
+        }, 1500);
+      };
+      track.addEventListener('mute', warnIfStillMuted);
+      track.addEventListener('unmute', () => {
+        if (muteWarningTimerRef.current) clearTimeout(muteWarningTimerRef.current);
+        muteWarningTimerRef.current = null;
+        setError((current) => current.startsWith('The microphone input is temporarily unavailable') ? '' : current);
+      });
       track.addEventListener('ended', () => setError('The microphone audio track ended unexpectedly. Finish the lecture to preserve saved checkpoints.'));
-      await waitForAudibleInput(stream);
+
+      // Safari's live Web Audio meter can occasionally report zero while the
+      // native recorder is usable, so lack of meter activity is advisory on iOS.
+      await waitForAudibleInput(stream, 4000, 0.0015, !isIOSDevice());
 
       streamRef.current = stream;
       lectureIdRef.current = lectureId;
       chunkIndexRef.current = 0;
       pendingWritesRef.current = [];
       const mimeType = preferredRecordingMimeType();
-      mimeTypeRef.current = mimeType;
-      const recorder = mimeType ? new MediaRecorder(stream, { mimeType, audioBitsPerSecond: 128_000 }) : new MediaRecorder(stream);
+      const options = mediaRecorderOptions(mimeType);
+      const recorder = options ? new MediaRecorder(stream, options) : new MediaRecorder(stream);
       recorderRef.current = recorder;
+      mimeTypeRef.current = recorder.mimeType || mimeType;
       recorder.ondataavailable = (event) => {
         if (!event.data.size) return;
         const index = chunkIndexRef.current++;
         setChunkCount(index + 1);
-        const write = saveAudioChunk({ id: `${lectureId}-${String(index).padStart(8, '0')}`, lectureId, index, blob: event.data, mimeType: recorder.mimeType, createdAt: new Date().toISOString() });
+        const chunkMimeType = event.data.type || recorder.mimeType || mimeTypeRef.current;
+        const write = saveAudioChunk({ id: `${lectureId}-${String(index).padStart(8, '0')}`, lectureId, index, blob: event.data, mimeType: chunkMimeType, createdAt: new Date().toISOString() });
         pendingWritesRef.current.push(write);
         write.catch(() => setError('A recording checkpoint could not be saved. Check available storage.'));
       };
@@ -144,7 +173,9 @@ export function useRecorder() {
     setDuration(elapsedRef.current);
     if (intervalRef.current) clearInterval(intervalRef.current);
     intervalRef.current = null;
-    streamRef.current?.getAudioTracks().forEach((track) => { track.enabled = false; });
+    // Safari's MediaRecorder pause already stops encoded output. Keeping the
+    // iOS track enabled avoids tearing down and rebuilding the microphone route.
+    if (!isIOSDevice()) streamRef.current?.getAudioTracks().forEach((track) => { track.enabled = false; });
     wakeLockRef.current?.release().catch(() => undefined);
     wakeLockRef.current = null;
     quietSinceRef.current = null;
@@ -159,8 +190,9 @@ export function useRecorder() {
     if (!recorder || recorder.state !== 'paused') throw new Error('The current recording is not stopped.');
     const stream = streamRef.current;
     if (!stream) throw new Error('The microphone stream is no longer available. Start a new recording.');
-    stream.getAudioTracks().forEach((track) => { track.enabled = true; });
-    assertLiveMicrophoneStream(stream);
+    if (!isIOSDevice()) stream.getAudioTracks().forEach((track) => { track.enabled = true; });
+    const track = assertLiveMicrophoneStream(stream);
+    if (track.muted && !await waitForMicrophoneUnmuted(track, 2500)) throw new Error('The microphone did not become available again. Save this lecture and start a new recording.');
     await audioContextRef.current?.resume().catch(() => undefined);
     const resumed = new Promise<void>((resolve) => recorder.addEventListener('resume', () => resolve(), { once: true }));
     recorder.resume();
