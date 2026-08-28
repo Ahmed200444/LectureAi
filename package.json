@@ -15,7 +15,7 @@
     "check": "npm run typecheck && npm run lint && npm run test && npm run build"
   },
   "dependencies": {
-    "@huggingface/transformers": "^4.2.0",
+    "browser-whisper": "^1.1.0",
     "docx": "^9.7.1",
     "dompurify": "^3.4.14",
     "idb": "^8.0.3",
