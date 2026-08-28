@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { deleteAudioChunks, finalizeAudio, saveAudioChunk } from '../lib/db';
-import { assertLiveMicrophoneStream, validatePlayableAudio } from '../lib/audio-validation';
+import { assertLiveMicrophoneStream, validatePlayableAudio, waitForAudibleInput } from '../lib/audio-validation';
 import { preferredRecordingMimeType } from '../lib/device';
 
 type WakeLockSentinelLike = { release: () => Promise<void> };
@@ -69,8 +69,6 @@ export function useRecorder() {
     const samples = new Uint8Array(analyser.frequencyBinCount);
     const update = () => {
       if (context.state !== 'running') {
-        // iOS standalone PWAs can briefly suspend WebAudio while the MediaRecorder
-        // keeps capturing correctly. A suspended meter is not a muted microphone.
         setLevel(0);
         quietSinceRef.current = null;
         frameRef.current = requestAnimationFrame(update);
@@ -108,8 +106,10 @@ export function useRecorder() {
     try {
       const track = assertLiveMicrophoneStream(stream);
       track.addEventListener('ended', () => setError('The microphone audio track ended unexpectedly. Finish the lecture to preserve saved checkpoints.'));
-      // Do not reject Safari's transient track.muted flag. The MediaRecorder output and
-      // live analyser are the authoritative checks for real captured audio.
+      const audible = await waitForAudibleInput(stream, 5000);
+      if (!audible) {
+        throw new Error('Microphone permission is on, but LectureAI could not detect real sound. Speak near the iPhone/iPad, make sure the microphone is not covered, then try again.');
+      }
 
       streamRef.current = stream;
       lectureIdRef.current = lectureId;
@@ -122,7 +122,6 @@ export function useRecorder() {
           ? new MediaRecorder(stream, { mimeType: requestedMimeType, audioBitsPerSecond: 128_000 })
           : new MediaRecorder(stream);
       } catch {
-        // Some Safari builds advertise a MIME type but reject constructor options.
         recorder = new MediaRecorder(stream);
       }
       recorderRef.current = recorder;
