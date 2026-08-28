@@ -81,11 +81,13 @@ export function useRecorder() {
         if (rms < silenceThreshold) {
           quietSinceRef.current ??= Date.now();
           if (Date.now() - quietSinceRef.current > 15_000) {
-            setError('Audio meter is not detecting speech. Recording is still active; check the microphone opening, Bluetooth input, and phone position.');
+            setError(ios
+              ? 'The live iPhone/iPad meter is quiet, but recording is still active. Check the microphone opening, Bluetooth input, and phone/tablet position.'
+              : 'Audio meter is not detecting speech. Recording is still active; check the microphone opening, Bluetooth input, and device position.');
           }
         } else {
           quietSinceRef.current = null;
-          setError((current) => current.startsWith('Audio meter is not detecting speech') ? '' : current);
+          setError((current) => current.startsWith('The live iPhone/iPad meter is quiet') || current.startsWith('Audio meter is not detecting speech') ? '' : current);
         }
       }
       frameRef.current = requestAnimationFrame(update);
@@ -101,23 +103,26 @@ export function useRecorder() {
     const stream = await navigator.mediaDevices.getUserMedia(microphoneCaptureConstraints());
     try {
       const track = assertLiveMicrophoneStream(stream);
-      if (track.muted && !await waitForMicrophoneUnmuted(track, 3000)) {
-        throw new Error('The microphone stayed unavailable after permission was granted. Check the iPhone microphone indicator or audio input route, then retry.');
+      if (!isIOSDevice() && track.muted && !await waitForMicrophoneUnmuted(track, 3000)) {
+        throw new Error('The microphone stayed unavailable after permission was granted. Check the microphone input route, then retry.');
       }
+      if (isIOSDevice() && track.muted) void waitForMicrophoneUnmuted(track, 1200);
 
       const warnIfStillMuted = () => {
         if (muteWarningTimerRef.current) clearTimeout(muteWarningTimerRef.current);
         muteWarningTimerRef.current = setTimeout(() => {
           if (track.muted && recorderRef.current?.state === 'recording') {
-            setError('The microphone input is temporarily unavailable. Recording checkpoints remain preserved; return to LectureAI and check the iPhone microphone/audio route.');
+            setError(isIOSDevice()
+              ? 'iOS reports a temporary microphone interruption. Recording remains active and checkpoints are preserved; return to LectureAI and check the current audio route.'
+              : 'The microphone input is temporarily unavailable. Recording checkpoints remain preserved; check the microphone/audio route.');
           }
-        }, 1500);
+        }, isIOSDevice() ? 3000 : 1500);
       };
       track.addEventListener('mute', warnIfStillMuted);
       track.addEventListener('unmute', () => {
         if (muteWarningTimerRef.current) clearTimeout(muteWarningTimerRef.current);
         muteWarningTimerRef.current = null;
-        setError((current) => current.startsWith('The microphone input is temporarily unavailable') ? '' : current);
+        setError((current) => current.startsWith('iOS reports a temporary microphone interruption') || current.startsWith('The microphone input is temporarily unavailable') ? '' : current);
       });
       track.addEventListener('ended', () => setError('The microphone audio track ended unexpectedly. Finish the lecture to preserve saved checkpoints.'));
 
@@ -192,7 +197,7 @@ export function useRecorder() {
     if (!stream) throw new Error('The microphone stream is no longer available. Start a new recording.');
     if (!isIOSDevice()) stream.getAudioTracks().forEach((track) => { track.enabled = true; });
     const track = assertLiveMicrophoneStream(stream);
-    if (track.muted && !await waitForMicrophoneUnmuted(track, 2500)) throw new Error('The microphone did not become available again. Save this lecture and start a new recording.');
+    if (!isIOSDevice() && track.muted && !await waitForMicrophoneUnmuted(track, 2500)) throw new Error('The microphone did not become available again. Save this lecture and start a new recording.');
     await audioContextRef.current?.resume().catch(() => undefined);
     const resumed = new Promise<void>((resolve) => recorder.addEventListener('resume', () => resolve(), { once: true }));
     recorder.resume();
