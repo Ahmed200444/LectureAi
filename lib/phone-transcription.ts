@@ -7,6 +7,7 @@ type WorkerMessage = {
   loaded?: number;
   total?: number;
   model?: string;
+  precision?: string;
   message?: string;
   payload?: unknown;
 };
@@ -39,7 +40,9 @@ async function decodeTo16Khz(blob: Blob) {
   try {
     const decoded = await context.decodeAudioData(await blob.arrayBuffer());
     if (decoded.sampleRate === 16_000 && decoded.numberOfChannels >= 1) {
-      return new Float32Array(decoded.getChannelData(0));
+      // Return the browser-owned channel directly. The buffer is transferred to the
+      // worker immediately, avoiding a second lecture-sized Float32Array allocation.
+      return decoded.getChannelData(0);
     }
 
     const outputLength = Math.max(1, Math.ceil(decoded.duration * 16_000));
@@ -49,7 +52,7 @@ async function decodeTo16Khz(blob: Blob) {
     source.connect(offline.destination);
     source.start();
     const rendered = await offline.startRendering();
-    return new Float32Array(rendered.getChannelData(0));
+    return rendered.getChannelData(0);
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Audio decoding failed.';
     throw new Error(`The saved recording could not be prepared for on-device transcription. ${message}`);
@@ -80,7 +83,7 @@ export async function preparePhoneTranscriptionModel(onProgress: (update: Transc
         const downloaded = message.total ? ` · ${Math.round((message.loaded || 0) / 1024 / 1024)} of ${Math.round(message.total / 1024 / 1024)} MB` : '';
         onProgress({ progress: Math.max(5, Math.min(95, Math.round(message.progress || 0))), message: `Preparing multilingual Whisper for offline use${downloaded}…` });
       } else if (message.type === 'model-ready') {
-        onProgress({ progress: 96, message: `Model loaded: ${message.model || 'multilingual Whisper'}…` });
+        onProgress({ progress: 96, message: `Model loaded: ${message.model || 'multilingual Whisper'}${message.precision ? ` (${message.precision})` : ''}…` });
       } else if (message.id === id && message.type === 'result') {
         cleanUp();
         const model = String((message.payload as { model?: unknown } | undefined)?.model || 'multilingual Whisper');
@@ -103,7 +106,10 @@ export async function transcribeOnPhone(
   onProgress: (update: TranscriptionProgress) => void,
   onModelReady: () => void,
 ) {
-  onProgress({ progress: 6, message: 'Preparing the saved recording at 16 kHz for private on-device transcription…' });
+  onProgress({ progress: 4, message: 'Preparing the saved recording at 16 kHz for private on-device transcription…' });
+  if (audio.size > 250 * 1024 * 1024) {
+    onProgress({ progress: 5, message: 'This is a large lecture. LectureAI will still try on-device transcription, but iOS memory may be the limiting factor; the original recording remains safe.' });
+  }
   const pcm = await decodeTo16Khz(audio);
   const id = `${lectureId}-${crypto.randomUUID()}`;
 
@@ -119,7 +125,7 @@ export async function transcribeOnPhone(
       if (reset) resetWorker(instance);
       reject(new Error(message));
     };
-    const workerError = () => fail('The on-device speech worker stopped unexpectedly, usually because the phone ran low on memory. Your original recording is still safe. Retry, or use Maximum Accuracy on Windows for a long lecture.', true);
+    const workerError = () => fail('The on-device speech worker stopped unexpectedly, usually because iOS ran low on memory. Your original recording is still safe. Retry after closing other apps, or use Maximum Accuracy on Windows for a long lecture.', true);
     const messageError = () => fail('The phone could not pass audio to the on-device speech worker. Your original recording is still safe.', true);
     const listener = (event: MessageEvent<WorkerMessage>) => {
       const message = event.data;
@@ -128,7 +134,7 @@ export async function transcribeOnPhone(
         onProgress({ progress: Math.max(8, Math.min(65, Math.round((message.progress || 0) * .55) + 8)), message: `Downloading or loading the multilingual phone model${downloaded}…` });
       } else if (message.type === 'model-ready') {
         onModelReady();
-        onProgress({ progress: 68, message: `Phone model ready (${message.model || 'multilingual Whisper'}) · transcribing English and Arabic locally…` });
+        onProgress({ progress: 68, message: `Phone model ready (${message.model || 'multilingual Whisper'}${message.precision ? `, ${message.precision}` : ''}) · transcribing English, Egyptian Arabic, MSA, and mixed technical speech locally…` });
       } else if (message.type === 'transcription-progress') {
         onProgress({ progress: message.progress || 72, message: message.message || 'Transcribing on this device…' });
       } else if (message.id === id && message.type === 'result') {
