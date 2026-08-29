@@ -9,7 +9,9 @@ const phone = readFileSync(new URL('../lib/phone-transcription.ts', import.meta.
 const micTest = readFileSync(new URL('../components/MicTest.tsx', import.meta.url), 'utf8');
 const flow = readFileSync(new URL('../components/RecordingFlow.tsx', import.meta.url), 'utf8');
 const exporter = readFileSync(new URL('../lib/export.ts', import.meta.url), 'utf8');
+const database = readFileSync(new URL('../lib/db.ts', import.meta.url), 'utf8');
 const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+const helper = readFileSync(new URL('../local-ai/server.py', import.meta.url), 'utf8');
 
 assert.match(validation, /track\.muted/);
 assert.match(validation, /waitForAudibleInput/);
@@ -21,6 +23,8 @@ assert.doesNotMatch(recorder, /verifyMicrophoneCapture\(stream\)/);
 assert.match(recorder, /audioBitsPerSecond: 192_000/);
 assert.match(recorder, /recorder\.start\(5_000\)/);
 assert.match(recorder, /delayed a recording checkpoint/);
+assert.match(database, /new Blob\(chunks\.map\(\(chunk\) => chunk\.blob\)/);
+assert.doesNotMatch(database, /decodeAudioData|OfflineAudioContext|AudioBufferSourceNode/);
 assert.match(micTest, /lectureAudioConstraints\(\)/);
 assert.match(micTest, /I can hear it clearly/);
 assert.match(flow, /disabled=\{!micVerified\}/);
@@ -40,9 +44,15 @@ assert.match(phone, /for \(const startModelIndex of \[0, 1, 2\]\)/);
 assert.match(phone, /section could not be processed after automatic retries/);
 assert.match(phone, /text: '\[inaudible\]'/);
 assert.match(phone, /preparePhoneTranscriptionModel/);
+assert.match(phone, /preparationPromise/);
+assert.match(phone, /Starting the speech model and preparing audio in parallel/);
+assert.match(phone, /Promise\.all\(\[decodePromise, warmup\.then/);
 assert.match(phone, /audio\.size > 250 \* 1024 \* 1024/);
 assert.match(exporter, /nav\.share/);
 assert.doesNotMatch(app, /8 GB local safety limit/);
 assert.match(app, /Windows helper\/FFmpeg will validate and transcribe it/);
+assert.doesNotMatch(helper, /MAX_UPLOAD_BYTES|8 GB local safety limit/);
+assert.match(helper, /ensure_upload_space/);
+assert.match(helper, /https:\/\/lecture-ai-blush\.vercel\.app/);
 
-console.log('✓ iPhone/iPad clean recording, resilient windowed transcription, sharing, and Windows-transfer safeguards are present');
+console.log('✓ iPhone/iPad clean recording, seamless checkpoint assembly, fast resilient transcription startup, sharing, and Windows-transfer safeguards are present');
