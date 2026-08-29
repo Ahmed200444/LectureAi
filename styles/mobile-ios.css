@@ -1,0 +1,63 @@
+/* iPhone/iPad and installed-PWA layout safeguards.
+ * viewport-fit=cover lets LectureAI use the full display; these env() insets keep
+ * controls clear of the status area, rounded corners, and Home indicator.
+ */
+
+.lecture-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.export-menu {
+  max-width: calc(100vw - 30px);
+}
+
+@media (max-width: 1100px) {
+  .lecture-actions {
+    width: 100%;
+    margin-left: 0;
+  }
+}
+
+@media (max-width: 820px) {
+  .workspace {
+    padding-top: calc(24px + env(safe-area-inset-top));
+    padding-bottom: calc(95px + env(safe-area-inset-bottom));
+  }
+
+  .sidebar {
+    height: calc(69px + env(safe-area-inset-bottom));
+    padding-bottom: calc(7px + env(safe-area-inset-bottom));
+  }
+
+  .lecture-page {
+    padding-bottom: calc(132px + env(safe-area-inset-bottom));
+  }
+
+  .lecture-page-header {
+    padding-top: calc(20px + env(safe-area-inset-top));
+  }
+
+  .lecture-actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .recording-screen header {
+    padding-top: calc(20px + env(safe-area-inset-top));
+  }
+
+  .audio-player {
+    min-height: calc(119px + env(safe-area-inset-bottom));
+    padding-bottom: calc(13px + env(safe-area-inset-bottom));
+  }
+
+  .toast {
+    bottom: calc(136px + env(safe-area-inset-bottom));
+  }
+}
+
+@media (max-width: 420px) {
+  .lecture-actions {
+    grid-template-columns: 1fr;
+  }
+}
