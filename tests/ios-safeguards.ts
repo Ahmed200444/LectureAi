@@ -13,6 +13,7 @@ const database = readFileSync(new URL('../lib/db.ts', import.meta.url), 'utf8');
 const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
 const helper = readFileSync(new URL('../local-ai/server.py', import.meta.url), 'utf8');
 const hostedLauncher = readFileSync(new URL('../start-helper-for-hosted-site.bat', import.meta.url), 'utf8');
+const serviceWorker = readFileSync(new URL('../public/sw.js', import.meta.url), 'utf8');
 
 assert.match(validation, /track\.muted/);
 assert.match(validation, /waitForAudibleInput/);
@@ -59,7 +60,10 @@ assert.match(app, /Windows helper\/FFmpeg will validate and transcribe it/);
 assert.doesNotMatch(helper, /MAX_UPLOAD_BYTES|8 GB local safety limit/);
 assert.match(helper, /ensure_upload_space/);
 assert.match(helper, /https:\/\/lecture-ai-blush\.vercel\.app/);
+assert.match(helper, /warm_configured_model/);
+assert.match(helper, /load_model\(model, MODELS_DIR\)/);
 assert.match(hostedLauncher, /https:\/\/lecture-ai-blush\.vercel\.app/);
 assert.doesNotMatch(hostedLauncher, /lectureai-ahmed\.ahmedalkadi02\.chatgpt\.site/);
+assert.match(serviceWorker, /lectureai-shell-v6/);
 
-console.log('✓ iPhone/iPad raw recording, seamless checkpoints, fast resilient transcription, sharing, and Vercel-to-Windows safeguards are present');
+console.log('✓ iPhone/iPad raw recording, seamless checkpoints, fast resilient transcription, PWA refresh, sharing, and Vercel-to-Windows safeguards are present');
