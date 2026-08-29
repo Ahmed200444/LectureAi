@@ -93,8 +93,6 @@ export function LectureDetail({ lecture, course, settings, onSettingsChange, fol
   async function importTranscript(file: File) {
     setProcessing('Checking transcript segments…');
     try {
-      // No artificial LectureAI transcript-file or segment-count quota is applied here.
-      // The browser/device memory available is the practical limit for an imported JSON file.
       const segments = normalizeTranscript(JSON.parse(await file.text()), lecture.id);
       const duration = Math.max(lecture.duration, segments.at(-1)?.endTime || 0);
       const checking = { ...lecture, segments, duration, status: 'generating-notes' as const, statusMessage: 'Transcript imported · generating editable notes', processingProgress: 94 };
@@ -202,7 +200,8 @@ export function LectureDetail({ lecture, course, settings, onSettingsChange, fol
   }
 
   async function removeLecture() {
-    if (!confirm(`Delete “${lecture.title}”, its original recording, transcript, notes, and attachments from this device? This cannot be undone.`)) return;
+    if (!confirm(`Delete “${lecture.title}”, its original recording, transcript, notes, bookmarks, checkpoints, and attachments from this device? This cannot be undone.`)) return;
+    audioRef.current?.pause();
     await deleteLectureData(lecture.id);
     onDeleted();
   }
@@ -220,6 +219,7 @@ export function LectureDetail({ lecture, course, settings, onSettingsChange, fol
             {lecture.segments.length > 0 && <button className="secondary-button" onClick={() => setTab('corrected')}><Pencil size={17} /> Edit transcript</button>}
             <button className="secondary-button" onClick={runComputerTranscription} disabled={['preparing', 'transcribing', 'generating-notes'].includes(lecture.status)}><Sparkles size={17} /> {detectDeviceKind() === 'windows' ? 'Transcribe on computer' : 'Send to computer'}</button>
             <div className="menu-wrap"><button className="secondary-button" onClick={() => setShowExport(!showExport)}><Download size={17} /> Export <ChevronDown size={14} /></button>{showExport && <div className="export-menu"><button onClick={() => exportDocx(hasCourse, lecture)}>Word document (.docx)</button><button onClick={() => printPdf(hasCourse, lecture)}>Print / Save as PDF</button><button onClick={() => exportMarkdown(hasCourse, lecture, 'combined')}>Combined Markdown</button><button onClick={() => exportMarkdown(hasCourse, lecture, 'notes')}>Notes Markdown</button><button onClick={() => exportTranscriptText(hasCourse, lecture)}>Transcript text</button><button onClick={exportOriginalAudio}>Original audio</button></div>}</div>
+            <button className="secondary-button danger-text" onClick={removeLecture}><Trash2 size={17} /> Delete lecture</button>
           </div>
         </div>
         <div className={`processing-strip status-${lecture.status}`}><span>{processing || lecture.statusMessage || lecture.status}</span>{typeof lecture.processingProgress === 'number' && lecture.processingProgress < 100 && <div className="processing-progress" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={lecture.processingProgress}><i style={{ width: `${lecture.processingProgress}%` }} /></div>}{lecture.status === 'interrupted' && <button onClick={recoverRecording}><RotateCcw size={14} /> Recover recording</button>}</div>
@@ -237,7 +237,7 @@ export function LectureDetail({ lecture, course, settings, onSettingsChange, fol
           <div className="accuracy-grid"><article><Gauge size={22} /><h3>Transcribe on Computer</h3><p>{detectDeviceKind() === 'windows' ? 'The saved recording is sent only to the loopback Windows helper and transcribed locally with the model configured for this computer.' : 'Export this original recording, transfer it to your Windows laptop, then import it into LectureAI there. A phone/iPad cannot connect to the laptop’s 127.0.0.1 helper directly.'}</p><button className="primary-button" onClick={runComputerTranscription}>{detectDeviceKind() === 'windows' ? 'Connect & transcribe' : 'Export for Windows'}</button></article><article><Languages size={22} /><h3>Transcribe on This Device</h3><p>Downloads a multilingual on-device model once, then keeps recordings on this device. It is smaller and may be less accurate than the computer model.</p><button className="secondary-button" onClick={runPhoneTranscription}>{settings.phoneModelInstalled ? 'Transcribe on this device' : 'Download model & transcribe'}</button></article></div>
           <section className="file-drop"><Upload size={25} /><h3>Advanced transcript import</h3><p>Use timestamped JSON only as a backup or developer workflow. LectureAI does not impose an artificial transcript file-size or segment-count quota.</p><button className="secondary-button" onClick={() => importRef.current?.click()}><FileJson size={17} /> Import transcript JSON</button></section>
           <section className="file-drop"><FileText size={25} /><h3>Slides and course context</h3><p>PDFs, slide exports, and vocabulary files remain local. Add extracted terminology to the course glossary so it guides recognition without overriding audio.</p><button className="secondary-button" onClick={() => attachmentRef.current?.click()}><Upload size={17} /> Add files</button>{lecture.attachments.length > 0 && <ul className="attachment-list">{lecture.attachments.map((attachment) => <li key={attachment.id}><FileText size={16} /><span>{attachment.name}</span><small>{formatBytes(attachment.size)}</small></li>)}</ul>}</section>
-          <div className="danger-zone"><div><h3>Delete recording & lecture</h3><p>Deletes the original recording, lecture, transcript, notes, checkpoints, and attachments from this device.</p></div><button className="danger-button" onClick={removeLecture}><Trash2 size={16} /> Delete recording & lecture</button></div>
+          <div className="danger-zone"><div><h3>Delete recording & lecture</h3><p>Deletes the original recording, lecture, transcript, notes, bookmarks, checkpoints, and attachments from this device.</p></div><button className="danger-button" onClick={removeLecture}><Trash2 size={16} /> Delete recording & lecture</button></div>
         </section>}
       </section>
 
