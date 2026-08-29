@@ -81,8 +81,6 @@ export function RecordingFlow({ courses, onClose, onSaved, onOpenLecture }: Reco
     try {
       setSetupError('');
       await navigator.storage?.persist?.().catch(() => false);
-      // recorder.start performs an automated signal check when WebAudio is available;
-      // MicTest has already required playback confirmation of a real recorded sample.
       await recorder.start(newLecture.id);
       await saveLecture(newLecture);
       setLecture(newLecture);
@@ -172,7 +170,7 @@ export function RecordingFlow({ courses, onClose, onSaved, onOpenLecture }: Reco
           <h1>{lecture.title}</h1>
           <div className="recording-clock">{formatTime(recorder.duration, true)}</div>
           <div className="big-meter" aria-label={`Audio level ${Math.round(recorder.level * 100)} percent`}><i style={{ width: `${recorder.isPaused ? 0 : Math.max(1, recorder.level * 100)}%` }} /></div>
-          <p className={`level-label ${!recorder.isPaused && recorder.level < .04 ? 'warn' : ''}`}>{recorder.isPaused ? 'Stopped safely — continuing will add audio to this same recording.' : recorder.level < .04 ? 'Audio is quiet — check phone position' : recorder.level > .94 ? 'Clipping risk — move the phone farther away' : 'Audio level looks good'}</p>
+          <p className={`level-label ${!recorder.isPaused && recorder.level < .04 ? 'warn' : ''}`}>{recorder.isPaused ? 'Stopped safely — continuing will add audio to this same recording.' : recorder.level < .04 ? 'Audio is quiet — check device position' : recorder.level > .94 ? 'Clipping risk — move the device farther away' : 'Audio level looks good'}</p>
           <div className="checkpoint-status"><ShieldCheck size={16} /> {recorder.chunkCount} secure checkpoints saved</div>
           {visibilityWarning && <div className="inline-warning"><AlertTriangle size={17} /> iOS/iPadOS may suspend browser recording in the background. Return to LectureAI and keep the screen awake.</div>}
           {storageWarning && <div className="inline-warning"><AlertTriangle size={17} /> {storageWarning}</div>}
@@ -197,8 +195,8 @@ export function RecordingFlow({ courses, onClose, onSaved, onOpenLecture }: Reco
         <dl className="save-details"><div><dt>Duration</dt><dd>{formatTime(lecture.duration, true)}</dd></div><div><dt>Size</dt><dd>{formatBytes(lecture.size)}</dd></div><div><dt>Marks</dt><dd>{lecture.bookmarks.length}</dd></div></dl>
         <div className="post-actions">
           {lecture.status === 'interrupted' ? <button className="primary-button" onClick={() => onOpenLecture(lecture)}><HardDrive size={18} /> Open recovery</button> : <>
-            <button className="primary-button" onClick={() => onOpenLecture(lecture)}><HardDrive size={18} /> Maximum accuracy</button>
-            <button className="secondary-button" onClick={() => onOpenLecture(lecture)}><Mic size={18} /> Transcribe on phone</button>
+            <button className="primary-button" onClick={() => onOpenLecture(lecture)}><HardDrive size={18} /> Open transcript options</button>
+            <button className="secondary-button" onClick={() => onOpenLecture(lecture)}><Mic size={18} /> Transcribe on this device</button>
             <button className="secondary-button" onClick={exportAudio}><Download size={18} /> Share / export original audio</button>
           </>}
           <button className="secondary-button" onClick={prepareNewRecording}><FilePlus2 size={18} /> Start a new recording</button>
