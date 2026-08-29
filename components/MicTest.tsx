@@ -3,7 +3,18 @@
 import { Check, Mic, Square, Volume1, Volume2, VolumeX } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { assertLiveMicrophoneStream, validatePlayableAudio } from '../lib/audio-validation';
-import { deviceLabel, isStandaloneApp, preferredRecordingMimeType } from '../lib/device';
+import { deviceLabel, isStandaloneApp, lectureAudioConstraints, preferredRecordingMimeType } from '../lib/device';
+
+function grantedSettingsText(track: MediaStreamTrack) {
+  const settings = track.getSettings?.() || {};
+  const parts: string[] = [];
+  if (settings.sampleRate) parts.push(`${settings.sampleRate} Hz`);
+  if (settings.channelCount) parts.push(`${settings.channelCount} channel${settings.channelCount === 1 ? '' : 's'}`);
+  if (typeof settings.autoGainControl === 'boolean') parts.push(`AGC ${settings.autoGainControl ? 'on' : 'off'}`);
+  if (typeof settings.noiseSuppression === 'boolean') parts.push(`noise suppression ${settings.noiseSuppression ? 'on' : 'off'}`);
+  if (typeof settings.echoCancellation === 'boolean') parts.push(`echo cancellation ${settings.echoCancellation ? 'on' : 'off'}`);
+  return parts.join(' · ');
+}
 
 export function MicTest({ onVerified, onReset }: { onVerified?: () => void; onReset?: () => void }) {
   const [testing, setTesting] = useState(false);
@@ -11,6 +22,7 @@ export function MicTest({ onVerified, onReset }: { onVerified?: () => void; onRe
   const [level, setLevel] = useState(0);
   const [sampleUrl, setSampleUrl] = useState('');
   const [confirmed, setConfirmed] = useState(false);
+  const [grantedSettings, setGrantedSettings] = useState('');
   const [message, setMessage] = useState(`Record a 12-second sample from the ${deviceLabel()} position you will use during class${isStandaloneApp() ? ' in the installed LectureAI app' : ''}.`);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -39,18 +51,22 @@ export function MicTest({ onVerified, onReset }: { onVerified?: () => void; onRe
       setSeconds(0);
       setLevel(0);
       setConfirmed(false);
+      setGrantedSettings('');
       onReset?.();
       peakRef.current = 0;
       meterReliableRef.current = true;
       chunksRef.current = [];
       if (sampleUrl) { URL.revokeObjectURL(sampleUrl); setSampleUrl(''); }
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: true, channelCount: 1 }, video: false });
-      assertLiveMicrophoneStream(stream);
+
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: lectureAudioConstraints(), video: false });
+      const track = assertLiveMicrophoneStream(stream);
+      setGrantedSettings(grantedSettingsText(track));
       streamRef.current = stream;
+
       const mimeType = preferredRecordingMimeType();
       let recorder: MediaRecorder;
       try {
-        recorder = mimeType ? new MediaRecorder(stream, { mimeType, audioBitsPerSecond: 128_000 }) : new MediaRecorder(stream);
+        recorder = mimeType ? new MediaRecorder(stream, { mimeType, audioBitsPerSecond: 192_000 }) : new MediaRecorder(stream, { audioBitsPerSecond: 192_000 });
       } catch {
         recorder = new MediaRecorder(stream);
       }
@@ -59,20 +75,23 @@ export function MicTest({ onVerified, onReset }: { onVerified?: () => void; onRe
       recorder.onstop = () => { void finishSample(recorder); };
       recorder.start(500);
       setTesting(true);
+
       const started = Date.now();
       timerRef.current = setInterval(() => setSeconds(Math.min(12, (Date.now() - started) / 1000)), 200);
       timeoutRef.current = setTimeout(() => stopTest(), 12_000);
+
       const AudioContextClass = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
       if (!AudioContextClass) { meterReliableRef.current = false; return; }
       const context = new AudioContextClass();
       contextRef.current = context;
       await context.resume().catch(() => undefined);
       if (context.state !== 'running') {
-        // The recording can still be valid in iOS standalone mode even if the visual
-        // WebAudio meter is temporarily suspended.
+        // The recording can still be valid in iOS/iPadOS standalone mode even if the
+        // visual WebAudio meter is temporarily suspended.
         meterReliableRef.current = false;
         return;
       }
+
       const analyser = context.createAnalyser();
       analyser.fftSize = 256;
       context.createMediaStreamSource(stream).connect(analyser);
@@ -100,10 +119,10 @@ export function MicTest({ onVerified, onReset }: { onVerified?: () => void; onRe
       const url = URL.createObjectURL(blob);
       setSampleUrl(url);
       const peak = peakRef.current;
-      if (!meterReliableRef.current) setMessage('Sample saved. The iPhone visual meter was unavailable, so play the sample and confirm that you can clearly hear the speech.');
-      else if (peak < 0.03) setMessage('The meter detected a quiet sample. Play it back; if speech is hard to hear, check microphone position and repeat the test.');
-      else if (peak > 0.93) setMessage('Sample saved, but clipping was detected. Play it back, then move the device farther away if speech sounds distorted.');
-      else setMessage('Sample saved. Play it back and confirm that you can clearly hear the speech before class.');
+      if (!meterReliableRef.current) setMessage('Sample saved. The visual meter was unavailable, so play the sample and confirm the speech is clear and continuous.');
+      else if (peak < 0.03) setMessage('The sample is quiet. Play it back from the same distance you expect in class; LectureAI will normalize a derived copy for transcription without changing the original recording.');
+      else if (peak > 0.93) setMessage('Sample saved, but clipping was detected. Move the device a little farther from the sound source if speech sounds distorted.');
+      else setMessage('Sample saved. Play it back and confirm the speech is clear, continuous, and not choppy before class.');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'The microphone sample could not be reloaded.');
     } finally {
@@ -127,13 +146,13 @@ export function MicTest({ onVerified, onReset }: { onVerified?: () => void; onRe
     <section className="mic-test" aria-label="Microphone test">
       <div className="mic-test-head">
         <span className="soft-icon"><Mic size={18} /></span>
-        <div><strong>Test microphone</strong><p>{confirmed ? 'Microphone working — you confirmed the recorded sample is audible.' : message}</p></div>
+        <div><strong>Test microphone</strong><p>{confirmed ? 'Microphone working — you confirmed the recorded sample is clear and continuous.' : message}</p>{grantedSettings && <small>Granted capture: {grantedSettings}</small>}</div>
       </div>
       {testing && <div className="meter-row"><LevelIcon size={17} /><div className="level-track"><i style={{ width: `${Math.max(2, level * 100)}%` }} /></div><span>{Math.ceil(seconds)} / 12s</span></div>}
       <div className="button-row compact">
         {!testing ? <button className="secondary-button" type="button" onClick={startTest}><Mic size={16} /> Start sample</button> : <button className="secondary-button danger-text" type="button" onClick={stopTest}><Square size={15} /> Stop sample</button>}
         {sampleUrl && <audio src={sampleUrl} controls aria-label="Microphone test playback" className="sample-player" />}
-        {sampleUrl && !confirmed && <button className="primary-button" type="button" onClick={() => { setConfirmed(true); onVerified?.(); }}><Check size={15} /> I can hear the sample</button>}
+        {sampleUrl && !confirmed && <button className="primary-button" type="button" onClick={() => { setConfirmed(true); onVerified?.(); }}><Check size={15} /> I can hear it clearly</button>}
       </div>
     </section>
   );
