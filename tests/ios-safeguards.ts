@@ -24,6 +24,8 @@ const main = readFileSync(new URL('../src/main.tsx', import.meta.url), 'utf8');
 // never Safari's transient muted flag alone.
 assert.match(validation, /track\.muted/);
 assert.match(validation, /waitForAudibleInput/);
+assert.match(validation, /verifyMicrophoneCapture/);
+assert.match(validation, /captured sample is silent/);
 assert.match(device, /iPhone\|iPod/);
 assert.match(device, /touchMac/);
 assert.match(device, /isStandaloneApp/);
@@ -40,7 +42,7 @@ assert.match(device, /audio\/mp4;codecs=mp4a\.40\.2/);
 // IndexedDB checkpoint cannot be silently treated as a successful save.
 assert.match(recorder, /lectureAudioConstraints\(\)/);
 assert.match(recorder, /applyLectureAudioPreferences\(track\)/);
-assert.doesNotMatch(recorder, /verifyMicrophoneCapture\(stream\)/);
+assert.match(recorder, /verifyMicrophoneCapture\(stream, 1800\)/);
 assert.match(recorder, /audioBitsPerSecond: 192_000/);
 assert.match(recorder, /recorder\.start\(5_000\)/);
 assert.match(recorder, /delayed a recording checkpoint/);
@@ -123,4 +125,4 @@ assert.match(mobileCss, /safe-area-inset-bottom/);
 assert.match(mobileCss, /\.audio-player/);
 assert.match(mobileCss, /\.lecture-actions/);
 
-console.log('✓ iPhone/iPad recording, unlimited-policy transcription, sharing, deletion, PWA layout, recovery, and Windows-transfer safeguards are present');
+console.log('✓ iPhone/iPad recording, encoded mic proof, unlimited-policy transcription, sharing, deletion, PWA layout, recovery, and Windows-transfer safeguards are present');

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { deleteAudioChunks, finalizeAudio, saveAudioChunk } from '../lib/db';
-import { assertLiveMicrophoneStream, validatePlayableAudio, waitForAudibleInput } from '../lib/audio-validation';
+import { assertLiveMicrophoneStream, validatePlayableAudio, verifyMicrophoneCapture, waitForAudibleInput } from '../lib/audio-validation';
 import { applyLectureAudioPreferences, lectureAudioConstraints, preferredRecordingMimeType } from '../lib/device';
 
 type WakeLockSentinelLike = { release: () => Promise<void> };
@@ -113,10 +113,10 @@ export function useRecorder() {
       await applyLectureAudioPreferences(track);
       track.addEventListener('ended', () => setError('The microphone audio track ended unexpectedly. Finish the lecture to preserve saved checkpoints.'));
 
-      const audible = await waitForAudibleInput(stream, 3000, 0.0005);
-      if (audible === false) {
-        throw new Error('The microphone is available, but no live sound is reaching it. Speak near the device, check that the microphone is unobstructed, and try again.');
-      }
+      // Prove that this exact newly granted stream can produce real encoded,
+      // non-silent microphone audio before the lecture MediaRecorder begins.
+      // This is intentionally independent of Safari's transient track.muted flag.
+      await verifyMicrophoneCapture(stream, 1800);
 
       streamRef.current = stream;
       lectureIdRef.current = lectureId;
