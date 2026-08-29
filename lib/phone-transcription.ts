@@ -7,10 +7,31 @@ type WorkerMessage = {
   loaded?: number;
   total?: number;
   model?: string;
+  modelIndex?: number;
   precision?: string;
   message?: string;
   payload?: unknown;
 };
+
+type WorkerSegment = {
+  start: number;
+  end: number;
+  text: string;
+  confidence?: number;
+  speaker?: string;
+};
+
+type WorkerPayload = {
+  engine?: string;
+  model?: string;
+  modelIndex?: number;
+  precision?: string;
+  segments?: WorkerSegment[];
+};
+
+const SAMPLE_RATE = 16_000;
+const WINDOW_SECONDS = 180;
+const OVERLAP_SECONDS = 5;
 
 let sharedWorker: Worker | null = null;
 
@@ -65,7 +86,7 @@ async function decodeTo16Khz(blob: Blob) {
 
   let context: AudioContext;
   try {
-    context = new AudioContextClass({ sampleRate: 16_000 });
+    context = new AudioContextClass({ sampleRate: SAMPLE_RATE });
   } catch {
     context = new AudioContextClass();
   }
@@ -77,11 +98,11 @@ async function decodeTo16Khz(blob: Blob) {
     if (!decoded.duration || !decoded.numberOfChannels) throw new Error('The browser decoded no usable audio channels.');
 
     let pcm: Float32Array;
-    if (decoded.sampleRate === 16_000) {
+    if (decoded.sampleRate === SAMPLE_RATE) {
       pcm = decoded.getChannelData(0);
     } else {
-      const outputLength = Math.max(1, Math.ceil(decoded.duration * 16_000));
-      const offline = new OfflineAudioContext(1, outputLength, 16_000);
+      const outputLength = Math.max(1, Math.ceil(decoded.duration * SAMPLE_RATE));
+      const offline = new OfflineAudioContext(1, outputLength, SAMPLE_RATE);
       const source = offline.createBufferSource();
       source.buffer = decoded;
       source.connect(offline.destination);
@@ -101,6 +122,82 @@ async function decodeTo16Khz(blob: Blob) {
   }
 }
 
+function runWorkerChunk(
+  id: string,
+  audio: Float32Array,
+  startModelIndex: number,
+  onProgress: (update: TranscriptionProgress) => void,
+  onModelReady: () => void,
+) {
+  return new Promise<WorkerPayload>((resolve, reject) => {
+    const instance = worker();
+    const cleanUp = () => {
+      instance.removeEventListener('message', listener);
+      instance.removeEventListener('error', workerError);
+      instance.removeEventListener('messageerror', messageError);
+    };
+    const fail = (message: string, reset = false) => {
+      cleanUp();
+      if (reset) resetWorker(instance);
+      reject(new Error(message));
+    };
+    const workerError = () => fail('The on-device speech worker stopped unexpectedly.', true);
+    const messageError = () => fail('The device could not communicate with the on-device speech worker.', true);
+    const listener = (event: MessageEvent<WorkerMessage>) => {
+      const message = event.data;
+      if (message.type === 'model-progress') {
+        const downloaded = message.total ? ` · ${Math.round((message.loaded || 0) / 1024 / 1024)} of ${Math.round(message.total / 1024 / 1024)} MB` : '';
+        onProgress({ progress: Math.max(8, Math.min(65, Math.round((message.progress || 0) * .55) + 8)), message: `Downloading or loading the multilingual model${downloaded}…` });
+      } else if (message.type === 'model-ready') {
+        onModelReady();
+        onProgress({ progress: 68, message: `iPhone/iPad model ready (${message.model || 'multilingual Whisper'}${message.precision ? `, ${message.precision}` : ''})…` });
+      } else if (message.type === 'transcription-progress') {
+        onProgress({ progress: message.progress || 72, message: message.message || 'Transcribing on this device…' });
+      } else if (message.id === id && message.type === 'result') {
+        cleanUp();
+        resolve((message.payload || {}) as WorkerPayload);
+      } else if (message.id === id && message.type === 'error') {
+        fail(message.message || 'On-device transcription failed.', true);
+      }
+    };
+    instance.addEventListener('message', listener);
+    instance.addEventListener('error', workerError);
+    instance.addEventListener('messageerror', messageError);
+    instance.postMessage({ id, mode: 'transcribe', audio, startModelIndex }, [audio.buffer]);
+  });
+}
+
+async function transcribeWindowWithRecovery(
+  lectureId: string,
+  pcm: Float32Array,
+  startSample: number,
+  endSample: number,
+  windowIndex: number,
+  onProgress: (update: TranscriptionProgress) => void,
+  onModelReady: () => void,
+) {
+  let lastError: Error | null = null;
+  for (const startModelIndex of [0, 1, 2]) {
+    const windowAudio = pcm.slice(startSample, endSample);
+    try {
+      return await runWorkerChunk(`${lectureId}-window-${windowIndex}-${startModelIndex}`, windowAudio, startModelIndex, onProgress, onModelReady);
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error('On-device transcription window failed.');
+      if (startModelIndex < 2) {
+        onProgress({ progress: 70, message: `A transcription window was interrupted. Restarting the speech worker with a lighter model…` });
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+    }
+  }
+  throw lastError || new Error('This transcription window could not be processed on this device.');
+}
+
+function sameNearbyText(a: WorkerSegment | undefined, b: WorkerSegment) {
+  if (!a) return false;
+  const normalize = (value: string) => value.toLocaleLowerCase().replace(/\s+/g, ' ').replace(/[^\p{L}\p{N}]+/gu, '').trim();
+  return normalize(a.text) === normalize(b.text) && b.start <= a.end + 4;
+}
+
 export async function preparePhoneTranscriptionModel(onProgress: (update: TranscriptionProgress) => void) {
   const id = `prepare-${crypto.randomUUID()}`;
   return new Promise<{ model: string }>((resolve, reject) => {
@@ -115,7 +212,7 @@ export async function preparePhoneTranscriptionModel(onProgress: (update: Transc
       if (reset) resetWorker(instance);
       reject(new Error(message));
     };
-    const workerError = () => fail('The phone model could not be prepared, usually because the browser ran low on memory. You can still record without the model and transcribe later on Windows.', true);
+    const workerError = () => fail('The phone/iPad model could not be prepared, usually because the browser ran low on memory. You can still record without the model and retry preparation after closing other apps.', true);
     const messageError = () => fail('The browser could not communicate with the on-device speech worker.', true);
     const listener = (event: MessageEvent<WorkerMessage>) => {
       const message = event.data;
@@ -132,13 +229,13 @@ export async function preparePhoneTranscriptionModel(onProgress: (update: Transc
         onProgress({ progress: 100, message: `${model} is cached and ready on this device.` });
         resolve({ model });
       } else if (message.id === id && message.type === 'error') {
-        fail(message.message || 'The on-device model could not be prepared.');
+        fail(message.message || 'The on-device model could not be prepared.', true);
       }
     };
     instance.addEventListener('message', listener);
     instance.addEventListener('error', workerError);
     instance.addEventListener('messageerror', messageError);
-    instance.postMessage({ id, mode: 'prepare' });
+    instance.postMessage({ id, mode: 'prepare', startModelIndex: 0 });
   });
 }
 
@@ -150,7 +247,7 @@ export async function transcribeOnPhone(
 ) {
   onProgress({ progress: 4, message: 'Decoding a private transcription copy at 16 kHz…' });
   if (audio.size > 250 * 1024 * 1024) {
-    onProgress({ progress: 5, message: 'This is a large lecture. LectureAI will still try on-device transcription, but iOS/iPadOS memory may be the limiting factor; the original recording remains safe.' });
+    onProgress({ progress: 5, message: 'This is a large lecture. LectureAI will process it in smaller windows to reduce iPhone/iPad memory pressure; the original recording remains safe.' });
   }
 
   const { pcm, signal } = await decodeTo16Khz(audio);
@@ -160,41 +257,74 @@ export async function transcribeOnPhone(
     onProgress({ progress: 7, message: 'Speech level is suitable · original recording remains untouched…' });
   }
 
-  const id = `${lectureId}-${crypto.randomUUID()}`;
-  return new Promise<unknown>((resolve, reject) => {
-    const instance = worker();
-    const cleanUp = () => {
-      instance.removeEventListener('message', listener);
-      instance.removeEventListener('error', workerError);
-      instance.removeEventListener('messageerror', messageError);
-    };
-    const fail = (message: string, reset = false) => {
-      cleanUp();
-      if (reset) resetWorker(instance);
-      reject(new Error(message));
-    };
-    const workerError = () => fail('The on-device speech worker stopped unexpectedly, usually because iOS/iPadOS ran low on memory. Your original recording is still safe. Close other apps and retry, or use Maximum Accuracy on Windows for a long lecture.', true);
-    const messageError = () => fail('The device could not pass decoded audio to the local speech worker. Your original recording is still safe.', true);
-    const listener = (event: MessageEvent<WorkerMessage>) => {
-      const message = event.data;
-      if (message.type === 'model-progress') {
-        const downloaded = message.total ? ` · ${Math.round((message.loaded || 0) / 1024 / 1024)} of ${Math.round(message.total / 1024 / 1024)} MB` : '';
-        onProgress({ progress: Math.max(8, Math.min(65, Math.round((message.progress || 0) * .55) + 8)), message: `Downloading or loading the multilingual phone model${downloaded}…` });
-      } else if (message.type === 'model-ready') {
-        onModelReady();
-        onProgress({ progress: 68, message: `Phone/iPad model ready (${message.model || 'multilingual Whisper'}${message.precision ? `, ${message.precision}` : ''}) · transcribing English, Egyptian Arabic, MSA, and mixed technical speech locally…` });
-      } else if (message.type === 'transcription-progress') {
-        onProgress({ progress: message.progress || 72, message: message.message || 'Transcribing on this device…' });
-      } else if (message.id === id && message.type === 'result') {
-        cleanUp();
-        resolve(message.payload);
-      } else if (message.id === id && message.type === 'error') {
-        fail(`On-device transcription could not finish: ${message.message || 'unknown model error'}. Your original recording is still safe.`);
+  const windowSamples = WINDOW_SECONDS * SAMPLE_RATE;
+  const overlapSamples = OVERLAP_SECONDS * SAMPLE_RATE;
+  const stepSamples = windowSamples - overlapSamples;
+  const starts: number[] = [];
+  for (let start = 0; start < pcm.length; start += stepSamples) starts.push(start);
+
+  const segments: WorkerSegment[] = [];
+  let finalModel = 'multilingual Whisper';
+  let finalPrecision = '';
+  let successfulWindows = 0;
+  let failedWindows = 0;
+
+  for (let index = 0; index < starts.length; index += 1) {
+    const startSample = starts[index];
+    const endSample = Math.min(pcm.length, startSample + windowSamples);
+    const startSeconds = startSample / SAMPLE_RATE;
+    const endSeconds = endSample / SAMPLE_RATE;
+    onProgress({
+      progress: Math.max(10, Math.round(70 + 25 * (index / Math.max(1, starts.length)))),
+      message: `Transcribing lecture section ${index + 1} of ${starts.length} · ${Math.round(startSeconds)}–${Math.round(endSeconds)}s…`,
+    });
+
+    try {
+      const payload = await transcribeWindowWithRecovery(lectureId, pcm, startSample, endSample, index, onProgress, onModelReady);
+      successfulWindows += 1;
+      finalModel = payload.model || finalModel;
+      finalPrecision = payload.precision || finalPrecision;
+      const acceptAfter = index === 0 ? -Infinity : startSeconds + OVERLAP_SECONDS * 0.55;
+
+      for (const raw of payload.segments || []) {
+        const next: WorkerSegment = {
+          start: Math.max(0, Number(raw.start) + startSeconds),
+          end: Math.max(0, Number(raw.end) + startSeconds),
+          text: String(raw.text || '').trim(),
+          confidence: raw.confidence ?? 0,
+          speaker: raw.speaker || 'Professor',
+        };
+        if (!next.text || next.end < acceptAfter) continue;
+        if (sameNearbyText(segments.at(-1), next)) continue;
+        segments.push(next);
       }
-    };
-    instance.addEventListener('message', listener);
-    instance.addEventListener('error', workerError);
-    instance.addEventListener('messageerror', messageError);
-    instance.postMessage({ id, mode: 'transcribe', audio: pcm }, [pcm.buffer]);
-  });
+    } catch {
+      failedWindows += 1;
+      const gapStart = index === 0 ? startSeconds : startSeconds + OVERLAP_SECONDS * 0.55;
+      segments.push({
+        start: gapStart,
+        end: endSeconds,
+        text: '[inaudible]',
+        confidence: 0,
+        speaker: 'Professor',
+      });
+      onProgress({ progress: 75, message: `One section could not be processed after automatic retries. LectureAI kept the rest of the transcript and marked this section for review.` });
+    }
+
+    if (endSample >= pcm.length) break;
+  }
+
+  if (!successfulWindows) {
+    throw new Error('The iPhone/iPad could not process any transcription section after automatic Small, Base, and Tiny model retries. The original recording is still safe.');
+  }
+
+  onProgress({ progress: 98, message: failedWindows ? `Transcript assembled · ${failedWindows} section${failedWindows === 1 ? '' : 's'} marked for review.` : 'Transcript assembled successfully on this device.' });
+  return {
+    engine: 'transformers.js',
+    model: finalModel,
+    precision: finalPrecision,
+    windowed: true,
+    failedWindows,
+    segments,
+  };
 }
