@@ -134,9 +134,8 @@ workerScope.addEventListener('message', async (event: MessageEvent<WorkerRequest
       start: Number(chunk.timestamp[0]) || 0,
       end: Number(chunk.timestamp[1]) || Number(chunk.timestamp[0]) || 0,
       text: chunk.text.trim(),
-      confidence: 0,
       speaker: 'Professor',
-    })) : output.text.trim() ? [{ id: `${id}-phone-1`, start: 0, end: audio.length / 16_000, text: output.text.trim(), confidence: 0, speaker: 'Professor' }] : [];
+    })) : output.text.trim() ? [{ id: `${id}-phone-1`, start: 0, end: audio.length / 16_000, text: output.text.trim(), speaker: 'Professor' }] : [];
 
     workerScope.postMessage({ type: 'result', id, payload: { engine: 'transformers.js', model: finalConfig.id, modelIndex: activeModelIndex, precision: 'fp32 encoder · q4 decoder', segments } });
   } catch (error) {

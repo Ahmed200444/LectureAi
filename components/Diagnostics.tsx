@@ -26,7 +26,8 @@ export function Diagnostics() {
   const [copied, setCopied] = useState(false);
 
   const refresh = useCallback(async () => {
-    const helper = await windowsHelperHealth();
+    const windowsDevice = detectDeviceKind() === 'windows';
+    const helper = windowsDevice ? await windowsHelperHealth() : { available: false as const, error: 'not applicable' };
     const payload = helper.available ? helper.payload : undefined;
     setState({
       device: deviceLabel(),
@@ -38,7 +39,7 @@ export function Diagnostics() {
       mimeType: preferredRecordingMimeType() || 'browser default / unavailable',
       indexedDb: typeof indexedDB !== 'undefined',
       phoneTranscription: phoneTranscriptionSupported(),
-      helper: helper.available ? 'ready' : 'not connected',
+      helper: windowsDevice ? (helper.available ? 'ready' : 'not connected') : 'Windows only · loopback not contacted',
       helperModel: payload?.configured_model ? String(payload.configured_model) : undefined,
       helperVersion: payload?.version ? String(payload.version) : undefined,
     });

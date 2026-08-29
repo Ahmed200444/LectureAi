@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import math
 import os
 import re
 from dataclasses import asdict
@@ -56,10 +55,6 @@ def context_prompt(glossary: Iterable[str]) -> str:
     return f"{base} Course terminology: {', '.join(terms)}" if terms else base
 
 
-def confidence_from_logprob(value: float) -> float:
-    return round(max(0.0, min(1.0, math.exp(value))), 3)
-
-
 def transcribe_audio(
     audio_path: Path,
     model_name: str,
@@ -96,10 +91,12 @@ def transcribe_audio(
     output_segments: list[dict[str, Any]] = []
     for index, segment in enumerate(segments):
         spoken = segment.text.strip()
-        confidence = confidence_from_logprob(segment.avg_logprob)
+        avg_logprob = float(segment.avg_logprob)
         if not spoken:
             continue
-        if confidence < 0.42 and not spoken.startswith("[uncertain]"):
+        # avg_logprob is an uncalibrated model score, not an accuracy percentage.
+        # Use it only as a conservative review heuristic.
+        if avg_logprob < -0.87 and not spoken.startswith("[uncertain]"):
             spoken = f"[uncertain] {spoken}"
         output_segments.append({
             "id": f"segment-{index + 1}",
@@ -107,8 +104,7 @@ def transcribe_audio(
             "end": round(segment.end, 3),
             "text": spoken,
             "language": "unknown",
-            "confidence": confidence,
-            "avg_logprob": round(segment.avg_logprob, 4),
+            "avg_logprob": round(avg_logprob, 4),
             "no_speech_probability": round(segment.no_speech_prob, 4),
             "speaker": "Professor",
             "words": [

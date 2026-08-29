@@ -7,7 +7,7 @@ import { downloadBlob } from '../lib/export';
 import { formatBytes, formatTime } from '../lib/format';
 import type { Course, Lecture } from '../lib/types';
 import { useRecorder } from '../hooks/use-recorder';
-import { deviceLabel, detectDeviceKind } from '../lib/device';
+import { deviceLabel, detectDeviceKind, recordingFileExtension } from '../lib/device';
 import { MicTest } from './MicTest';
 
 interface RecordingFlowProps {
@@ -140,7 +140,7 @@ export function RecordingFlow({ courses, onClose, onSaved, onOpenLecture }: Reco
     if (!lecture) return;
     try {
       const result = await recorder.stop();
-      const updated: Lecture = { ...lecture, duration: result.duration, size: result.blob.size, mimeType: result.mimeType, status: 'transcription-queued', statusMessage: `Audio playback verified · ${recorder.chunkCount} checkpoint${recorder.chunkCount === 1 ? '' : 's'} saved · ready to transcribe`, processingProgress: 0, updatedAt: new Date().toISOString() };
+      const updated: Lecture = { ...lecture, duration: result.duration, size: result.blob.size, mimeType: result.mimeType, status: 'transcription-queued', statusMessage: `Audio playback verified · ${result.chunkCount} checkpoint${result.chunkCount === 1 ? '' : 's'} saved · ready to transcribe`, processingProgress: 0, updatedAt: new Date().toISOString() };
       setLecture(updated);
       await saveLecture(updated);
       onSaved(updated);
@@ -158,7 +158,7 @@ export function RecordingFlow({ courses, onClose, onSaved, onOpenLecture }: Reco
   async function exportAudio() {
     if (!lecture) return;
     const audio = await getAudio(lecture.id);
-    if (audio) downloadBlob(audio.blob, `${lecture.title}.${audio.mimeType.includes('mp4') ? 'm4a' : 'webm'}`);
+    if (audio) downloadBlob(audio.blob, `${lecture.title}.${recordingFileExtension(audio.mimeType || audio.blob.type)}`);
   }
 
   if (stage === 'recording' && lecture) {

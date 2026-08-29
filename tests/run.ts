@@ -6,6 +6,7 @@ import { formatBytes, formatTime, safeFilename } from '../lib/format.ts';
 import { generateNotesHtml } from '../lib/notes.ts';
 import { normalizeTranscript } from '../lib/transcript.ts';
 import { completeTranscription, transcribeWithWindowsHelper } from '../lib/transcription.ts';
+import { recordingFileExtension } from '../lib/device.ts';
 import type { Lecture } from '../lib/types.ts';
 
 const checks: Array<{ name: string; run: () => void | Promise<void> }> = [];
@@ -31,6 +32,28 @@ test('formats short and long timestamps', () => {
 test('formats storage and safe filenames', () => {
   assert.equal(formatBytes(1024 * 1024), '1.0 MB');
   assert.equal(safeFilename('Lecture: 4 / chain?'), 'Lecture- 4 - chain-');
+});
+
+test('maps practical transferred audio types without relabeling them as WebM', () => {
+  assert.equal(recordingFileExtension('audio/mp4'), 'm4a');
+  assert.equal(recordingFileExtension('audio/webm;codecs=opus'), 'webm');
+  assert.equal(recordingFileExtension('audio/mpeg'), 'mp3');
+  assert.equal(recordingFileExtension('audio/aac'), 'aac');
+  assert.equal(recordingFileExtension('audio/ogg'), 'ogg');
+  assert.equal(recordingFileExtension('audio/flac'), 'flac');
+});
+
+test('does not invent transcription confidence when a model provides none', () => {
+  const segment = normalizeTranscript({ engine: 'transformers.js', segments: [{ start: 0, end: 2, text: 'المحاضرة uses a pointer هنا.', confidence: 0 }] }, 'no-fake-confidence')[0];
+  assert.equal(segment.confidence, undefined);
+  assert.equal(segment.manuallyReviewed, false);
+  assert.equal(segment.detectedLanguage, 'mixed');
+});
+
+test('preserves explicit imported confidence without auto-marking human review', () => {
+  const segment = normalizeTranscript({ segments: [{ start: 0, end: 2, text: 'Imported transcript.', confidence: .73 }] }, 'imported-confidence')[0];
+  assert.equal(segment.confidence, .73);
+  assert.equal(segment.manuallyReviewed, false);
 });
 
 test('preserves technical English inside Arabic during transcript import', () => {
@@ -172,9 +195,11 @@ test('keeps mobile recording and transcript length unlimited by policy while gua
   const manifest = readFileSync(new URL('../public/manifest.webmanifest', import.meta.url), 'utf8');
   assert.doesNotMatch(app, /8 GB local safety limit/);
   assert.match(app, /no artificial recording-duration, transcript-length, segment-count, or monthly-minute quota/);
-  assert.match(recorder, /waitForAudibleInput/);
+  assert.doesNotMatch(recorder, /waitForAudibleInput/);
   assert.match(recorder, /recorder\.start\(5_000\)/);
   assert.match(recorder, /checkpointFailureRef/);
+  assert.doesNotMatch(recorder, /track\.enabled = false/);
+  assert.match(recorder, /if \(verified\.duration\) elapsedRef\.current = verified\.duration/);
   assert.match(flow, /disabled=\{!micVerified\}/);
   assert.match(flow, /Audio playback verified/);
   assert.match(flow, /Verify saved lecture audio/);

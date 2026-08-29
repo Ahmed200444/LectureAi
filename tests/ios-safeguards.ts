@@ -7,6 +7,8 @@ const device = readFileSync(new URL('../lib/device.ts', import.meta.url), 'utf8'
 const worker = readFileSync(new URL('../lib/phone-transcriber.worker.ts', import.meta.url), 'utf8');
 const phone = readFileSync(new URL('../lib/phone-transcription.ts', import.meta.url), 'utf8');
 const transcript = readFileSync(new URL('../lib/transcript.ts', import.meta.url), 'utf8');
+const transcription = readFileSync(new URL('../lib/transcription.ts', import.meta.url), 'utf8');
+const engine = readFileSync(new URL('../local-ai/engine.py', import.meta.url), 'utf8');
 const micTest = readFileSync(new URL('../components/MicTest.tsx', import.meta.url), 'utf8');
 const flow = readFileSync(new URL('../components/RecordingFlow.tsx', import.meta.url), 'utf8');
 const detail = readFileSync(new URL('../components/LectureDetail.tsx', import.meta.url), 'utf8');
@@ -25,6 +27,7 @@ const main = readFileSync(new URL('../src/main.tsx', import.meta.url), 'utf8');
 assert.match(validation, /track\.muted/);
 assert.match(validation, /waitForAudibleInput/);
 assert.match(validation, /verifyMicrophoneCapture/);
+assert.match(validation, /preferredRecordingMimeType/);
 assert.match(validation, /captured sample is silent/);
 assert.match(device, /iPhone\|iPod/);
 assert.match(device, /touchMac/);
@@ -47,6 +50,9 @@ assert.match(recorder, /audioBitsPerSecond: 192_000/);
 assert.match(recorder, /recorder\.start\(5_000\)/);
 assert.match(recorder, /delayed a recording checkpoint/);
 assert.match(recorder, /checkpointFailureRef/);
+assert.doesNotMatch(recorder, /waitForAudibleInput/);
+assert.doesNotMatch(recorder, /track\.enabled = false/);
+assert.match(recorder, /if \(verified\.duration\) elapsedRef\.current = verified\.duration/);
 assert.match(recorder, /did not mark this lecture as safely saved/);
 assert.match(database, /new Blob\(chunks\.map\(\(chunk\) => chunk\.blob\)/);
 assert.doesNotMatch(database, /decodeAudioData|OfflineAudioContext|AudioBufferSourceNode/);
@@ -81,6 +87,12 @@ assert.match(phone, /Promise\.all\(\[decodePromise, warmup\.then/);
 assert.match(phone, /audio\.size > 250 \* 1024 \* 1024/);
 assert.doesNotMatch(phone, /250 \* 1024 \* 1024[^\n]{0,120}throw/i);
 assert.doesNotMatch(transcript, /100_000|too many segments/i);
+assert.doesNotMatch(transcript, /0\.86|Math\.exp\(logProbability\)/);
+assert.match(transcript, /engineConfidenceIsUncalibrated/);
+assert.doesNotMatch(worker, /confidence: 0/);
+assert.doesNotMatch(phone, /confidence: raw\.confidence \?\? 0/);
+assert.doesNotMatch(engine, /confidence_from_logprob|\"confidence\": confidence/);
+assert.doesNotMatch(detail, /Math\.max\(segment\.confidence, \.9\)/);
 assert.doesNotMatch(detail, /50 MB safety limit/i);
 
 // iPhone/iPad share sheet: file first, text fallback for targets that reject .txt/.md.
@@ -99,6 +111,12 @@ assert.doesNotMatch(app, /Maximum Accuracy/);
 assert.doesNotMatch(detail, /Maximum Accuracy/);
 assert.doesNotMatch(flow, /Maximum accuracy/i);
 assert.match(app, /preferredMode: 'computer'/);
+assert.match(app, /detectDeviceKind\(\) === 'windows' && await windowsHelperAvailable\(\)/);
+assert.match(transcription, /loopback was not contacted/);
+assert.match(transcription, /recordingFileExtension\(mimeType\)/);
+assert.doesNotMatch(app, /Recording safely saved/);
+assert.doesNotMatch(detail, /Recording safely saved/);
+assert.doesNotMatch(database, /Recording safely saved/);
 assert.match(database, /preferredMode === 'maximum'/);
 assert.match(database, /preferredMode: 'computer'/);
 
@@ -118,7 +136,7 @@ assert.doesNotMatch(hostedLauncher, /lectureai-ahmed\.ahmedalkadi02\.chatgpt\.si
 // Installed PWA and iPhone/iPad screen-safe layout.
 assert.match(manifest, /"display": "standalone"/);
 assert.match(manifest, /"scope": "\/"/);
-assert.match(serviceWorker, /lectureai-shell-v6/);
+assert.match(serviceWorker, /lectureai-shell-v7/);
 assert.match(main, /mobile-ios\.css/);
 assert.match(mobileCss, /safe-area-inset-top/);
 assert.match(mobileCss, /safe-area-inset-bottom/);
