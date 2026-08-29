@@ -40,7 +40,6 @@ test('preserves technical English inside Arabic during transcript import', () =>
   assert.match(segments[0].originalText, /pointer/);
 });
 
-
 test('detects Egyptian Arabic and MSA transcript text without translating it', () => {
   const egyptian = normalizeTranscript({ segments: [{ start: 0, end: 3, text: 'بص يا جماعة، إحنا كده هنستخدم الـ pointer عشان نوصل للعنوان.', confidence: .91 }] }, 'egyptian');
   assert.equal(egyptian[0].detectedLanguage, 'mixed');
@@ -53,6 +52,11 @@ test('detects Egyptian Arabic and MSA transcript text without translating it', (
 
 test('rejects invalid timestamp boundaries', () => {
   assert.throws(() => normalizeTranscript({ segments: [{ start: 20, end: 10, text: 'bad' }] }, 'lecture-1'), /invalid/);
+});
+
+test('does not impose an artificial transcript segment cap', () => {
+  const source = readFileSync(new URL('../lib/transcript.ts', import.meta.url), 'utf8');
+  assert.doesNotMatch(source, /100_000|too many segments/i);
 });
 
 test('generates every required note section with source timestamps', () => {
@@ -75,6 +79,14 @@ test('starts with an empty production library and never seeds demo data', async 
   assert.deepEqual(library.lectures, []);
   assert.deepEqual(library.courses, []);
   assert.equal(library.settings.key, 'app');
+  assert.equal(library.settings.preferredMode, 'computer');
+});
+
+test('migrates the removed legacy maximum mode to computer transcription', async () => {
+  const db = await getDatabase();
+  await db.put('settings', { key: 'app', consentAcknowledged: true, followTranscript: true, preferredMode: 'maximum' as never, phoneModelInstalled: false });
+  await initializeDatabase();
+  assert.equal((await db.get('settings', 'app'))?.preferredMode, 'computer');
 });
 
 test('removes only the legacy production demo records', async () => {
@@ -102,7 +114,7 @@ test('runs the automatic Windows job flow and generates editable notes', async (
   }) as typeof fetch;
   const progress: number[] = [];
   const payload = await transcribeWithWindowsHelper(lecture, undefined, new Blob(['recording'], { type: 'audio/webm' }), (update) => progress.push(update.progress), fetcher, async () => undefined);
-  const completed = completeTranscription(lecture, payload, 'windows', 'faster-whisper large-v3');
+  const completed = completeTranscription(lecture, payload, 'windows', 'configured faster-whisper');
   assert.equal(completed.status, 'done');
   assert.equal(completed.segments.length, 1);
   assert.match(completed.notesCurrent, /Detailed Lecture Notes/);
@@ -140,7 +152,6 @@ test('assembles checkpoint chunks in order and keeps the original audio', async 
   assert.equal((await getAudioChunks('recording-test')).length, 0);
 });
 
-
 test('recovers an interrupted transcription without creating a duplicate lecture', async () => {
   const db = await getDatabase();
   const lecture = { ...lectureFixture('stuck-processing'), status: 'transcribing' as const, statusMessage: 'Transcribing…' };
@@ -152,20 +163,24 @@ test('recovers an interrupted transcription without creating a duplicate lecture
   await db.delete('lectures', lecture.id);
 });
 
-
-test('keeps mobile recording unlimited by policy while guarding against silent audio', () => {
+test('keeps mobile recording and transcript length unlimited by policy while guarding against silent audio', () => {
   const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const flow = readFileSync(new URL('../components/RecordingFlow.tsx', import.meta.url), 'utf8');
   const recorder = readFileSync(new URL('../hooks/use-recorder.ts', import.meta.url), 'utf8');
+  const detail = readFileSync(new URL('../components/LectureDetail.tsx', import.meta.url), 'utf8');
   const exporter = readFileSync(new URL('../lib/export.ts', import.meta.url), 'utf8');
   const manifest = readFileSync(new URL('../public/manifest.webmanifest', import.meta.url), 'utf8');
   assert.doesNotMatch(app, /8 GB local safety limit/);
-  assert.match(app, /no artificial recording-duration or monthly-minute quota/);
+  assert.match(app, /no artificial recording-duration, transcript-length, segment-count, or monthly-minute quota/);
   assert.match(recorder, /waitForAudibleInput/);
   assert.match(recorder, /recorder\.start\(5_000\)/);
+  assert.match(recorder, /checkpointFailureRef/);
   assert.match(flow, /disabled=\{!micVerified\}/);
   assert.match(flow, /Audio playback verified/);
   assert.match(flow, /Verify saved lecture audio/);
+  assert.doesNotMatch(detail, /50 MB safety limit/);
+  assert.match(detail, /Delete lecture/);
+  assert.match(detail, /deleteLectureData/);
   assert.match(exporter, /nav\.share/);
   assert.match(manifest, /"display": "standalone"/);
 });
@@ -178,6 +193,7 @@ test('keeps multilingual phone transcription fallbacks and predownload support',
   assert.match(worker, /whisper-tiny/);
   assert.match(worker, /mode === 'prepare'/);
   assert.match(phone, /preparePhoneTranscriptionModel/);
+  assert.match(phone, /WINDOW_SECONDS = 180/);
 });
 
 let failed = 0;
