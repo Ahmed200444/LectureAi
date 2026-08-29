@@ -107,6 +107,7 @@ assert.match(app, /Windows helper\/FFmpeg will validate and transcribe it/);
 assert.doesNotMatch(helper, /MAX_UPLOAD_BYTES|8 GB local safety limit/);
 assert.match(helper, /ensure_upload_space/);
 assert.match(helper, /https:\/\/lecture-ai-blush\.vercel\.app/);
+assert.doesNotMatch(helper, /lectureai-ahmed\.ahmedalkadi02\.chatgpt\.site/);
 assert.match(helper, /warm_configured_model/);
 assert.match(helper, /load_model\(model, MODELS_DIR\)/);
 assert.match(hostedLauncher, /https:\/\/lecture-ai-blush\.vercel\.app/);
