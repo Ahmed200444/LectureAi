@@ -16,16 +16,36 @@ os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 
 from engine import MODEL_INFO, hardware_payload, transcribe_audio
 
-MAX_UPLOAD_BYTES = 8 * 1024 * 1024 * 1024
 ROOT = Path(__file__).resolve().parent.parent
 MODELS_DIR = ROOT / "models"
 MODELS_DIR.mkdir(exist_ok=True)
 jobs: dict[str, dict] = {}
 jobs_lock = threading.Lock()
-allowed_origins = [origin.strip() for origin in os.getenv("LECTUREAI_ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000,http://localhost:4174,http://127.0.0.1:4174,http://localhost:5173,http://127.0.0.1:5173,https://lectureai-ahmed.ahmedalkadi02.chatgpt.site").split(",") if origin.strip()]
+
+DEFAULT_ALLOWED_ORIGINS = (
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:4174",
+    "http://127.0.0.1:4174",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "https://lecture-ai-blush.vercel.app",
+    "https://lectureai-ahmed.ahmedalkadi02.chatgpt.site",
+)
+allowed_origins = [
+    origin.strip()
+    for origin in os.getenv("LECTUREAI_ALLOWED_ORIGINS", ",".join(DEFAULT_ALLOWED_ORIGINS)).split(",")
+    if origin.strip()
+]
 
 app = FastAPI(title="LectureAI Local Transcription", docs_url=None, redoc_url=None)
-app.add_middleware(CORSMiddleware, allow_origins=allowed_origins, allow_credentials=False, allow_methods=["GET", "POST", "OPTIONS"], allow_headers=["Content-Type", "Access-Control-Request-Private-Network"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "Access-Control-Request-Private-Network"],
+)
 
 
 @app.middleware("http")
@@ -38,7 +58,7 @@ async def private_network_header(request, call_next):
 
 @app.get("/health")
 def health():
-    return {"ok": True, "version": "0.2.0", "privacy": "loopback-only", "configured_model": configured_model(), **hardware_payload()}
+    return {"ok": True, "version": "0.3.0", "privacy": "loopback-only", "configured_model": configured_model(), **hardware_payload()}
 
 
 def configured_model():
@@ -88,20 +108,30 @@ def parse_glossary(glossary: str):
         raise HTTPException(400, "Glossary must be a JSON array.")
 
 
+def ensure_upload_space(directory: Path, incoming_bytes: int = 0):
+    """Protect the disk without imposing a LectureAI file-size or minute quota."""
+    free = shutil.disk_usage(directory).free
+    reserve = max(512 * 1024 * 1024, incoming_bytes)
+    if free < reserve:
+        raise HTTPException(507, "Not enough free disk space to keep receiving this recording safely.")
+
+
 async def save_upload(audio: UploadFile, directory: Path):
     suffix = Path(audio.filename or "lecture.webm").suffix.lower()
     if suffix not in {".webm", ".m4a", ".mp4", ".wav", ".mp3", ".ogg", ".flac", ".aac"}:
         suffix = ".audio"
     target = directory / f"original{suffix}"
     total = 0
+    ensure_upload_space(directory)
     with target.open("wb") as output:
         while chunk := await audio.read(1024 * 1024):
             total += len(chunk)
-            if total > MAX_UPLOAD_BYTES:
-                raise HTTPException(413, "Audio exceeds the 8 GB local safety limit.")
+            if total % (64 * 1024 * 1024) < len(chunk):
+                ensure_upload_space(directory, max(512 * 1024 * 1024, total // 4))
             output.write(chunk)
-    if shutil.disk_usage(directory).free < max(total * 2, 1024 * 1024 * 1024):
-        raise HTTPException(507, "Not enough free disk space for safe transcription.")
+    if not total:
+        raise HTTPException(400, "The transferred recording is empty.")
+    ensure_upload_space(directory, max(512 * 1024 * 1024, min(total, 2 * 1024 * 1024 * 1024)))
     return target
 
 
