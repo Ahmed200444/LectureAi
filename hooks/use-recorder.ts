@@ -22,7 +22,8 @@ export function useRecorder() {
   const frameRef = useRef<number | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const wakeLockRef = useRef<WakeLockSentinelLike | null>(null);
-  const pendingWritesRef = useRef<Promise<unknown>[]>([]);
+  const pendingWritesRef = useRef<Set<Promise<unknown>>>(new Set());
+  const checkpointFailureRef = useRef('');
   const chunkIndexRef = useRef(0);
   const lectureIdRef = useRef('');
   const mimeTypeRef = useRef('');
@@ -71,8 +72,6 @@ export function useRecorder() {
     const samples = new Uint8Array(analyser.frequencyBinCount);
     const update = () => {
       if (context.state !== 'running') {
-        // iOS/iPadOS can suspend WebAudio without stopping MediaRecorder. Do not call
-        // a suspended visual meter a muted microphone.
         setLevel(0);
         quietSinceRef.current = null;
         frameRef.current = requestAnimationFrame(update);
@@ -114,9 +113,6 @@ export function useRecorder() {
       await applyLectureAudioPreferences(track);
       track.addEventListener('ended', () => setError('The microphone audio track ended unexpectedly. Finish the lecture to preserve saved checkpoints.'));
 
-      // The 12-second setup test already proves encoded playback. Here we only check
-      // the new live stream for real signal so Safari does not have to start/stop an
-      // extra MediaRecorder immediately before the real lecture session.
       const audible = await waitForAudibleInput(stream, 3000, 0.0005);
       if (audible === false) {
         throw new Error('The microphone is available, but no live sound is reaching it. Speak near the device, check that the microphone is unobstructed, and try again.');
@@ -125,7 +121,8 @@ export function useRecorder() {
       streamRef.current = stream;
       lectureIdRef.current = lectureId;
       chunkIndexRef.current = 0;
-      pendingWritesRef.current = [];
+      pendingWritesRef.current = new Set();
+      checkpointFailureRef.current = '';
       lastChunkAtRef.current = Date.now();
 
       const requestedMimeType = preferredRecordingMimeType();
@@ -151,16 +148,21 @@ export function useRecorder() {
 
         const index = chunkIndexRef.current++;
         setChunkCount(index + 1);
-        const write = saveAudioChunk({
+        const write = Promise.resolve(saveAudioChunk({
           id: `${lectureId}-${String(index).padStart(8, '0')}`,
           lectureId,
           index,
           blob: event.data,
           mimeType: recorder.mimeType || mimeTypeRef.current,
           createdAt: new Date().toISOString(),
+        }));
+        pendingWritesRef.current.add(write);
+        void write.catch(() => {
+          checkpointFailureRef.current = 'A recording checkpoint could not be saved. Check available device storage.';
+          setError(checkpointFailureRef.current);
+        }).finally(() => {
+          pendingWritesRef.current.delete(write);
         });
-        pendingWritesRef.current.push(write);
-        write.catch(() => setError('A recording checkpoint could not be saved. Check available device storage.'));
       };
       recorder.onerror = () => setError('The recorder reported an error. Saved checkpoints remain recoverable.');
 
@@ -168,8 +170,6 @@ export function useRecorder() {
       activeStartedRef.current = Date.now();
       setDuration(0);
       setChunkCount(0);
-      // No LectureAI duration quota: one continuous recorder session emits frequent
-      // safety blobs, which are reassembled in order when the lecture is finished.
       recorder.start(5_000);
       setIsRecording(true);
       setIsPaused(false);
@@ -177,9 +177,9 @@ export function useRecorder() {
       startMeters(stream);
       await requestWakeLock();
       return recorder.mimeType;
-    } catch (error) {
+    } catch (startError) {
       stream.getTracks().forEach((track) => track.stop());
-      throw error;
+      throw startError;
     }
   }, [requestWakeLock, startDurationTimer, startMeters]);
 
@@ -190,7 +190,7 @@ export function useRecorder() {
     recorder.requestData();
     recorder.pause();
     await paused;
-    await Promise.allSettled(pendingWritesRef.current);
+    await Promise.allSettled(Array.from(pendingWritesRef.current));
     elapsedRef.current += (Date.now() - activeStartedRef.current) / 1000;
     setDuration(elapsedRef.current);
     if (intervalRef.current) clearInterval(intervalRef.current);
@@ -202,6 +202,7 @@ export function useRecorder() {
     setLevel(0);
     setIsRecording(false);
     setIsPaused(true);
+    if (checkpointFailureRef.current) setError(checkpointFailureRef.current);
     return { duration: elapsedRef.current };
   }, []);
 
@@ -222,7 +223,7 @@ export function useRecorder() {
     lastChunkAtRef.current = Date.now();
     setIsPaused(false);
     setIsRecording(true);
-    setError('');
+    if (!checkpointFailureRef.current) setError('');
     startDurationTimer();
     await requestWakeLock();
   }, [requestWakeLock, startDurationTimer]);
@@ -236,7 +237,16 @@ export function useRecorder() {
     if (wasRecording) recorder.requestData();
     recorder.stop();
     await stopped;
-    await Promise.allSettled(pendingWritesRef.current);
+    await Promise.allSettled(Array.from(pendingWritesRef.current));
+
+    if (checkpointFailureRef.current) {
+      const message = checkpointFailureRef.current;
+      recorderRef.current = null;
+      setIsRecording(false);
+      setIsPaused(false);
+      stopMeters();
+      throw new Error(`${message} LectureAI did not mark this lecture as safely saved; any successful checkpoints were kept for recovery.`);
+    }
 
     const finalDuration = elapsedRef.current;
     const blob = await finalizeAudio(lectureIdRef.current, mimeTypeRef.current || recorder.mimeType);
