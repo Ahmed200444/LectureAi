@@ -57,6 +57,30 @@ export function lectureAudioConstraints(): MediaTrackConstraints {
   };
 }
 
+/**
+ * After permission is granted, make one best-effort attempt to disable call-style
+ * processing on the real microphone track. This helps avoid pumping/whooshing
+ * artifacts without making recording fail on Safari builds that ignore a control.
+ */
+export async function applyLectureAudioPreferences(track: MediaStreamTrack) {
+  const supported = navigator.mediaDevices?.getSupportedConstraints?.() || {};
+  const preferred: MediaTrackConstraints = {};
+  if (supported.echoCancellation) preferred.echoCancellation = false;
+  if (supported.noiseSuppression) preferred.noiseSuppression = false;
+  if (supported.autoGainControl) preferred.autoGainControl = false;
+  if (supported.channelCount) preferred.channelCount = { ideal: 1 };
+  if (supported.sampleRate) preferred.sampleRate = { ideal: 48_000 };
+
+  if (Object.keys(preferred).length) {
+    try {
+      await track.applyConstraints(preferred);
+    } catch {
+      try { await track.applyConstraints(lectureAudioConstraints()); } catch { /* Best effort only. */ }
+    }
+  }
+  return track.getSettings?.() || {};
+}
+
 export function recordingMimeCandidates() {
   const ios = isIOSDevice();
   return ios
