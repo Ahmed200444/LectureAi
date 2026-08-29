@@ -91,9 +91,10 @@ export function LectureDetail({ lecture, course, settings, onSettingsChange, fol
   }
 
   async function importTranscript(file: File) {
-    if (file.size > 50 * 1024 * 1024) return onToast('Transcript JSON is larger than the 50 MB safety limit.', 'warning');
     setProcessing('Checking transcript segments…');
     try {
+      // No artificial LectureAI transcript-file or segment-count quota is applied here.
+      // The browser/device memory available is the practical limit for an imported JSON file.
       const segments = normalizeTranscript(JSON.parse(await file.text()), lecture.id);
       const duration = Math.max(lecture.duration, segments.at(-1)?.endTime || 0);
       const checking = { ...lecture, segments, duration, status: 'generating-notes' as const, statusMessage: 'Transcript imported · generating editable notes', processingProgress: 94 };
@@ -108,13 +109,13 @@ export function LectureDetail({ lecture, course, settings, onSettingsChange, fol
     } finally { setProcessing(''); }
   }
 
-  async function runMaximumAccuracy() {
+  async function runComputerTranscription() {
     const audio = await getAudio(lecture.id);
     if (!audio) return onToast('Record or attach original audio before transcription.', 'warning');
     const device = detectDeviceKind();
     if (device !== 'windows') {
       downloadBlob(audio.blob, `${lecture.title}.${audio.mimeType.includes('mp4') ? 'm4a' : audio.mimeType.includes('wav') ? 'wav' : 'webm'}`);
-      onToast(`Original recording exported from ${deviceLabel()}. Transfer it to your Windows laptop, open LectureAI there, choose Import recording, then run Maximum Accuracy.`, 'success');
+      onToast(`Original recording exported from ${deviceLabel()}. Transfer it to your Windows laptop, open LectureAI there, choose Import recording, then Transcribe on Computer.`, 'success');
       return;
     }
     let working = lecture;
@@ -124,18 +125,18 @@ export function LectureDetail({ lecture, course, settings, onSettingsChange, fol
     };
     setTab('original');
     setProcessing('Connecting to the private Windows transcription service…');
-    await update({ status: 'preparing', processingProgress: 3, statusMessage: 'Recording safely saved · connecting to the Windows helper' });
+    await update({ status: 'preparing', processingProgress: 3, statusMessage: 'Recording safely saved · connecting to the Windows transcription helper' });
     try {
-      if (!await windowsHelperAvailable()) throw new Error(`Maximum Accuracy helper not detected. Run ${window.location.hostname.endsWith('chatgpt.site') ? 'start-helper-for-hosted-site.bat' : 'start-lectureai.bat'} on this Windows computer, then retry.`);
+      if (!await windowsHelperAvailable()) throw new Error(`Windows transcription helper not detected. Run ${window.location.hostname.endsWith('chatgpt.site') ? 'start-helper-for-hosted-site.bat' : 'start-lectureai.bat'} on this Windows computer, then retry.`);
       const payload = await transcribeWithWindowsHelper(working, course, audio.blob, ({ progress, message }) => {
         setProcessing(message);
         void update({ status: 'transcribing', processingProgress: progress, statusMessage: message });
       });
       await update(completeTranscription(working, payload, 'windows', 'Configured faster-whisper multilingual model'));
       setTab('original');
-      onToast('Maximum Accuracy transcription and notes are ready.', 'success');
+      onToast('Computer transcription and notes are ready.', 'success');
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Maximum Accuracy transcription could not finish.';
+      const message = error instanceof Error ? error.message : 'Computer transcription could not finish.';
       await update({ status: 'needs-transcription', processingProgress: undefined, statusMessage: `Recording safely saved · ${message}` });
       onToast(message, 'warning');
     } finally { setProcessing(''); }
@@ -144,7 +145,7 @@ export function LectureDetail({ lecture, course, settings, onSettingsChange, fol
   async function runPhoneTranscription() {
     const audio = await getAudio(lecture.id);
     if (!audio) return onToast('Record or attach original audio before transcription.', 'warning');
-    if (!phoneTranscriptionSupported()) return onToast('This browser cannot run the on-device speech model. Use Maximum Accuracy on Computer.', 'warning');
+    if (!phoneTranscriptionSupported()) return onToast('This browser cannot run the on-device speech model. Transfer the recording to Windows and use Transcribe on Computer.', 'warning');
     let working = lecture;
     const update = async (patch: Partial<Lecture>) => {
       working = { ...working, ...patch, updatedAt: new Date().toISOString() };
@@ -165,7 +166,7 @@ export function LectureDetail({ lecture, course, settings, onSettingsChange, fol
     } catch (error) {
       const message = error instanceof Error ? error.message : 'On-device transcription could not finish.';
       await update({ status: 'needs-transcription', processingProgress: undefined, statusMessage: `Recording safely saved · ${message}` });
-      onToast(`${message} Try Maximum Accuracy on Computer for important mixed-language lectures.`, 'warning');
+      onToast(`${message} The original recording is still safe; you can retry on this device or transfer it to Windows and use Transcribe on Computer.`, 'warning');
     } finally { setProcessing(''); }
   }
 
@@ -217,24 +218,24 @@ export function LectureDetail({ lecture, course, settings, onSettingsChange, fol
           <div><span className="course-label">{hasCourse.code} · {hasCourse.name}</span><h1>{lecture.title}</h1><p>{friendlyDate(lecture.date)} · {hasCourse.professor || 'Professor not set'} · {formatDuration(lecture.duration)}</p></div>
           <div className="lecture-actions">
             {lecture.segments.length > 0 && <button className="secondary-button" onClick={() => setTab('corrected')}><Pencil size={17} /> Edit transcript</button>}
-            <button className="secondary-button" onClick={runMaximumAccuracy} disabled={['preparing', 'transcribing', 'generating-notes'].includes(lecture.status)}><Sparkles size={17} /> {detectDeviceKind() === 'windows' ? 'Maximum accuracy' : 'Send to computer'}</button>
+            <button className="secondary-button" onClick={runComputerTranscription} disabled={['preparing', 'transcribing', 'generating-notes'].includes(lecture.status)}><Sparkles size={17} /> {detectDeviceKind() === 'windows' ? 'Transcribe on computer' : 'Send to computer'}</button>
             <div className="menu-wrap"><button className="secondary-button" onClick={() => setShowExport(!showExport)}><Download size={17} /> Export <ChevronDown size={14} /></button>{showExport && <div className="export-menu"><button onClick={() => exportDocx(hasCourse, lecture)}>Word document (.docx)</button><button onClick={() => printPdf(hasCourse, lecture)}>Print / Save as PDF</button><button onClick={() => exportMarkdown(hasCourse, lecture, 'combined')}>Combined Markdown</button><button onClick={() => exportMarkdown(hasCourse, lecture, 'notes')}>Notes Markdown</button><button onClick={() => exportTranscriptText(hasCourse, lecture)}>Transcript text</button><button onClick={exportOriginalAudio}>Original audio</button></div>}</div>
           </div>
         </div>
         <div className={`processing-strip status-${lecture.status}`}><span>{processing || lecture.statusMessage || lecture.status}</span>{typeof lecture.processingProgress === 'number' && lecture.processingProgress < 100 && <div className="processing-progress" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={lecture.processingProgress}><i style={{ width: `${lecture.processingProgress}%` }} /></div>}{lecture.status === 'interrupted' && <button onClick={recoverRecording}><RotateCcw size={14} /> Recover recording</button>}</div>
-        {detectDeviceKind() === 'windows' && <div className={`helper-status ${helperReady ? 'ready' : helperReady === false ? 'offline' : 'checking'}`}><span>Maximum Accuracy Engine</span><strong>{helperReady ? 'Ready' : helperReady === false ? `Not connected — run ${window.location.hostname.endsWith('chatgpt.site') ? 'start-helper-for-hosted-site.bat' : 'start-lectureai.bat'}` : 'Checking…'}</strong>{helperReady === false && <button className="text-button" onClick={() => { setHelperReady(null); void windowsHelperAvailable().then(setHelperReady); }}>Check again</button>}</div>}
+        {detectDeviceKind() === 'windows' && <div className={`helper-status ${helperReady ? 'ready' : helperReady === false ? 'offline' : 'checking'}`}><span>Computer Transcription Engine</span><strong>{helperReady ? 'Ready' : helperReady === false ? `Not connected — run ${window.location.hostname.endsWith('chatgpt.site') ? 'start-helper-for-hosted-site.bat' : 'start-lectureai.bat'}` : 'Checking…'}</strong>{helperReady === false && <button className="text-button" onClick={() => { setHelperReady(null); void windowsHelperAvailable().then(setHelperReady); }}>Check again</button>}</div>}
         <div className="lecture-tabs" role="tablist">{tabs.map((item) => <button key={item.id} role="tab" aria-selected={tab === item.id} className={tab === item.id ? 'active' : ''} onClick={() => setTab(item.id)}>{item.label}{item.id === 'review' && uncertain.length > 0 && <b>{uncertain.length}</b>}</button>)}</div>
       </header>
 
       <section className="lecture-content">
         {(tab === 'english' || tab === 'arabic') && lecture.segments.length > 0 && currentSegments.length === 0
           ? <section className="empty-state translation-empty"><Languages size={34} /><h2>{tab === 'english' ? 'English translation not generated yet' : 'الترجمة العربية غير مُنشأة بعد'}</h2><p>{tab === 'english' ? 'Your original English/Egyptian Arabic/MSA transcript is preserved. This build does not silently invent a translation without a verified local translation model.' : 'النص الأصلي بالإنجليزية والمصرية والعربية الفصحى محفوظ. هذا الإصدار لا ينشئ ترجمة غير موثوقة تلقائيًا.'}</p><button className="secondary-button" onClick={() => setTab('original')}>View original transcript</button></section>
-          : (tab === 'original' || tab === 'corrected' || tab === 'english' || tab === 'arabic') && <TranscriptView segments={currentSegments} editable={tab === 'corrected'} activeId={activeSegment?.id} activeRef={activeRef} onSeek={seek} onEdit={updateSegment} lecture={lecture} onMaximumAccuracy={runMaximumAccuracy} onPhone={runPhoneTranscription} onImport={() => importRef.current?.click()} />}
+          : (tab === 'original' || tab === 'corrected' || tab === 'english' || tab === 'arabic') && <TranscriptView segments={currentSegments} editable={tab === 'corrected'} activeId={activeSegment?.id} activeRef={activeRef} onSeek={seek} onEdit={updateSegment} lecture={lecture} onComputer={runComputerTranscription} onPhone={runPhoneTranscription} onImport={() => importRef.current?.click()} />}
         {tab === 'notes' && <NotesEditor lecture={lecture} onSave={onChange} onSeek={seek} />}
         {tab === 'review' && <ReviewPanel segments={uncertain} onSeek={seek} onEdit={updateSegment} />}
         {tab === 'attachments' && <section className="attachments-panel">
-          <div className="accuracy-grid"><article><Gauge size={22} /><h3>Maximum Accuracy on Computer</h3><p>{detectDeviceKind() === 'windows' ? 'The saved recording is sent only to the loopback Windows helper and transcribed with the strongest multilingual model selected during setup.' : 'Export this original recording, transfer it to your Windows laptop, then import it into LectureAI there. A phone/iPad cannot connect to the laptop’s 127.0.0.1 helper directly.'}</p><button className="primary-button" onClick={runMaximumAccuracy}>{detectDeviceKind() === 'windows' ? 'Connect & transcribe' : 'Export for Windows'}</button></article><article><Languages size={22} /><h3>Transcribe on This Device</h3><p>Downloads a multilingual on-device model once, then keeps recordings on this device. It is smaller and less accurate than the computer models.</p><button className="secondary-button" onClick={runPhoneTranscription}>{settings.phoneModelInstalled ? 'Transcribe on this device' : 'Download model & transcribe'}</button></article></div>
-          <section className="file-drop"><Upload size={25} /><h3>Advanced transcript import</h3><p>Use timestamped JSON only as a backup or developer workflow. Normal recordings transcribe automatically.</p><button className="secondary-button" onClick={() => importRef.current?.click()}><FileJson size={17} /> Import transcript JSON</button></section>
+          <div className="accuracy-grid"><article><Gauge size={22} /><h3>Transcribe on Computer</h3><p>{detectDeviceKind() === 'windows' ? 'The saved recording is sent only to the loopback Windows helper and transcribed locally with the model configured for this computer.' : 'Export this original recording, transfer it to your Windows laptop, then import it into LectureAI there. A phone/iPad cannot connect to the laptop’s 127.0.0.1 helper directly.'}</p><button className="primary-button" onClick={runComputerTranscription}>{detectDeviceKind() === 'windows' ? 'Connect & transcribe' : 'Export for Windows'}</button></article><article><Languages size={22} /><h3>Transcribe on This Device</h3><p>Downloads a multilingual on-device model once, then keeps recordings on this device. It is smaller and may be less accurate than the computer model.</p><button className="secondary-button" onClick={runPhoneTranscription}>{settings.phoneModelInstalled ? 'Transcribe on this device' : 'Download model & transcribe'}</button></article></div>
+          <section className="file-drop"><Upload size={25} /><h3>Advanced transcript import</h3><p>Use timestamped JSON only as a backup or developer workflow. LectureAI does not impose an artificial transcript file-size or segment-count quota.</p><button className="secondary-button" onClick={() => importRef.current?.click()}><FileJson size={17} /> Import transcript JSON</button></section>
           <section className="file-drop"><FileText size={25} /><h3>Slides and course context</h3><p>PDFs, slide exports, and vocabulary files remain local. Add extracted terminology to the course glossary so it guides recognition without overriding audio.</p><button className="secondary-button" onClick={() => attachmentRef.current?.click()}><Upload size={17} /> Add files</button>{lecture.attachments.length > 0 && <ul className="attachment-list">{lecture.attachments.map((attachment) => <li key={attachment.id}><FileText size={16} /><span>{attachment.name}</span><small>{formatBytes(attachment.size)}</small></li>)}</ul>}</section>
           <div className="danger-zone"><div><h3>Delete recording & lecture</h3><p>Deletes the original recording, lecture, transcript, notes, checkpoints, and attachments from this device.</p></div><button className="danger-button" onClick={removeLecture}><Trash2 size={16} /> Delete recording & lecture</button></div>
         </section>}
@@ -256,11 +257,11 @@ export function LectureDetail({ lecture, course, settings, onSettingsChange, fol
   );
 }
 
-function TranscriptView({ segments, editable, activeId, activeRef, onSeek, onEdit, lecture, onMaximumAccuracy, onPhone, onImport }: { segments: TranscriptSegment[]; editable: boolean; activeId?: string; activeRef: React.RefObject<HTMLDivElement | null>; onSeek: (time: number, autoplay?: boolean) => void; onEdit: (id: string, patch: Partial<TranscriptSegment>) => Promise<void>; lecture: Lecture; onMaximumAccuracy: () => void; onPhone: () => void; onImport: () => void }) {
+function TranscriptView({ segments, editable, activeId, activeRef, onSeek, onEdit, lecture, onComputer, onPhone, onImport }: { segments: TranscriptSegment[]; editable: boolean; activeId?: string; activeRef: React.RefObject<HTMLDivElement | null>; onSeek: (time: number, autoplay?: boolean) => void; onEdit: (id: string, patch: Partial<TranscriptSegment>) => Promise<void>; lecture: Lecture; onComputer: () => void; onPhone: () => void; onImport: () => void }) {
   if (!segments.length) {
     const active = ['transcription-queued', 'preparing', 'transcribing', 'generating-notes'].includes(lecture.status);
     if (active) return <section className="empty-state transcription-empty"><Sparkles size={34} /><h2>{lecture.status === 'generating-notes' ? 'Generating editable notes…' : 'Transcribing lecture…'}</h2><p>{lecture.statusMessage || 'The original recording is safely saved. Your transcript will appear here automatically.'}</p>{typeof lecture.processingProgress === 'number' && <div className="empty-progress" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={lecture.processingProgress}><i style={{ width: `${lecture.processingProgress}%` }} /></div>}<small>Keep LectureAI open while transcription is running.</small></section>;
-    return <section className="empty-state transcription-empty"><FileAudio size={34} /><h2>Choose how to transcribe</h2><p>The original recording is safely saved. Use the on-device multilingual model for convenience, or Maximum Accuracy on Windows for the strongest English, Egyptian Arabic, MSA, and technical-term accuracy.</p><div className="transcription-choice-row"><button className="primary-button" onClick={onPhone}><Languages size={17} /> Transcribe on This Device</button><button className="secondary-button" onClick={onMaximumAccuracy}><Gauge size={17} /> {detectDeviceKind() === 'windows' ? 'Maximum Accuracy on Computer' : 'Export for Maximum Accuracy'}</button></div><button className="text-button advanced-import" onClick={onImport}><FileJson size={15} /> Advanced: Import Transcript JSON</button></section>;
+    return <section className="empty-state transcription-empty"><FileAudio size={34} /><h2>Choose how to transcribe</h2><p>The original recording is safely saved. Use the on-device multilingual model on iPhone/iPad, or transfer/import it to Windows and use the local computer transcription engine.</p><div className="transcription-choice-row"><button className="primary-button" onClick={onPhone}><Languages size={17} /> Transcribe on This Device</button><button className="secondary-button" onClick={onComputer}><Gauge size={17} /> {detectDeviceKind() === 'windows' ? 'Transcribe on Computer' : 'Export for Windows'}</button></div><button className="text-button advanced-import" onClick={onImport}><FileJson size={15} /> Advanced: Import Transcript JSON</button></section>;
   }
   return <section className="transcript-document"><div className="transcript-guide"><SearchCheck size={18} /><span>Tap any timestamp or sentence to jump to the source audio. Low-confidence speech is marked for review.</span></div>{segments.map((segment) => {
     const active = segment.id === activeId;
