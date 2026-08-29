@@ -12,13 +12,17 @@ const exporter = readFileSync(new URL('../lib/export.ts', import.meta.url), 'utf
 const database = readFileSync(new URL('../lib/db.ts', import.meta.url), 'utf8');
 const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
 const helper = readFileSync(new URL('../local-ai/server.py', import.meta.url), 'utf8');
+const hostedLauncher = readFileSync(new URL('../start-helper-for-hosted-site.bat', import.meta.url), 'utf8');
 
 assert.match(validation, /track\.muted/);
 assert.match(validation, /waitForAudibleInput/);
 assert.match(device, /autoGainControl: \{ ideal: false \}/);
 assert.match(device, /noiseSuppression: \{ ideal: false \}/);
 assert.match(device, /echoCancellation: \{ ideal: false \}/);
+assert.match(device, /applyLectureAudioPreferences/);
+assert.match(device, /track\.applyConstraints/);
 assert.match(recorder, /lectureAudioConstraints\(\)/);
+assert.match(recorder, /applyLectureAudioPreferences\(track\)/);
 assert.doesNotMatch(recorder, /verifyMicrophoneCapture\(stream\)/);
 assert.match(recorder, /audioBitsPerSecond: 192_000/);
 assert.match(recorder, /recorder\.start\(5_000\)/);
@@ -26,6 +30,7 @@ assert.match(recorder, /delayed a recording checkpoint/);
 assert.match(database, /new Blob\(chunks\.map\(\(chunk\) => chunk\.blob\)/);
 assert.doesNotMatch(database, /decodeAudioData|OfflineAudioContext|AudioBufferSourceNode/);
 assert.match(micTest, /lectureAudioConstraints\(\)/);
+assert.match(micTest, /applyLectureAudioPreferences\(track\)/);
 assert.match(micTest, /I can hear it clearly/);
 assert.match(flow, /disabled=\{!micVerified\}/);
 assert.match(flow, /Verify saved lecture audio/);
@@ -54,5 +59,7 @@ assert.match(app, /Windows helper\/FFmpeg will validate and transcribe it/);
 assert.doesNotMatch(helper, /MAX_UPLOAD_BYTES|8 GB local safety limit/);
 assert.match(helper, /ensure_upload_space/);
 assert.match(helper, /https:\/\/lecture-ai-blush\.vercel\.app/);
+assert.match(hostedLauncher, /https:\/\/lecture-ai-blush\.vercel\.app/);
+assert.doesNotMatch(hostedLauncher, /lectureai-ahmed\.ahmedalkadi02\.chatgpt\.site/);
 
-console.log('✓ iPhone/iPad clean recording, seamless checkpoint assembly, fast resilient transcription startup, sharing, and Windows-transfer safeguards are present');
+console.log('✓ iPhone/iPad raw recording, seamless checkpoints, fast resilient transcription, sharing, and Vercel-to-Windows safeguards are present');
