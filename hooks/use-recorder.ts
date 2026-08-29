@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { deleteAudioChunks, finalizeAudio, saveAudioChunk } from '../lib/db';
-import { assertLiveMicrophoneStream, validatePlayableAudio, verifyMicrophoneCapture, waitForAudibleInput } from '../lib/audio-validation';
+import { assertLiveMicrophoneStream, validatePlayableAudio, verifyMicrophoneCapture } from '../lib/audio-validation';
 import { applyLectureAudioPreferences, lectureAudioConstraints, preferredRecordingMimeType } from '../lib/device';
 
 type WakeLockSentinelLike = { release: () => Promise<void> };
@@ -195,7 +195,6 @@ export function useRecorder() {
     setDuration(elapsedRef.current);
     if (intervalRef.current) clearInterval(intervalRef.current);
     intervalRef.current = null;
-    streamRef.current?.getAudioTracks().forEach((track) => { track.enabled = false; });
     wakeLockRef.current?.release().catch(() => undefined);
     wakeLockRef.current = null;
     quietSinceRef.current = null;
@@ -211,10 +210,11 @@ export function useRecorder() {
     if (!recorder || recorder.state !== 'paused') throw new Error('The current recording is not stopped.');
     const stream = streamRef.current;
     if (!stream) throw new Error('The microphone stream is no longer available. Start a new recording.');
-    stream.getAudioTracks().forEach((track) => { track.enabled = true; });
+    // Keep the granted microphone track live across MediaRecorder.pause()/resume().
+    // Toggling track.enabled can disturb iOS/iPadOS audio routing, and requiring
+    // immediate speech would falsely reject a quiet classroom. The encoded start
+    // probe is authoritative; the live meter continues to warn on prolonged silence.
     assertLiveMicrophoneStream(stream);
-    const audible = await waitForAudibleInput(stream, 4000, 0.0005);
-    if (audible === false) throw new Error('The microphone is available, but no live sound was detected after continuing. Check the device microphone and try again.');
     await audioContextRef.current?.resume().catch(() => undefined);
     const resumed = new Promise<void>((resolve) => recorder.addEventListener('resume', () => resolve(), { once: true }));
     recorder.resume();
@@ -248,11 +248,10 @@ export function useRecorder() {
       throw new Error(`${message} LectureAI did not mark this lecture as safely saved; any successful checkpoints were kept for recovery.`);
     }
 
-    const finalDuration = elapsedRef.current;
     const blob = await finalizeAudio(lectureIdRef.current, mimeTypeRef.current || recorder.mimeType);
     try {
       const verified = await validatePlayableAudio(blob);
-      if (verified.duration && finalDuration <= 0) elapsedRef.current = verified.duration;
+      if (verified.duration) elapsedRef.current = verified.duration;
       await deleteAudioChunks(lectureIdRef.current);
     } catch (validationError) {
       recorderRef.current = null;
@@ -267,7 +266,7 @@ export function useRecorder() {
     setIsPaused(false);
     setDuration(elapsedRef.current);
     stopMeters();
-    return { blob, duration: elapsedRef.current, mimeType: blob.type };
+    return { blob, duration: elapsedRef.current, mimeType: blob.type, chunkCount: chunkIndexRef.current };
   }, [stopMeters]);
 
   useEffect(() => {

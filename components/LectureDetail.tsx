@@ -9,7 +9,7 @@ import { transcribeOnPhone } from '../lib/phone-transcription';
 import { normalizeTranscript } from '../lib/transcript';
 import { completeTranscription, phoneTranscriptionSupported, transcribeWithWindowsHelper, windowsHelperAvailable } from '../lib/transcription';
 import type { AppSettings, Course, Lecture, TranscriptSegment } from '../lib/types';
-import { detectDeviceKind, deviceLabel } from '../lib/device';
+import { detectDeviceKind, deviceLabel, recordingFileExtension } from '../lib/device';
 import { validatePlayableAudio } from '../lib/audio-validation';
 import { NotesEditor } from './NotesEditor';
 
@@ -31,6 +31,16 @@ interface LectureDetailProps {
 const tabs: Array<{ id: LectureTab; label: string }> = [
   { id: 'original', label: 'Original transcript' }, { id: 'corrected', label: 'Corrected' }, { id: 'english', label: 'English' }, { id: 'arabic', label: 'العربية' }, { id: 'notes', label: 'Lecture notes' }, { id: 'review', label: 'Review' }, { id: 'attachments', label: 'Attachments' },
 ];
+
+function measuredConfidence(segment: TranscriptSegment) {
+  return typeof segment.confidence === 'number' && Number.isFinite(segment.confidence) ? segment.confidence : undefined;
+}
+
+function needsReview(segment: TranscriptSegment) {
+  if (segment.manuallyReviewed) return false;
+  const confidence = measuredConfidence(segment);
+  return (confidence !== undefined && confidence < .85) || /\[(uncertain|inaudible)\]/i.test(segment.editedText || segment.originalText);
+}
 
 export function LectureDetail({ lecture, course, settings, onSettingsChange, followTranscript, onFollowChange, onBack, onChange, onDeleted, onToast }: LectureDetailProps) {
   const [tab, setTab] = useState<LectureTab>('original');
@@ -69,7 +79,7 @@ export function LectureDetail({ lecture, course, settings, onSettingsChange, fol
 
   const currentSegments = useMemo(() => tab === 'english' ? lecture.englishTranslation : tab === 'arabic' ? lecture.arabicTranslation : lecture.segments, [lecture, tab]);
   const activeSegment = useMemo(() => currentSegments.find((segment) => currentTime >= segment.startTime && currentTime < segment.endTime) || null, [currentSegments, currentTime]);
-  const uncertain = useMemo(() => lecture.segments.filter((segment) => segment.confidence < .85 || /\[(uncertain|inaudible)\]/i.test(segment.editedText || segment.originalText)), [lecture.segments]);
+  const uncertain = useMemo(() => lecture.segments.filter(needsReview), [lecture.segments]);
 
   useEffect(() => {
     if (followTranscript && activeRef.current && isPlaying) activeRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -112,7 +122,7 @@ export function LectureDetail({ lecture, course, settings, onSettingsChange, fol
     if (!audio) return onToast('Record or attach original audio before transcription.', 'warning');
     const device = detectDeviceKind();
     if (device !== 'windows') {
-      downloadBlob(audio.blob, `${lecture.title}.${audio.mimeType.includes('mp4') ? 'm4a' : audio.mimeType.includes('wav') ? 'wav' : 'webm'}`);
+      downloadBlob(audio.blob, `${lecture.title}.${recordingFileExtension(audio.mimeType || audio.blob.type)}`);
       onToast(`Original recording exported from ${deviceLabel()}. Transfer it to your Windows laptop, open LectureAI there, choose Import recording, then Transcribe on Computer.`, 'success');
       return;
     }
@@ -123,7 +133,7 @@ export function LectureDetail({ lecture, course, settings, onSettingsChange, fol
     };
     setTab('original');
     setProcessing('Connecting to the private Windows transcription service…');
-    await update({ status: 'preparing', processingProgress: 3, statusMessage: 'Recording safely saved · connecting to the Windows transcription helper' });
+    await update({ status: 'preparing', processingProgress: 3, statusMessage: 'Original audio preserved · connecting to the Windows transcription helper' });
     try {
       if (!await windowsHelperAvailable()) throw new Error(`Windows transcription helper not detected. Run ${window.location.hostname.endsWith('chatgpt.site') ? 'start-helper-for-hosted-site.bat' : 'start-lectureai.bat'} on this Windows computer, then retry.`);
       const payload = await transcribeWithWindowsHelper(working, course, audio.blob, ({ progress, message }) => {
@@ -135,7 +145,7 @@ export function LectureDetail({ lecture, course, settings, onSettingsChange, fol
       onToast('Computer transcription and notes are ready.', 'success');
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Computer transcription could not finish.';
-      await update({ status: 'needs-transcription', processingProgress: undefined, statusMessage: `Recording safely saved · ${message}` });
+      await update({ status: 'needs-transcription', processingProgress: undefined, statusMessage: `Original audio preserved · ${message}` });
       onToast(message, 'warning');
     } finally { setProcessing(''); }
   }
@@ -163,7 +173,7 @@ export function LectureDetail({ lecture, course, settings, onSettingsChange, fol
       onToast('On-device transcript and editable notes are ready.', 'success');
     } catch (error) {
       const message = error instanceof Error ? error.message : 'On-device transcription could not finish.';
-      await update({ status: 'needs-transcription', processingProgress: undefined, statusMessage: `Recording safely saved · ${message}` });
+      await update({ status: 'needs-transcription', processingProgress: undefined, statusMessage: `Original audio preserved · ${message}` });
       onToast(`${message} The original recording is still safe; you can retry on this device or transfer it to Windows and use Transcribe on Computer.`, 'warning');
     } finally { setProcessing(''); }
   }
@@ -175,7 +185,7 @@ export function LectureDetail({ lecture, course, settings, onSettingsChange, fol
       const blob = await finalizeAudio(lecture.id, chunks[0].mimeType);
       const verified = await validatePlayableAudio(blob);
       await deleteAudioChunks(lecture.id);
-      await onChange({ ...lecture, duration: Math.max(lecture.duration, verified.duration || 0), size: blob.size, mimeType: blob.type, status: 'transcription-queued', statusMessage: `${chunks.length} recording checkpoints recovered and playback-validated · transcription queued`, processingProgress: 0 });
+      await onChange({ ...lecture, duration: verified.duration || lecture.duration, size: blob.size, mimeType: blob.type, status: 'transcription-queued', statusMessage: `${chunks.length} recording checkpoints recovered and playback-validated · transcription queued`, processingProgress: 0 });
       onToast(`Recovered ${chunks.length} audio checkpoints.`, 'success');
     } catch (error) { onToast(error instanceof Error ? error.message : 'Recovery failed.', 'warning'); }
   }
@@ -183,7 +193,7 @@ export function LectureDetail({ lecture, course, settings, onSettingsChange, fol
   async function exportOriginalAudio() {
     const audio = await getAudio(lecture.id);
     if (!audio) return onToast('No original audio is stored for this lecture.', 'warning');
-    downloadBlob(audio.blob, `${lecture.title}.${audio.mimeType.includes('mp4') ? 'm4a' : 'webm'}`);
+    downloadBlob(audio.blob, `${lecture.title}.${recordingFileExtension(audio.mimeType || audio.blob.type)}`);
   }
 
   async function addFiles(files: FileList | null) {
@@ -260,16 +270,17 @@ export function LectureDetail({ lecture, course, settings, onSettingsChange, fol
 function TranscriptView({ segments, editable, activeId, activeRef, onSeek, onEdit, lecture, onComputer, onPhone, onImport }: { segments: TranscriptSegment[]; editable: boolean; activeId?: string; activeRef: React.RefObject<HTMLDivElement | null>; onSeek: (time: number, autoplay?: boolean) => void; onEdit: (id: string, patch: Partial<TranscriptSegment>) => Promise<void>; lecture: Lecture; onComputer: () => void; onPhone: () => void; onImport: () => void }) {
   if (!segments.length) {
     const active = ['transcription-queued', 'preparing', 'transcribing', 'generating-notes'].includes(lecture.status);
-    if (active) return <section className="empty-state transcription-empty"><Sparkles size={34} /><h2>{lecture.status === 'generating-notes' ? 'Generating editable notes…' : 'Transcribing lecture…'}</h2><p>{lecture.statusMessage || 'The original recording is safely saved. Your transcript will appear here automatically.'}</p>{typeof lecture.processingProgress === 'number' && <div className="empty-progress" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={lecture.processingProgress}><i style={{ width: `${lecture.processingProgress}%` }} /></div>}<small>Keep LectureAI open while transcription is running.</small></section>;
-    return <section className="empty-state transcription-empty"><FileAudio size={34} /><h2>Choose how to transcribe</h2><p>The original recording is safely saved. Use the on-device multilingual model on iPhone/iPad, or transfer/import it to Windows and use the local computer transcription engine.</p><div className="transcription-choice-row"><button className="primary-button" onClick={onPhone}><Languages size={17} /> Transcribe on This Device</button><button className="secondary-button" onClick={onComputer}><Gauge size={17} /> {detectDeviceKind() === 'windows' ? 'Transcribe on Computer' : 'Export for Windows'}</button></div><button className="text-button advanced-import" onClick={onImport}><FileJson size={15} /> Advanced: Import Transcript JSON</button></section>;
+    if (active) return <section className="empty-state transcription-empty"><Sparkles size={34} /><h2>{lecture.status === 'generating-notes' ? 'Generating editable notes…' : 'Transcribing lecture…'}</h2><p>{lecture.statusMessage || 'The original audio is preserved locally. Your transcript will appear here automatically.'}</p>{typeof lecture.processingProgress === 'number' && <div className="empty-progress" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={lecture.processingProgress}><i style={{ width: `${lecture.processingProgress}%` }} /></div>}<small>Keep LectureAI open while transcription is running.</small></section>;
+    return <section className="empty-state transcription-empty"><FileAudio size={34} /><h2>Choose how to transcribe</h2><p>The original audio is preserved locally. Use the on-device multilingual model on iPhone/iPad, or transfer/import it to Windows and use the local computer transcription engine.</p><div className="transcription-choice-row"><button className="primary-button" onClick={onPhone}><Languages size={17} /> Transcribe on This Device</button><button className="secondary-button" onClick={onComputer}><Gauge size={17} /> {detectDeviceKind() === 'windows' ? 'Transcribe on Computer' : 'Export for Windows'}</button></div><button className="text-button advanced-import" onClick={onImport}><FileJson size={15} /> Advanced: Import Transcript JSON</button></section>;
   }
   return <section className="transcript-document"><div className="transcript-guide"><SearchCheck size={18} /><span>Tap any timestamp or sentence to jump to the source audio. Low-confidence speech is marked for review.</span></div>{segments.map((segment) => {
     const active = segment.id === activeId;
-    const uncertain = segment.confidence < .85 || /\[(uncertain|inaudible)\]/i.test(segment.editedText || segment.originalText);
+    const uncertain = needsReview(segment);
+    const confidence = measuredConfidence(segment);
     return <div key={segment.id} ref={active ? activeRef : undefined} className={`transcript-row ${active ? 'active' : ''} ${uncertain ? 'uncertain' : ''}`}>
       <button className="timestamp" onClick={() => onSeek(segment.startTime, true)}><span>{formatTime(segment.startTime)}</span><small>{formatTime(segment.endTime)}</small></button>
       <div className="segment-copy" onClick={!editable ? () => onSeek(segment.startTime, true) : undefined} role={!editable ? 'button' : undefined} tabIndex={!editable ? 0 : undefined} onKeyDown={!editable ? (event) => { if (event.key === 'Enter' || event.key === ' ') onSeek(segment.startTime, true); } : undefined}>
-        <div className="speaker-line"><strong>{segment.speaker || 'Professor'}</strong><span>{segment.detectedLanguage === 'mixed' ? 'EN + مصري' : segment.detectedLanguage.toUpperCase()}</span>{uncertain && <span className="confidence-low"><AlertTriangle size={12} /> {Math.round(segment.confidence * 100)}% · verify</span>}{segment.manuallyReviewed && <span className="reviewed"><Check size={12} /> Reviewed</span>}</div>
+        <div className="speaker-line"><strong>{segment.speaker || 'Professor'}</strong><span>{segment.detectedLanguage === 'mixed' ? 'EN + مصري' : segment.detectedLanguage.toUpperCase()}</span>{uncertain && <span className="confidence-low"><AlertTriangle size={12} /> {confidence === undefined ? 'Verify against audio' : `${Math.round(confidence * 100)}% · verify`}</span>}{segment.manuallyReviewed && <span className="reviewed"><Check size={12} /> Reviewed</span>}</div>
         {editable ? <textarea dir={detectDirection(segment.editedText)} defaultValue={segment.editedText} onBlur={(event) => onEdit(segment.id, { editedText: event.target.value })} aria-label={`Edit transcript at ${formatTime(segment.startTime)}`} /> : <p dir="auto">{segment.originalText}</p>}
       </div>
     </div>;
@@ -277,6 +288,14 @@ function TranscriptView({ segments, editable, activeId, activeRef, onSeek, onEdi
 }
 
 function ReviewPanel({ segments, onSeek, onEdit }: { segments: TranscriptSegment[]; onSeek: (time: number, autoplay?: boolean) => void; onEdit: (id: string, patch: Partial<TranscriptSegment>) => Promise<void> }) {
-  if (!segments.length) return <section className="empty-state"><Check size={34} /><h2>No uncertain sections</h2><p>Every transcript segment is above the review threshold or has already been checked.</p></section>;
-  return <section className="review-panel"><div className="panel-heading"><div><p className="eyebrow">Audio verification</p><h2>Review uncertain sections</h2></div><span>{segments.length} need attention</span></div>{segments.map((segment) => <article key={segment.id} className="review-card"><div className="confidence-ring" style={{ '--confidence': `${segment.confidence * 100}%` } as React.CSSProperties}><strong>{Math.round(segment.confidence * 100)}</strong><small>%</small></div><div className="review-copy"><button className="timestamp inline" onClick={() => onSeek(segment.startTime, true)}><Play size={13} /> {formatTime(segment.startTime)} – {formatTime(segment.endTime)}</button><textarea dir={detectDirection(segment.editedText)} defaultValue={segment.editedText} aria-label="Correct uncertain transcript" onBlur={(event) => onEdit(segment.id, { editedText: event.target.value })} /><div className="button-row compact"><button className="secondary-button" onClick={() => onSeek(segment.startTime, true)}><Play size={14} /> Play audio</button><button className="primary-button" onClick={() => onEdit(segment.id, { manuallyReviewed: true, confidence: Math.max(segment.confidence, .9) })}><Check size={14} /> Mark reviewed</button></div></div></article>)}</section>;
+  if (!segments.length) return <section className="empty-state"><Check size={34} /><h2>No uncertain sections</h2><p>Every automatically flagged transcript segment has been checked.</p></section>;
+  return <section className="review-panel"><div className="panel-heading"><div><p className="eyebrow">Audio verification</p><h2>Review uncertain sections</h2></div><span>{segments.length} need attention</span></div>{segments.map((segment) => {
+    const confidence = measuredConfidence(segment);
+    return <article key={segment.id} className="review-card">
+      {confidence === undefined
+        ? <div className="confidence-ring"><AlertTriangle size={18} /><small>Verify</small></div>
+        : <div className="confidence-ring" style={{ '--confidence': `${confidence * 100}%` } as React.CSSProperties}><strong>{Math.round(confidence * 100)}</strong><small>%</small></div>}
+      <div className="review-copy"><button className="timestamp inline" onClick={() => onSeek(segment.startTime, true)}><Play size={13} /> {formatTime(segment.startTime)} – {formatTime(segment.endTime)}</button><textarea dir={detectDirection(segment.editedText)} defaultValue={segment.editedText} aria-label="Correct uncertain transcript" onBlur={(event) => onEdit(segment.id, { editedText: event.target.value })} /><div className="button-row compact"><button className="secondary-button" onClick={() => onSeek(segment.startTime, true)}><Play size={14} /> Play audio</button><button className="primary-button" onClick={() => onEdit(segment.id, { manuallyReviewed: true })}><Check size={14} /> Mark reviewed</button></div></div>
+    </article>;
+  })}</section>;
 }

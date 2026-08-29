@@ -19,12 +19,15 @@ type ImportedSegment = {
   originalText?: unknown;
   confidence?: unknown;
   avg_logprob?: unknown;
+  manuallyReviewed?: unknown;
   language?: unknown;
   speaker?: unknown;
 };
 
 export function normalizeTranscript(input: unknown, lectureId: string): TranscriptSegment[] {
-  const root = input as { segments?: unknown };
+  const root = input as { segments?: unknown; engine?: unknown };
+  const engine = typeof root?.engine === 'string' ? root.engine : '';
+  const engineConfidenceIsUncalibrated = engine === 'faster-whisper' || engine === 'transformers.js';
   if (!root || !Array.isArray(root.segments)) throw new Error('Transcript JSON must contain a segments array.');
 
   // Do not impose an artificial transcript-length or segment-count quota.
@@ -37,13 +40,13 @@ export function normalizeTranscript(input: unknown, lectureId: string): Transcri
     if (!originalText || !Number.isFinite(startTime) || !Number.isFinite(endTime) || startTime < 0 || endTime < startTime) {
       throw new Error(`Segment ${index + 1} has invalid text or timestamps.`);
     }
-    const importedConfidence = Number(segment.confidence);
-    const logProbability = Number(segment.avg_logprob);
-    const confidence = Number.isFinite(importedConfidence)
+    const importedConfidence = segment.confidence === undefined || segment.confidence === null || segment.confidence === '' ? Number.NaN : Number(segment.confidence);
+    // faster-whisper avg_logprob and Transformers.js placeholders are not calibrated
+    // accuracy percentages. Only preserve an explicit numeric confidence from an
+    // external/imported transcript source that claims to provide one.
+    const confidence = !engineConfidenceIsUncalibrated && Number.isFinite(importedConfidence)
       ? Math.min(1, Math.max(0, importedConfidence))
-      : Number.isFinite(logProbability)
-        ? Math.min(1, Math.max(0, Math.exp(logProbability)))
-        : 0.86;
+      : undefined;
     const importedLanguage = String(segment.language);
     const detectedLanguage = ['en', 'ar', 'mixed'].includes(importedLanguage)
       ? importedLanguage as TranscriptSegment['detectedLanguage']
@@ -57,7 +60,7 @@ export function normalizeTranscript(input: unknown, lectureId: string): Transcri
       editedText: originalText,
       detectedLanguage,
       confidence,
-      manuallyReviewed: confidence >= 0.85,
+      manuallyReviewed: segment.manuallyReviewed === true,
       speaker: typeof segment.speaker === 'string' ? segment.speaker.slice(0, 50) : 'Professor',
     } satisfies TranscriptSegment;
   });

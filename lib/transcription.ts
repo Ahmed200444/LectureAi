@@ -1,7 +1,7 @@
 import { generateNotesHtml } from './notes.ts';
 import { normalizeTranscript } from './transcript.ts';
 import type { Course, Lecture } from './types.ts';
-import { isPhoneOrTabletDevice } from './device.ts';
+import { detectDeviceKind, isPhoneOrTabletDevice, recordingFileExtension } from './device.ts';
 
 const HELPER_URL = 'http://127.0.0.1:8765';
 
@@ -22,9 +22,11 @@ type HelperJob = {
 };
 
 function audioFilename(mimeType: string) {
-  if (mimeType.includes('mp4') || mimeType.includes('m4a')) return 'lecture.m4a';
-  if (mimeType.includes('wav')) return 'lecture.wav';
-  return 'lecture.webm';
+  return `lecture.${recordingFileExtension(mimeType)}`;
+}
+
+function isNonWindowsBrowser() {
+  return typeof navigator !== 'undefined' && detectDeviceKind() !== 'windows';
 }
 
 function makeForm(lecture: Lecture, course: Course | undefined, audio: Blob, model = 'configured') {
@@ -47,6 +49,7 @@ async function responseError(response: Response) {
 }
 
 export async function windowsHelperHealth(fetcher: FetchLike = fetch, timeoutMs = 1800) {
+  if (isNonWindowsBrowser()) return { available: false as const, error: 'Windows helper is only available on Windows; loopback was not contacted.' };
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -73,6 +76,7 @@ export async function transcribeWithWindowsHelper(
   fetcher: FetchLike = fetch,
   wait: (milliseconds: number) => Promise<void> = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
 ) {
+  if (fetcher === fetch && isNonWindowsBrowser()) throw new Error('The Windows transcription helper can only be contacted from the Windows computer running LectureAI.');
   onProgress({ progress: 8, message: 'Sending the saved recording to the private Windows transcription helper…' });
   const jobResponse = await fetcher(`${HELPER_URL}/jobs`, { method: 'POST', body: makeForm(lecture, course, audio) });
 
@@ -103,6 +107,7 @@ export async function transcribeWithWindowsHelper(
 
 export function completeTranscription(lecture: Lecture, payload: unknown, engine: 'windows' | 'phone' | 'import', model: string) {
   const segments = normalizeTranscript(payload, lecture.id);
+  const actualModel = String((payload as { model?: unknown })?.model || model);
   if (!segments.length) throw new Error('No speech was detected in this recording. Check the audio and try again.');
   const withTranscript: Lecture = {
     ...lecture,
@@ -112,7 +117,7 @@ export function completeTranscription(lecture: Lecture, payload: unknown, engine
     statusMessage: 'Transcript complete · generating editable lecture notes',
     processingProgress: 94,
     transcriptionEngine: engine,
-    transcriptionModel: String((payload as { model?: unknown })?.model || model),
+    transcriptionModel: actualModel,
   };
   const notes = generateNotesHtml(withTranscript);
   return {
@@ -121,7 +126,7 @@ export function completeTranscription(lecture: Lecture, payload: unknown, engine
     notesCurrent: notes,
     noteVersions: [...withTranscript.noteVersions, { id: crypto.randomUUID(), html: notes, createdAt: new Date().toISOString(), label: 'Original generated notes' }],
     status: 'done' as const,
-    statusMessage: `${segments.length} timestamped segment${segments.length === 1 ? '' : 's'} ready · editable notes generated`,
+    statusMessage: `${segments.length} timestamped segment${segments.length === 1 ? '' : 's'} ready · editable notes generated · model: ${actualModel}`,
     processingProgress: 100,
     updatedAt: new Date().toISOString(),
   };

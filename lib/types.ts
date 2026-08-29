@@ -32,7 +32,7 @@ export interface TranscriptSegment {
   originalText: string;
   editedText: string;
   detectedLanguage: 'en' | 'ar' | 'mixed' | 'unknown';
-  confidence: number;
+  confidence?: number;
   manuallyReviewed: boolean;
   speaker?: string;
 }

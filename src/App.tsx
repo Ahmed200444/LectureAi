@@ -117,9 +117,9 @@ export default function LectureAI() {
       try {
         const audio = await getAudio(queued.id);
         if (!audio) throw new Error('The saved original audio could not be found on this device.');
-        await update({ status: 'preparing', processingProgress: 3, statusMessage: 'Recording safely saved · starting automatic transcription' });
+        await update({ status: 'preparing', processingProgress: 3, statusMessage: 'Original audio preserved · starting automatic transcription' });
 
-        if (await windowsHelperAvailable()) {
+        if (detectDeviceKind() === 'windows' && await windowsHelperAvailable()) {
           const payload = await transcribeWithWindowsHelper(working, course, audio.blob, (event) => { void progress(event); });
           await update(completeTranscription(working, payload, 'windows', 'Configured faster-whisper multilingual model'));
           return;
@@ -135,11 +135,11 @@ export default function LectureAI() {
           status: 'needs-transcription',
           processingProgress: undefined,
           statusMessage: isPhoneOrTablet()
-            ? 'Recording safely saved · choose Transcribe on This Device or export it to Windows'
-            : 'Recording safely saved · start the Windows transcription helper or use the on-device model',
+            ? 'Original audio preserved · choose Transcribe on This Device or export it to Windows'
+            : 'Original audio preserved · start the Windows transcription helper or use the on-device model',
         });
       } catch (error) {
-        await update({ status: 'needs-transcription', processingProgress: undefined, statusMessage: `Recording safely saved · ${error instanceof Error ? error.message : 'automatic transcription could not finish'}` });
+        await update({ status: 'needs-transcription', processingProgress: undefined, statusMessage: `Original audio preserved · ${error instanceof Error ? error.message : 'automatic transcription could not finish'}` });
       } finally {
         processingLectures.current.delete(queued.id);
       }

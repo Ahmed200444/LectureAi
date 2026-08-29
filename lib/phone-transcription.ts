@@ -322,7 +322,7 @@ export async function transcribeOnPhone(
           start: Math.max(0, Number(raw.start) + startSeconds),
           end: Math.max(0, Number(raw.end) + startSeconds),
           text: String(raw.text || '').trim(),
-          confidence: raw.confidence ?? 0,
+          confidence: raw.confidence,
           speaker: raw.speaker || 'Professor',
         };
         if (!next.text || next.end < acceptAfter) continue;
@@ -336,7 +336,6 @@ export async function transcribeOnPhone(
         start: gapStart,
         end: endSeconds,
         text: '[inaudible]',
-        confidence: 0,
         speaker: 'Professor',
       });
       onProgress({ progress: 75, message: 'One section could not be processed after automatic retries. LectureAI kept the rest of the transcript and marked this section for review.' });

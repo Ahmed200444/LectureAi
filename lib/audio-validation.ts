@@ -1,4 +1,4 @@
-import { detectDeviceKind } from './device.ts';
+import { detectDeviceKind, preferredRecordingMimeType } from './device.ts';
 
 export function assertLiveMicrophoneStream(stream: MediaStream) {
   const track = stream.getAudioTracks()[0];
@@ -69,7 +69,15 @@ export async function verifyMicrophoneCapture(stream: MediaStream, timeoutMs = 1
   assertLiveMicrophoneStream(stream);
   if (typeof MediaRecorder === 'undefined') throw new Error('This browser cannot record microphone audio.');
 
-  const recorder = new MediaRecorder(stream);
+  const preferredMimeType = preferredRecordingMimeType();
+  let recorder: MediaRecorder;
+  try {
+    recorder = preferredMimeType
+      ? new MediaRecorder(stream, { mimeType: preferredMimeType, audioBitsPerSecond: 192_000 })
+      : new MediaRecorder(stream, { audioBitsPerSecond: 192_000 });
+  } catch {
+    recorder = new MediaRecorder(stream);
+  }
   const chunks: Blob[] = [];
   const stopped = new Promise<void>((resolve, reject) => {
     recorder.addEventListener('dataavailable', (event) => {

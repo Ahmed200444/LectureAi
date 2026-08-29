@@ -51,7 +51,7 @@ export async function initializeDatabase() {
     await db.put('settings', { ...currentSettings, preferredMode: 'computer' } as AppSettings);
   }
   const savedWithoutTranscript = (await db.getAllFromIndex('lectures', 'status', 'saved')).filter((lecture) => !lecture.segments.length);
-  await Promise.all(savedWithoutTranscript.map((lecture) => db.put('lectures', { ...lecture, status: 'transcription-queued', statusMessage: 'Recording safely saved · transcription queued', processingProgress: 0, updatedAt: new Date().toISOString() })));
+  await Promise.all(savedWithoutTranscript.map((lecture) => db.put('lectures', { ...lecture, status: 'transcription-queued', statusMessage: 'Original audio preserved · transcription queued', processingProgress: 0, updatedAt: new Date().toISOString() })));
   const interrupted = await db.getAllFromIndex('lectures', 'status', 'recording');
   await Promise.all(interrupted.map((lecture) => db.put('lectures', { ...lecture, status: 'interrupted', statusMessage: 'Recording was interrupted; saved chunks can be recovered.', updatedAt: new Date().toISOString() })));
 
