@@ -269,14 +269,19 @@ function HomeView({ lectures, courses, storage, onRecord, onImport, onOpen, onNa
   </>;
 }
 
+function needsTranscriptReview(segment: Lecture['segments'][number]) {
+  const confidence = typeof segment.confidence === 'number' && Number.isFinite(segment.confidence) ? segment.confidence : undefined;
+  return !segment.manuallyReviewed && ((confidence !== undefined && confidence < .85) || /\[(uncertain|inaudible)\]/i.test(segment.editedText || segment.originalText));
+}
+
 function LectureCard({ lecture, course, onOpen }: { lecture: Lecture; course?: Course; onOpen: () => void }) {
-  const uncertain = lecture.segments.filter((segment) => segment.confidence < .85 && !segment.manuallyReviewed).length;
+  const uncertain = lecture.segments.filter(needsTranscriptReview).length;
   return <button className="lecture-card compact-card" onClick={onOpen}><div className="lecture-title-row"><div className="course-icon" style={{ background: `${course?.color || '#315f4b'}18`, color: course?.color || '#315f4b' }}>{course?.icon || 'L'}</div><div><span className="course-label">{course?.code || 'LECTURE'} · {course?.name || 'Unassigned'}</span><h3>{lecture.title}</h3><p>{friendlyDate(lecture.date)} · {course?.professor || 'Professor not set'}</p></div><span className={`complete-pill ${lecture.status}`}>{lecture.status === 'done' ? 'Ready' : lecture.status}</span></div><div className="lecture-card-footer"><span><Clock3 size={14} /> {formatDuration(lecture.duration)}</span><span><FileAudio size={14} /> {lecture.size ? formatBytes(lecture.size) : 'No audio size'}</span><span><Star size={14} /> {lecture.bookmarks.length}</span>{uncertain > 0 && <span className="needs-review"><AlertTriangle size={14} /> {uncertain} to review</span>}<ChevronRight size={17} /></div></button>;
 }
 
 function LecturesView({ lectures, courses, onOpen, onRecord, onImport }: { lectures: Lecture[]; courses: Course[]; onOpen: (lecture: Lecture) => void; onRecord: () => void; onImport: () => void }) {
   const [filter, setFilter] = useState('all');
-  const visible = lectures.filter((lecture) => filter === 'all' || lecture.courseId === filter || (filter === 'review' && lecture.segments.some((segment) => segment.confidence < .85 && !segment.manuallyReviewed)));
+  const visible = lectures.filter((lecture) => filter === 'all' || lecture.courseId === filter || (filter === 'review' && lecture.segments.some(needsTranscriptReview)));
   return <><PageHeader eyebrow="Library" title="All lectures" action={<div className="button-row compact"><button className="primary-button" onClick={onRecord}><Mic size={17} /> Record lecture</button>{detectDeviceKind() === 'windows' && <button className="secondary-button" onClick={onImport}><Upload size={17} /> Import recording</button>}</div>} /><div className="filter-row"><button className={filter === 'all' ? 'active' : ''} onClick={() => setFilter('all')}>All</button><button className={filter === 'review' ? 'active' : ''} onClick={() => setFilter('review')}>Needs review</button>{courses.map((course) => <button key={course.id} className={filter === course.id ? 'active' : ''} onClick={() => setFilter(course.id)}>{course.code}</button>)}</div><div className="lecture-list">{visible.map((lecture) => <LectureCard key={lecture.id} lecture={lecture} course={courses.find((course) => course.id === lecture.courseId)} onOpen={() => onOpen(lecture)} />)}{!visible.length && <EmptyInline onRecord={onRecord} />}</div></>;
 }
 
