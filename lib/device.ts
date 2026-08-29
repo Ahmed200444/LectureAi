@@ -42,6 +42,21 @@ export function deviceLabel() {
   } as Record<DeviceKind, string>)[kind];
 }
 
+/**
+ * Lecture capture favors a faithful source recording over call-style processing.
+ * iOS/iPadOS may ignore unsupported preferences, so every field is a preference,
+ * not a hard requirement that would make microphone access fail.
+ */
+export function lectureAudioConstraints(): MediaTrackConstraints {
+  return {
+    echoCancellation: { ideal: false },
+    noiseSuppression: { ideal: false },
+    autoGainControl: { ideal: false },
+    channelCount: { ideal: 1 },
+    sampleRate: { ideal: 48_000 },
+  };
+}
+
 export function recordingMimeCandidates() {
   const ios = isIOSDevice();
   return ios
