@@ -21,10 +21,21 @@ function shareOrDownload(blob: Blob, filename: string, title: string) {
       share?: (data: ShareData) => Promise<void>;
     };
     const file = new File([blob], safe, { type: blob.type || 'application/octet-stream' });
-    const data: ShareData = { files: [file], title };
-    const canShareFiles = !nav.canShare || nav.canShare(data);
+    const fileData: ShareData = { files: [file], title };
+    const canShareFiles = !nav.canShare || nav.canShare(fileData);
     if (nav.share && canShareFiles) {
-      void nav.share(data).catch((error: unknown) => {
+      void nav.share(fileData).catch((error: unknown) => {
+        if (error instanceof DOMException && error.name === 'AbortError') return;
+        download(blob, safe);
+      });
+      return;
+    }
+
+    // Some iOS/iPadOS share targets accept transcript text but reject a .txt/.md
+    // attachment. Keep WhatsApp/Gmail/etc. useful by sharing the transcript body as
+    // plain text before falling back to a local download.
+    if (nav.share && blob.type.startsWith('text/')) {
+      void blob.text().then((text) => nav.share?.({ title, text })).catch((error: unknown) => {
         if (error instanceof DOMException && error.name === 'AbortError') return;
         download(blob, safe);
       });
