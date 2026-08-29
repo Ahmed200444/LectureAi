@@ -42,16 +42,17 @@ export function getDatabase() {
 export async function initializeDatabase() {
   const db = await getDatabase();
   await removeLegacyDemoData(db);
-  if (!(await db.get('settings', 'app'))) {
-    await db.put('settings', { key: 'app', consentAcknowledged: false, followTranscript: true, preferredMode: 'maximum', phoneModelInstalled: false });
+  const currentSettings = await db.get('settings', 'app') as (AppSettings & { preferredMode?: string }) | undefined;
+  if (!currentSettings) {
+    await db.put('settings', { key: 'app', consentAcknowledged: false, followTranscript: true, preferredMode: 'computer', phoneModelInstalled: false });
+  } else if (currentSettings.preferredMode === 'maximum') {
+    await db.put('settings', { ...currentSettings, preferredMode: 'computer' } as AppSettings);
   }
   const savedWithoutTranscript = (await db.getAllFromIndex('lectures', 'status', 'saved')).filter((lecture) => !lecture.segments.length);
   await Promise.all(savedWithoutTranscript.map((lecture) => db.put('lectures', { ...lecture, status: 'transcription-queued', statusMessage: 'Recording safely saved · transcription queued', processingProgress: 0, updatedAt: new Date().toISOString() })));
   const interrupted = await db.getAllFromIndex('lectures', 'status', 'recording');
   await Promise.all(interrupted.map((lecture) => db.put('lectures', { ...lecture, status: 'interrupted', statusMessage: 'Recording was interrupted; saved chunks can be recovered.', updatedAt: new Date().toISOString() })));
 
-  // If the browser closed during processing, retry the same saved lecture instead of
-  // leaving it permanently stuck. This never creates a duplicate lecture record.
   for (const status of ['preparing', 'transcribing', 'checking', 'generating-notes'] as const) {
     const stuck = await db.getAllFromIndex('lectures', 'status', status);
     await Promise.all(stuck.map(async (lecture) => {
@@ -108,8 +109,6 @@ export async function finalizeAudio(lectureId: string, mimeType: string) {
   const chunks = await getAudioChunks(lectureId);
   if (!chunks.length) throw new Error('No recoverable audio chunks were found.');
   const blob = new Blob(chunks.map((chunk) => chunk.blob), { type: mimeType || chunks[0].mimeType });
-  // Keep checkpoints until the browser proves the assembled recording is playable.
-  // The recorder clears them only after validation succeeds.
   await db.put('audioFiles', { lectureId, blob, mimeType: blob.type, size: blob.size, createdAt: new Date().toISOString() });
   return blob;
 }
