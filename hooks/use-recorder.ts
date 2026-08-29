@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { deleteAudioChunks, finalizeAudio, saveAudioChunk } from '../lib/db';
-import { assertLiveMicrophoneStream, validatePlayableAudio, waitForAudibleInput } from '../lib/audio-validation';
+import { assertLiveMicrophoneStream, validatePlayableAudio, verifyMicrophoneCapture, waitForAudibleInput } from '../lib/audio-validation';
 import { preferredRecordingMimeType } from '../lib/device';
 
 type WakeLockSentinelLike = { release: () => Promise<void> };
@@ -69,6 +69,7 @@ export function useRecorder() {
     const samples = new Uint8Array(analyser.frequencyBinCount);
     const update = () => {
       if (context.state !== 'running') {
+        // iOS can suspend WebAudio without stopping MediaRecorder. Do not call that silence.
         setLevel(0);
         quietSinceRef.current = null;
         frameRef.current = requestAnimationFrame(update);
@@ -82,7 +83,7 @@ export function useRecorder() {
         if (rms < 0.0015) {
           quietSinceRef.current ??= Date.now();
           if (Date.now() - quietSinceRef.current > 10_000) {
-            setError('No sound has reached the recorder for 10 seconds. Speak near the phone and check that the microphone is unobstructed.');
+            setError('No sound has reached the recorder for 10 seconds. Check that the iPhone/iPad microphone is unobstructed and keep LectureAI visible.');
           }
         } else {
           quietSinceRef.current = null;
@@ -100,16 +101,22 @@ export function useRecorder() {
       throw new Error('This browser does not support reliable microphone recording.');
     }
     const stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: true, channelCount: 1 },
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+        channelCount: { ideal: 1 },
+        sampleRate: { ideal: 48_000 },
+      },
       video: false,
     });
     try {
       const track = assertLiveMicrophoneStream(stream);
       track.addEventListener('ended', () => setError('The microphone audio track ended unexpectedly. Finish the lecture to preserve saved checkpoints.'));
-      const audible = await waitForAudibleInput(stream, 5000);
-      if (audible === false) {
-        throw new Error('Microphone permission is on, but LectureAI could not detect real sound. Speak near the iPhone/iPad, make sure the microphone is not covered, then try again.');
-      }
+
+      // Permission is not enough on iOS. Record and decode a real probe from this exact
+      // stream before starting the lecture so a silent capture cannot look successful.
+      await verifyMicrophoneCapture(stream);
 
       streamRef.current = stream;
       lectureIdRef.current = lectureId;
@@ -119,8 +126,8 @@ export function useRecorder() {
       let recorder: MediaRecorder;
       try {
         recorder = requestedMimeType
-          ? new MediaRecorder(stream, { mimeType: requestedMimeType, audioBitsPerSecond: 128_000 })
-          : new MediaRecorder(stream);
+          ? new MediaRecorder(stream, { mimeType: requestedMimeType, audioBitsPerSecond: 160_000 })
+          : new MediaRecorder(stream, { audioBitsPerSecond: 160_000 });
       } catch {
         recorder = new MediaRecorder(stream);
       }
@@ -139,13 +146,14 @@ export function useRecorder() {
           createdAt: new Date().toISOString(),
         });
         pendingWritesRef.current.push(write);
-        write.catch(() => setError('A recording checkpoint could not be saved. Check available storage.'));
+        write.catch(() => setError('A recording checkpoint could not be saved. Check available device storage.'));
       };
       recorder.onerror = () => setError('The recorder reported an error. Saved checkpoints remain recoverable.');
       elapsedRef.current = 0;
       activeStartedRef.current = Date.now();
       setDuration(0);
       setChunkCount(0);
+      // There is no LectureAI duration quota. Timed blobs are safety checkpoints only.
       recorder.start(5_000);
       setIsRecording(true);
       setIsPaused(false);
@@ -188,8 +196,8 @@ export function useRecorder() {
     if (!stream) throw new Error('The microphone stream is no longer available. Start a new recording.');
     stream.getAudioTracks().forEach((track) => { track.enabled = true; });
     assertLiveMicrophoneStream(stream);
-    const audible = await waitForAudibleInput(stream, 4000);
-    if (audible === false) throw new Error('The microphone is available, but no live sound was detected after continuing. Speak near the device and try again.');
+    const audible = await waitForAudibleInput(stream, 4000, 0.0008);
+    if (audible === false) throw new Error('The microphone is available, but no live sound was detected after continuing. Check the device microphone and try again.');
     await audioContextRef.current?.resume().catch(() => undefined);
     const resumed = new Promise<void>((resolve) => recorder.addEventListener('resume', () => resolve(), { once: true }));
     recorder.resume();
