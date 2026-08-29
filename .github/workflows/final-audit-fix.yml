@@ -1,0 +1,275 @@
+name: Apply final production audit fixes
+
+on:
+  push:
+    branches: [final-production-audit-20260829]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.event.head_commit.message != 'Apply final production audit fixes'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: final-production-audit-20260829
+      - name: Apply audited reliability fixes
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          def replace(path, old, new, expected=1):
+              p = Path(path)
+              text = p.read_text(encoding='utf-8')
+              count = text.count(old)
+              if count != expected:
+                  raise SystemExit(f'{path}: expected {expected} occurrence(s), found {count}: {old[:100]!r}')
+              p.write_text(text.replace(old, new), encoding='utf-8')
+
+          def replace_all(path, old, new, minimum=1):
+              p = Path(path)
+              text = p.read_text(encoding='utf-8')
+              count = text.count(old)
+              if count < minimum:
+                  raise SystemExit(f'{path}: expected at least {minimum} occurrence(s), found {count}: {old!r}')
+              p.write_text(text.replace(old, new), encoding='utf-8')
+
+          # Recorder: keep iOS audio routing live across pause/resume and make the
+          # playback-decoded media duration authoritative after final validation.
+          replace('hooks/use-recorder.ts',
+              "import { assertLiveMicrophoneStream, validatePlayableAudio, verifyMicrophoneCapture, waitForAudibleInput } from '../lib/audio-validation';",
+              "import { assertLiveMicrophoneStream, validatePlayableAudio, verifyMicrophoneCapture } from '../lib/audio-validation';")
+          replace('hooks/use-recorder.ts',
+              "    streamRef.current?.getAudioTracks().forEach((track) => { track.enabled = false; });\n",
+              "")
+          replace('hooks/use-recorder.ts',
+              "    stream.getAudioTracks().forEach((track) => { track.enabled = true; });\n    assertLiveMicrophoneStream(stream);\n    const audible = await waitForAudibleInput(stream, 4000, 0.0005);\n    if (audible === false) throw new Error('The microphone is available, but no live sound was detected after continuing. Check the device microphone and try again.');\n    await audioContextRef.current?.resume().catch(() => undefined);",
+              "    // Keep the granted microphone track live across MediaRecorder.pause()/resume().\n    // Toggling track.enabled can disturb iOS/iPadOS audio routing, and requiring\n    // immediate speech would falsely reject a quiet classroom. The encoded start\n    // probe is authoritative; the live meter continues to warn on prolonged silence.\n    assertLiveMicrophoneStream(stream);\n    await audioContextRef.current?.resume().catch(() => undefined);")
+          replace('hooks/use-recorder.ts',
+              "    const finalDuration = elapsedRef.current;\n    const blob = await finalizeAudio(lectureIdRef.current, mimeTypeRef.current || recorder.mimeType);",
+              "    const blob = await finalizeAudio(lectureIdRef.current, mimeTypeRef.current || recorder.mimeType);")
+          replace('hooks/use-recorder.ts',
+              "      if (verified.duration && finalDuration <= 0) elapsedRef.current = verified.duration;",
+              "      if (verified.duration) elapsedRef.current = verified.duration;")
+          replace('hooks/use-recorder.ts',
+              "    return { blob, duration: elapsedRef.current, mimeType: blob.type };",
+              "    return { blob, duration: elapsedRef.current, mimeType: blob.type, chunkCount: chunkIndexRef.current };")
+
+          # The encoded microphone preflight should exercise the same preferred MIME
+          # path as the actual lecture recorder, with a safe browser-default fallback.
+          replace('lib/audio-validation.ts',
+              "import { detectDeviceKind } from './device.ts';",
+              "import { detectDeviceKind, preferredRecordingMimeType } from './device.ts';")
+          replace('lib/audio-validation.ts',
+              "  const recorder = new MediaRecorder(stream);\n  const chunks: Blob[] = [];",
+              "  const preferredMimeType = preferredRecordingMimeType();\n  let recorder: MediaRecorder;\n  try {\n    recorder = preferredMimeType\n      ? new MediaRecorder(stream, { mimeType: preferredMimeType, audioBitsPerSecond: 192_000 })\n      : new MediaRecorder(stream, { audioBitsPerSecond: 192_000 });\n  } catch {\n    recorder = new MediaRecorder(stream);\n  }\n  const chunks: Blob[] = [];")
+
+          # Practical audio extension mapping is shared by export and Windows helper
+          # uploads so transferred AAC/MP3/OGG/FLAC/WAV files are not mislabeled WebM.
+          replace('lib/device.ts',
+              "export function preferredRecordingMimeType() {",
+              "export function recordingFileExtension(mimeType: string) {\n  const type = (mimeType || '').toLowerCase();\n  if (type.includes('mp4') || type.includes('m4a')) return 'm4a';\n  if (type.includes('wav')) return 'wav';\n  if (type.includes('mpeg') || type.includes('mp3')) return 'mp3';\n  if (type.includes('aac')) return 'aac';\n  if (type.includes('ogg')) return 'ogg';\n  if (type.includes('flac')) return 'flac';\n  if (type.includes('webm')) return 'webm';\n  return 'audio';\n}\n\nexport function preferredRecordingMimeType() {")
+
+          # Do not invent calibrated accuracy percentages. Confidence is optional;
+          # automatic engines use source markers/raw scores for review instead.
+          replace('lib/types.ts', '  confidence: number;\n', '  confidence?: number;\n')
+          replace('lib/transcript.ts',
+              "  avg_logprob?: unknown;\n  language?: unknown;",
+              "  avg_logprob?: unknown;\n  manuallyReviewed?: unknown;\n  language?: unknown;")
+          replace('lib/transcript.ts',
+              "  const root = input as { segments?: unknown };",
+              "  const root = input as { segments?: unknown; engine?: unknown };\n  const engine = typeof root?.engine === 'string' ? root.engine : '';\n  const engineConfidenceIsUncalibrated = engine === 'faster-whisper' || engine === 'transformers.js';")
+          replace('lib/transcript.ts',
+              "    const importedConfidence = Number(segment.confidence);\n    const logProbability = Number(segment.avg_logprob);\n    const confidence = Number.isFinite(importedConfidence)\n      ? Math.min(1, Math.max(0, importedConfidence))\n      : Number.isFinite(logProbability)\n        ? Math.min(1, Math.max(0, Math.exp(logProbability)))\n        : 0.86;",
+              "    const importedConfidence = segment.confidence === undefined || segment.confidence === null || segment.confidence === '' ? Number.NaN : Number(segment.confidence);\n    // faster-whisper avg_logprob and Transformers.js placeholders are not calibrated\n    // accuracy percentages. Only preserve an explicit numeric confidence from an\n    // external/imported transcript source that claims to provide one.\n    const confidence = !engineConfidenceIsUncalibrated && Number.isFinite(importedConfidence)\n      ? Math.min(1, Math.max(0, importedConfidence))\n      : undefined;")
+          replace('lib/transcript.ts',
+              "      manuallyReviewed: confidence >= 0.85,",
+              "      manuallyReviewed: segment.manuallyReviewed === true,")
+          replace_all('lib/phone-transcriber.worker.ts', "      confidence: 0,\n", "", minimum=1)
+          replace('lib/phone-transcription.ts', "          confidence: raw.confidence ?? 0,", "          confidence: raw.confidence,")
+          replace('lib/phone-transcription.ts', "        confidence: 0,\n", "")
+
+          # Windows local engine keeps raw model scores as raw model scores. It may
+          # mark a segment for review, but never turns avg_logprob into a fake percent.
+          replace('local-ai/engine.py', 'import math\n', '')
+          engine = Path('local-ai/engine.py')
+          text = engine.read_text(encoding='utf-8')
+          text, n = re.subn(r"\n\ndef confidence_from_logprob\(value: float\) -> float:\n    return round\(max\(0\.0, min\(1\.0, math\.exp\(value\)\)\), 3\)\n", '', text)
+          if n != 1:
+              raise SystemExit(f'local-ai/engine.py: confidence helper replacement count {n}')
+          text = text.replace(
+              "        confidence = confidence_from_logprob(segment.avg_logprob)\n        if not spoken:\n            continue\n        if confidence < 0.42 and not spoken.startswith(\"[uncertain]\"):\n            spoken = f\"[uncertain] {spoken}\"",
+              "        avg_logprob = float(segment.avg_logprob)\n        if not spoken:\n            continue\n        # avg_logprob is an uncalibrated model score, not an accuracy percentage.\n        # Use it only as a conservative review heuristic.\n        if avg_logprob < -0.87 and not spoken.startswith(\"[uncertain]\"):\n            spoken = f\"[uncertain] {spoken}\"")
+          text = text.replace('            "confidence": confidence,\n            "avg_logprob": round(segment.avg_logprob, 4),', '            "avg_logprob": round(avg_logprob, 4),')
+          if 'confidence_from_logprob' in text or '"confidence": confidence' in text:
+              raise SystemExit('local-ai/engine.py: fake confidence conversion still present')
+          engine.write_text(text, encoding='utf-8')
+
+          # Windows helper is a hard platform boundary. iPhone/iPad/browser clients
+          # never probe or post to 127.0.0.1. Also preserve practical source suffixes.
+          replace('lib/transcription.ts',
+              "import { isPhoneOrTabletDevice } from './device.ts';",
+              "import { detectDeviceKind, isPhoneOrTabletDevice, recordingFileExtension } from './device.ts';")
+          old_audio_filename = "function audioFilename(mimeType: string) {\n  if (mimeType.includes('mp4') || mimeType.includes('m4a')) return 'lecture.m4a';\n  if (mimeType.includes('wav')) return 'lecture.wav';\n  return 'lecture.webm';\n}"
+          replace('lib/transcription.ts', old_audio_filename,
+              "function audioFilename(mimeType: string) {\n  return `lecture.${recordingFileExtension(mimeType)}`;\n}\n\nfunction isNonWindowsBrowser() {\n  return typeof navigator !== 'undefined' && detectDeviceKind() !== 'windows';\n}")
+          replace('lib/transcription.ts',
+              "export async function windowsHelperHealth(fetcher: FetchLike = fetch, timeoutMs = 1800) {\n  const controller = new AbortController();",
+              "export async function windowsHelperHealth(fetcher: FetchLike = fetch, timeoutMs = 1800) {\n  if (isNonWindowsBrowser()) return { available: false as const, error: 'Windows helper is only available on Windows; loopback was not contacted.' };\n  const controller = new AbortController();")
+          replace('lib/transcription.ts',
+              ") {\n  onProgress({ progress: 8, message: 'Sending the saved recording to the private Windows transcription helper…' });",
+              ") {\n  if (fetcher === fetch && isNonWindowsBrowser()) throw new Error('The Windows transcription helper can only be contacted from the Windows computer running LectureAI.');\n  onProgress({ progress: 8, message: 'Sending the saved recording to the private Windows transcription helper…' });",
+              expected=1)
+          replace('lib/transcription.ts',
+              "export function completeTranscription(lecture: Lecture, payload: unknown, engine: 'windows' | 'phone' | 'import', model: string) {\n  const segments = normalizeTranscript(payload, lecture.id);",
+              "export function completeTranscription(lecture: Lecture, payload: unknown, engine: 'windows' | 'phone' | 'import', model: string) {\n  const segments = normalizeTranscript(payload, lecture.id);\n  const actualModel = String((payload as { model?: unknown })?.model || model);")
+          replace('lib/transcription.ts',
+              "    transcriptionModel: String((payload as { model?: unknown })?.model || model),",
+              "    transcriptionModel: actualModel,")
+          replace('lib/transcription.ts',
+              "    statusMessage: `${segments.length} timestamped segment${segments.length === 1 ? '' : 's'} ready · editable notes generated`,",
+              "    statusMessage: `${segments.length} timestamped segment${segments.length === 1 ? '' : 's'} ready · editable notes generated · model: ${actualModel}`,"
+          )
+
+          # App automatic processing never even calls helper health outside Windows,
+          # and generic transcription states do not overclaim recording validation.
+          replace('src/App.tsx',
+              "        if (await windowsHelperAvailable()) {",
+              "        if (detectDeviceKind() === 'windows' && await windowsHelperAvailable()) {")
+          replace_all('src/App.tsx', 'Recording safely saved', 'Original audio preserved', minimum=1)
+
+          # Legacy/recovery status also avoids positive "safely saved" wording unless
+          # it came through the current playback-validated recorder finish path.
+          replace_all('lib/db.ts', 'Recording safely saved', 'Original audio preserved', minimum=1)
+
+          # Transcript UI: unknown model confidence is never rendered as a percentage;
+          # manually reviewing a segment no longer fabricates a 90% value.
+          replace('components/LectureDetail.tsx',
+              "import { detectDirection, formatBytes, formatDuration, formatTime, friendlyDate } from '../lib/format';",
+              "import { detectDirection, formatBytes, formatDuration, formatTime, friendlyDate } from '../lib/format';")
+          replace('components/LectureDetail.tsx',
+              "import { detectDeviceKind, deviceLabel } from '../lib/device';",
+              "import { detectDeviceKind, deviceLabel, recordingFileExtension } from '../lib/device';")
+          replace('components/LectureDetail.tsx',
+              "];\n\nexport function LectureDetail",
+              "];\n\nfunction measuredConfidence(segment: TranscriptSegment) {\n  return typeof segment.confidence === 'number' && Number.isFinite(segment.confidence) ? segment.confidence : undefined;\n}\n\nfunction needsReview(segment: TranscriptSegment) {\n  if (segment.manuallyReviewed) return false;\n  const confidence = measuredConfidence(segment);\n  return (confidence !== undefined && confidence < .85) || /\\[(uncertain|inaudible)\\]/i.test(segment.editedText || segment.originalText);\n}\n\nexport function LectureDetail",
+              expected=1)
+          replace('components/LectureDetail.tsx',
+              "  const uncertain = useMemo(() => lecture.segments.filter((segment) => segment.confidence < .85 || /\\[(uncertain|inaudible)\\]/i.test(segment.editedText || segment.originalText)), [lecture.segments]);",
+              "  const uncertain = useMemo(() => lecture.segments.filter(needsReview), [lecture.segments]);")
+          replace('components/LectureDetail.tsx',
+              "      await onChange({ ...lecture, duration: Math.max(lecture.duration, verified.duration || 0), size: blob.size, mimeType: blob.type, status: 'transcription-queued', statusMessage: `${chunks.length} recording checkpoints recovered and playback-validated · transcription queued`, processingProgress: 0 });",
+              "      await onChange({ ...lecture, duration: verified.duration || lecture.duration, size: blob.size, mimeType: blob.type, status: 'transcription-queued', statusMessage: `${chunks.length} recording checkpoints recovered and playback-validated · transcription queued`, processingProgress: 0 });")
+          replace_all('components/LectureDetail.tsx', 'Recording safely saved', 'Original audio preserved', minimum=1)
+          replace_all('components/LectureDetail.tsx', 'The original recording is safely saved.', 'The original audio is preserved locally.', minimum=1)
+          replace_all('components/LectureDetail.tsx',
+              "`${lecture.title}.${audio.mimeType.includes('mp4') ? 'm4a' : audio.mimeType.includes('wav') ? 'wav' : 'webm'}`",
+              "`${lecture.title}.${recordingFileExtension(audio.mimeType || audio.blob.type)}`",
+              minimum=1)
+          replace_all('components/LectureDetail.tsx',
+              "`${lecture.title}.${audio.mimeType.includes('mp4') ? 'm4a' : 'webm'}`",
+              "`${lecture.title}.${recordingFileExtension(audio.mimeType || audio.blob.type)}`",
+              minimum=1)
+          replace('components/LectureDetail.tsx',
+              "    const uncertain = segment.confidence < .85 || /\\[(uncertain|inaudible)\\]/i.test(segment.editedText || segment.originalText);",
+              "    const uncertain = needsReview(segment);\n    const confidence = measuredConfidence(segment);")
+          old_speaker = "        <div className=\"speaker-line\"><strong>{segment.speaker || 'Professor'}</strong><span>{segment.detectedLanguage === 'mixed' ? 'EN + مصري' : segment.detectedLanguage.toUpperCase()}</span>{uncertain && <span className=\"confidence-low\"><AlertTriangle size={12} /> {Math.round(segment.confidence * 100)}% · verify</span>}{segment.manuallyReviewed && <span className=\"reviewed\"><Check size={12} /> Reviewed</span>}</div>"
+          new_speaker = "        <div className=\"speaker-line\"><strong>{segment.speaker || 'Professor'}</strong><span>{segment.detectedLanguage === 'mixed' ? 'EN + مصري' : segment.detectedLanguage.toUpperCase()}</span>{uncertain && <span className=\"confidence-low\"><AlertTriangle size={12} /> {confidence === undefined ? 'Verify against audio' : `${Math.round(confidence * 100)}% · verify`}</span>}{segment.manuallyReviewed && <span className=\"reviewed\"><Check size={12} /> Reviewed</span>}</div>"
+          replace('components/LectureDetail.tsx', old_speaker, new_speaker)
+          detail = Path('components/LectureDetail.tsx')
+          text = detail.read_text(encoding='utf-8')
+          start = text.find('function ReviewPanel(')
+          if start < 0:
+              raise SystemExit('components/LectureDetail.tsx: ReviewPanel not found')
+          new_review = '''function ReviewPanel({ segments, onSeek, onEdit }: { segments: TranscriptSegment[]; onSeek: (time: number, autoplay?: boolean) => void; onEdit: (id: string, patch: Partial<TranscriptSegment>) => Promise<void> }) {
+  if (!segments.length) return <section className="empty-state"><Check size={34} /><h2>No uncertain sections</h2><p>Every automatically flagged transcript segment has been checked.</p></section>;
+  return <section className="review-panel"><div className="panel-heading"><div><p className="eyebrow">Audio verification</p><h2>Review uncertain sections</h2></div><span>{segments.length} need attention</span></div>{segments.map((segment) => {
+    const confidence = measuredConfidence(segment);
+    return <article key={segment.id} className="review-card">
+      {confidence === undefined
+        ? <div className="confidence-ring"><AlertTriangle size={18} /><small>Verify</small></div>
+        : <div className="confidence-ring" style={{ '--confidence': `${confidence * 100}%` } as React.CSSProperties}><strong>{Math.round(confidence * 100)}</strong><small>%</small></div>}
+      <div className="review-copy"><button className="timestamp inline" onClick={() => onSeek(segment.startTime, true)}><Play size={13} /> {formatTime(segment.startTime)} – {formatTime(segment.endTime)}</button><textarea dir={detectDirection(segment.editedText)} defaultValue={segment.editedText} aria-label="Correct uncertain transcript" onBlur={(event) => onEdit(segment.id, { editedText: event.target.value })} /><div className="button-row compact"><button className="secondary-button" onClick={() => onSeek(segment.startTime, true)}><Play size={14} /> Play audio</button><button className="primary-button" onClick={() => onEdit(segment.id, { manuallyReviewed: true })}><Check size={14} /> Mark reviewed</button></div></div>
+    </article>;
+  })}</section>;
+}
+'''
+          detail.write_text(text[:start] + new_review, encoding='utf-8')
+
+          # Recording export uses the actual media family; stop result reports the
+          # authoritative checkpoint count instead of a potentially stale React state.
+          replace('components/RecordingFlow.tsx',
+              "import { deviceLabel, detectDeviceKind } from '../lib/device';",
+              "import { deviceLabel, detectDeviceKind, recordingFileExtension } from '../lib/device';")
+          replace('components/RecordingFlow.tsx',
+              "statusMessage: `Audio playback verified · ${recorder.chunkCount} checkpoint${recorder.chunkCount === 1 ? '' : 's'} saved · ready to transcribe`,",
+              "statusMessage: `Audio playback verified · ${result.chunkCount} checkpoint${result.chunkCount === 1 ? '' : 's'} saved · ready to transcribe`,")
+          replace('components/RecordingFlow.tsx',
+              "if (audio) downloadBlob(audio.blob, `${lecture.title}.${audio.mimeType.includes('mp4') ? 'm4a' : 'webm'}`);",
+              "if (audio) downloadBlob(audio.blob, `${lecture.title}.${recordingFileExtension(audio.mimeType || audio.blob.type)}`);")
+
+          # Diagnostics explicitly say the Windows helper is not contacted elsewhere.
+          replace('components/Diagnostics.tsx',
+              "    const helper = await windowsHelperHealth();\n    const payload = helper.available ? helper.payload : undefined;",
+              "    const windowsDevice = detectDeviceKind() === 'windows';\n    const helper = windowsDevice ? await windowsHelperHealth() : { available: false as const, error: 'not applicable' };\n    const payload = helper.available ? helper.payload : undefined;")
+          replace('components/Diagnostics.tsx',
+              "      helper: helper.available ? 'ready' : 'not connected',",
+              "      helper: windowsDevice ? (helper.available ? 'ready' : 'not connected') : 'Windows only · loopback not contacted',")
+
+          # Force installed PWAs onto a new shell generation; recordings remain in
+          # IndexedDB and are never placed in this cache.
+          replace('public/sw.js', "const CACHE_NAME = 'lectureai-shell-v6';", "const CACHE_NAME = 'lectureai-shell-v7';")
+
+          # Regression tests for the newly fixed failure modes.
+          replace('tests/run.ts',
+              "import { completeTranscription, transcribeWithWindowsHelper } from '../lib/transcription.ts';",
+              "import { completeTranscription, transcribeWithWindowsHelper } from '../lib/transcription.ts';\nimport { recordingFileExtension } from '../lib/device.ts';")
+          replace('tests/run.ts',
+              "test('preserves technical English inside Arabic during transcript import', () => {",
+              "test('maps practical transferred audio types without relabeling them as WebM', () => {\n  assert.equal(recordingFileExtension('audio/mp4'), 'm4a');\n  assert.equal(recordingFileExtension('audio/webm;codecs=opus'), 'webm');\n  assert.equal(recordingFileExtension('audio/mpeg'), 'mp3');\n  assert.equal(recordingFileExtension('audio/aac'), 'aac');\n  assert.equal(recordingFileExtension('audio/ogg'), 'ogg');\n  assert.equal(recordingFileExtension('audio/flac'), 'flac');\n});\n\ntest('does not invent transcription confidence when a model provides none', () => {\n  const segment = normalizeTranscript({ engine: 'transformers.js', segments: [{ start: 0, end: 2, text: 'المحاضرة uses a pointer هنا.', confidence: 0 }] }, 'no-fake-confidence')[0];\n  assert.equal(segment.confidence, undefined);\n  assert.equal(segment.manuallyReviewed, false);\n  assert.equal(segment.detectedLanguage, 'mixed');\n});\n\ntest('preserves explicit imported confidence without auto-marking human review', () => {\n  const segment = normalizeTranscript({ segments: [{ start: 0, end: 2, text: 'Imported transcript.', confidence: .73 }] }, 'imported-confidence')[0];\n  assert.equal(segment.confidence, .73);\n  assert.equal(segment.manuallyReviewed, false);\n});\n\ntest('preserves technical English inside Arabic during transcript import', () => {")
+          replace('tests/run.ts', "  assert.match(recorder, /waitForAudibleInput/);", "  assert.doesNotMatch(recorder, /waitForAudibleInput/);")
+          replace('tests/run.ts',
+              "  assert.match(recorder, /checkpointFailureRef/);",
+              "  assert.match(recorder, /checkpointFailureRef/);\n  assert.doesNotMatch(recorder, /track\\.enabled = false/);\n  assert.match(recorder, /if \\(verified\\.duration\\) elapsedRef\\.current = verified\\.duration/);")
+
+          ios = Path('tests/ios-safeguards.ts')
+          text = ios.read_text(encoding='utf-8')
+          text = text.replace("const transcript = readFileSync(new URL('../lib/transcript.ts', import.meta.url), 'utf8');",
+              "const transcript = readFileSync(new URL('../lib/transcript.ts', import.meta.url), 'utf8');\nconst transcription = readFileSync(new URL('../lib/transcription.ts', import.meta.url), 'utf8');\nconst engine = readFileSync(new URL('../local-ai/engine.py', import.meta.url), 'utf8');")
+          text = text.replace("assert.match(validation, /verifyMicrophoneCapture/);",
+              "assert.match(validation, /verifyMicrophoneCapture/);\nassert.match(validation, /preferredRecordingMimeType/);")
+          text = text.replace("assert.match(recorder, /checkpointFailureRef/);",
+              "assert.match(recorder, /checkpointFailureRef/);\nassert.doesNotMatch(recorder, /waitForAudibleInput/);\nassert.doesNotMatch(recorder, /track\\.enabled = false/);\nassert.match(recorder, /if \\(verified\\.duration\\) elapsedRef\\.current = verified\\.duration/);")
+          text = text.replace("assert.doesNotMatch(transcript, /100_000|too many segments/i);",
+              "assert.doesNotMatch(transcript, /100_000|too many segments/i);\nassert.doesNotMatch(transcript, /0\\.86|Math\\.exp\\(logProbability\\)/);\nassert.match(transcript, /engineConfidenceIsUncalibrated/);\nassert.doesNotMatch(worker, /confidence: 0/);\nassert.doesNotMatch(phone, /confidence: raw\\.confidence \\?\\? 0/);\nassert.doesNotMatch(engine, /confidence_from_logprob|\\\"confidence\\\": confidence/);\nassert.doesNotMatch(detail, /Math\\.max\\(segment\\.confidence, \\.9\\)/);")
+          text = text.replace("assert.match(app, /preferredMode: 'computer'/);",
+              "assert.match(app, /preferredMode: 'computer'/);\nassert.match(app, /detectDeviceKind\\(\\) === 'windows' && await windowsHelperAvailable\\(\\)/);\nassert.match(transcription, /loopback was not contacted/);\nassert.match(transcription, /recordingFileExtension\\(mimeType\\)/);\nassert.doesNotMatch(app, /Recording safely saved/);\nassert.doesNotMatch(detail, /Recording safely saved/);\nassert.doesNotMatch(database, /Recording safely saved/);")
+          text = text.replace("assert.match(serviceWorker, /lectureai-shell-v6/);", "assert.match(serviceWorker, /lectureai-shell-v7/);")
+          ios.write_text(text, encoding='utf-8')
+
+          # Sanity assertions: prevent the patch from silently leaving any of the
+          # specific regressions this audit is intended to remove.
+          assertions = {
+              'hooks/use-recorder.ts': ['recorder.start(5_000)', 'verifyMicrophoneCapture(stream, 1800)', 'if (verified.duration) elapsedRef.current = verified.duration'],
+              'lib/transcription.ts': ['loopback was not contacted', 'recordingFileExtension(mimeType)', 'model: ${actualModel}'],
+              'components/LectureDetail.tsx': ['Verify against audio', 'manuallyReviewed: true', 'recordingFileExtension'],
+              'public/sw.js': ['lectureai-shell-v7'],
+          }
+          for path, needles in assertions.items():
+              body = Path(path).read_text(encoding='utf-8')
+              for needle in needles:
+                  if needle not in body:
+                      raise SystemExit(f'{path}: missing post-patch invariant {needle!r}')
+          PY
+
+          git diff --check
+          git status --short
+          git config user.name "LectureAI Audit Bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add hooks/use-recorder.ts lib/audio-validation.ts lib/device.ts lib/types.ts lib/transcript.ts lib/phone-transcriber.worker.ts lib/phone-transcription.ts lib/transcription.ts local-ai/engine.py src/App.tsx lib/db.ts components/LectureDetail.tsx components/RecordingFlow.tsx components/Diagnostics.tsx public/sw.js tests/run.ts tests/ios-safeguards.ts
+          git commit -m "Apply final production audit fixes"
+          git push origin HEAD:final-production-audit-20260829
