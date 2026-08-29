@@ -33,6 +33,7 @@ if (env.backends?.onnx?.wasm) env.backends.onnx.wasm.numThreads = 1;
 type ProgressInfo = { status?: string; progress?: number; loaded?: number; total?: number; file?: string };
 type ASROutput = { text: string; chunks?: Array<{ timestamp: [number, number]; text: string }> };
 type Transcriber = Awaited<ReturnType<typeof pipeline<'automatic-speech-recognition'>>>;
+type WorkerRequest = { id: string; audio?: Float32Array; mode?: 'prepare' | 'transcribe'; startModelIndex?: number };
 
 let transcriberPromise: Promise<Transcriber> | null = null;
 let activeModelIndex = 0;
@@ -70,7 +71,7 @@ async function getTranscriber(startIndex = activeModelIndex) {
       } catch (error) {
         if (index >= MODELS.length - 1) throw error;
         index += 1;
-        workerScope.postMessage({ type: 'transcription-progress', progress: 20, message: `The stronger phone model could not initialize. Retrying with ${MODELS[index].label}…` });
+        workerScope.postMessage({ type: 'transcription-progress', progress: 20, message: `The stronger model could not initialize. Retrying with ${MODELS[index].label}…` });
         return tryLoad();
       }
     };
@@ -78,7 +79,7 @@ async function getTranscriber(startIndex = activeModelIndex) {
   }
   const transcriber = await transcriberPromise;
   const config = MODELS[activeModelIndex];
-  workerScope.postMessage({ type: 'model-ready', model: config.id, precision: 'fp32 encoder · q4 decoder' });
+  workerScope.postMessage({ type: 'model-ready', model: config.id, modelIndex: activeModelIndex, precision: 'fp32 encoder · q4 decoder' });
   return transcriber;
 }
 
@@ -92,35 +93,39 @@ async function runRecognition(transcriber: Transcriber, audio: Float32Array) {
   }) as Promise<ASROutput>;
 }
 
-async function recognizeWithInferenceFallback(audio: Float32Array) {
-  let transcriber = await getTranscriber();
-  try {
-    return await runRecognition(transcriber, audio);
-  } catch (firstError) {
-    if (activeModelIndex >= MODELS.length - 1) throw firstError;
-    const nextIndex = activeModelIndex + 1;
-    workerScope.postMessage({ type: 'transcription-progress', progress: 70, message: `The current model could not finish on this device. Retrying with ${MODELS[nextIndex].label} to preserve on-device transcription…` });
-    await disposeCurrent();
-    activeModelIndex = nextIndex;
-    transcriber = await getTranscriber(nextIndex);
-    return runRecognition(transcriber, audio);
+async function recognizeWithInferenceFallback(audio: Float32Array, startModelIndex = activeModelIndex) {
+  if (!transcriberPromise) activeModelIndex = Math.max(0, Math.min(startModelIndex, MODELS.length - 1));
+
+  for (;;) {
+    const transcriber = await getTranscriber(activeModelIndex);
+    try {
+      return await runRecognition(transcriber, audio);
+    } catch (error) {
+      if (activeModelIndex >= MODELS.length - 1) throw error;
+      const nextIndex = activeModelIndex + 1;
+      workerScope.postMessage({ type: 'transcription-progress', progress: 70, message: `This model could not finish on the iPhone/iPad. Retrying automatically with ${MODELS[nextIndex].label}…` });
+      await disposeCurrent();
+      activeModelIndex = nextIndex;
+    }
   }
 }
 
-workerScope.addEventListener('message', async (event: MessageEvent<{ id: string; audio?: Float32Array; mode?: 'prepare' | 'transcribe' }>) => {
-  const { id, audio, mode = 'transcribe' } = event.data;
+workerScope.addEventListener('message', async (event: MessageEvent<WorkerRequest>) => {
+  const { id, audio, mode = 'transcribe', startModelIndex = 0 } = event.data;
   try {
-    await getTranscriber();
     if (mode === 'prepare') {
+      await getTranscriber(startModelIndex);
       const config = MODELS[activeModelIndex];
-      workerScope.postMessage({ type: 'result', id, payload: { prepared: true, model: config.id, precision: 'fp32 encoder · q4 decoder' } });
+      workerScope.postMessage({ type: 'result', id, payload: { prepared: true, model: config.id, modelIndex: activeModelIndex, precision: 'fp32 encoder · q4 decoder' } });
       return;
     }
     if (!audio?.length) throw new Error('No decoded audio was provided for transcription.');
 
+    const transcriber = await getTranscriber(startModelIndex);
     const config = MODELS[activeModelIndex];
     workerScope.postMessage({ type: 'transcription-progress', progress: 72, message: `Running ${config.label} locally…` });
-    const output = await recognizeWithInferenceFallback(audio);
+    void transcriber;
+    const output = await recognizeWithInferenceFallback(audio, startModelIndex);
     const finalConfig = MODELS[activeModelIndex];
 
     const chunks = output.chunks?.filter((chunk) => chunk.text.trim()) || [];
@@ -133,7 +138,7 @@ workerScope.addEventListener('message', async (event: MessageEvent<{ id: string;
       speaker: 'Professor',
     })) : output.text.trim() ? [{ id: `${id}-phone-1`, start: 0, end: audio.length / 16_000, text: output.text.trim(), confidence: 0, speaker: 'Professor' }] : [];
 
-    workerScope.postMessage({ type: 'result', id, payload: { engine: 'transformers.js', model: finalConfig.id, precision: 'fp32 encoder · q4 decoder', segments } });
+    workerScope.postMessage({ type: 'result', id, payload: { engine: 'transformers.js', model: finalConfig.id, modelIndex: activeModelIndex, precision: 'fp32 encoder · q4 decoder', segments } });
   } catch (error) {
     workerScope.postMessage({ type: 'error', id, message: error instanceof Error ? error.message : 'On-device transcription failed.' });
   }
