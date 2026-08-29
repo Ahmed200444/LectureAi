@@ -112,7 +112,7 @@ export interface AppSettings {
   key: 'app';
   consentAcknowledged: boolean;
   followTranscript: boolean;
-  preferredMode: 'maximum' | 'phone';
+  preferredMode: 'computer' | 'phone';
   phoneModelInstalled?: boolean;
 }
 
