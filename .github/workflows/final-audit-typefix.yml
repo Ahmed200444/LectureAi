@@ -1,0 +1,45 @@
+name: Apply final audit typecheck fix
+
+on:
+  push:
+    branches: [final-production-audit-20260829]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: ${{ github.event.head_commit.message != 'Fix optional transcript confidence in library views' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: final-production-audit-20260829
+      - name: Patch library review predicates
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('src/App.tsx')
+          text = p.read_text(encoding='utf-8')
+          marker = "\nfunction LectureCard({ lecture, course, onOpen }:"
+          helper = "\nfunction needsTranscriptReview(segment: Lecture['segments'][number]) {\n  const confidence = typeof segment.confidence === 'number' && Number.isFinite(segment.confidence) ? segment.confidence : undefined;\n  return !segment.manuallyReviewed && ((confidence !== undefined && confidence < .85) || /\\[(uncertain|inaudible)\\]/i.test(segment.editedText || segment.originalText));\n}\n\nfunction LectureCard({ lecture, course, onOpen }:"
+          if text.count(marker) != 1:
+              raise SystemExit('LectureCard insertion point changed')
+          text = text.replace(marker, helper)
+          old_count = "lecture.segments.filter((segment) => segment.confidence < .85 && !segment.manuallyReviewed).length"
+          if text.count(old_count) != 1:
+              raise SystemExit('LectureCard confidence predicate changed')
+          text = text.replace(old_count, "lecture.segments.filter(needsTranscriptReview).length")
+          old_some = "lecture.segments.some((segment) => segment.confidence < .85 && !segment.manuallyReviewed)"
+          if text.count(old_some) != 1:
+              raise SystemExit('LecturesView confidence predicate changed')
+          text = text.replace(old_some, "lecture.segments.some(needsTranscriptReview)")
+          p.write_text(text, encoding='utf-8')
+          PY
+          git diff --check
+          git config user.name "LectureAI Audit Bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add src/App.tsx
+          git commit -m "Fix optional transcript confidence in library views"
+          git push origin HEAD:final-production-audit-20260829
