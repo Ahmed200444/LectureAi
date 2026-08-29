@@ -17,29 +17,34 @@ type Transcriber = Awaited<ReturnType<typeof pipeline<'automatic-speech-recognit
 
 let transcriberPromise: Promise<Transcriber> | null = null;
 let activeModel = PRIMARY_MODEL;
+let activePrecision = 'q4';
 
 function progressCallback(info: ProgressInfo) {
   const progress = info.status === 'progress_total' || info.status === 'progress' ? Math.round(info.progress || 0) : undefined;
   workerScope.postMessage({ type: 'model-progress', progress, loaded: info.loaded, total: info.total, file: info.file, status: info.status });
 }
 
-async function loadModel(model: string) {
-  return pipeline('automatic-speech-recognition', model, { progress_callback: progressCallback });
+async function loadModel(model: string, dtype: 'q4' | 'q8') {
+  activePrecision = dtype;
+  return pipeline('automatic-speech-recognition', model, {
+    dtype,
+    progress_callback: progressCallback,
+  });
 }
 
 async function getTranscriber() {
   if (!transcriberPromise) {
     activeModel = PRIMARY_MODEL;
-    transcriberPromise = loadModel(PRIMARY_MODEL).catch(async () => {
+    transcriberPromise = loadModel(PRIMARY_MODEL, 'q4').catch(async () => {
       activeModel = FALLBACK_MODEL;
-      return loadModel(FALLBACK_MODEL).catch(async () => {
+      return loadModel(FALLBACK_MODEL, 'q8').catch(async () => {
         activeModel = LAST_RESORT_MODEL;
-        return loadModel(LAST_RESORT_MODEL);
+        return loadModel(LAST_RESORT_MODEL, 'q8');
       });
     });
   }
   const transcriber = await transcriberPromise;
-  workerScope.postMessage({ type: 'model-ready', model: activeModel });
+  workerScope.postMessage({ type: 'model-ready', model: activeModel, precision: activePrecision });
   return transcriber;
 }
 
@@ -48,11 +53,11 @@ workerScope.addEventListener('message', async (event: MessageEvent<{ id: string;
   try {
     const transcriber = await getTranscriber();
     if (mode === 'prepare') {
-      workerScope.postMessage({ type: 'result', id, payload: { prepared: true, model: activeModel } });
+      workerScope.postMessage({ type: 'result', id, payload: { prepared: true, model: activeModel, precision: activePrecision } });
       return;
     }
     if (!audio?.length) throw new Error('No decoded audio was provided for transcription.');
-    workerScope.postMessage({ type: 'transcription-progress', progress: 72, message: 'Running multilingual speech recognition on this device…' });
+    workerScope.postMessage({ type: 'transcription-progress', progress: 72, message: `Running ${activeModel} multilingual speech recognition locally…` });
     const output = await transcriber(audio, {
       task: 'transcribe',
       return_timestamps: true,
@@ -69,7 +74,7 @@ workerScope.addEventListener('message', async (event: MessageEvent<{ id: string;
       confidence: 0,
       speaker: 'Professor',
     })) : output.text.trim() ? [{ id: `${id}-phone-1`, start: 0, end: audio.length / 16_000, text: output.text.trim(), confidence: 0, speaker: 'Professor' }] : [];
-    workerScope.postMessage({ type: 'result', id, payload: { engine: 'transformers.js', model: activeModel, segments } });
+    workerScope.postMessage({ type: 'result', id, payload: { engine: 'transformers.js', model: activeModel, precision: activePrecision, segments } });
   } catch (error) {
     workerScope.postMessage({ type: 'error', id, message: error instanceof Error ? error.message : 'On-device transcription failed.' });
   }
