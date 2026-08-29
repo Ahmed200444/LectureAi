@@ -44,7 +44,7 @@ export function PhoneModelManager({ installed, onInstalled }: { installed?: bool
     <button className="secondary-button" onClick={() => void prepare()} disabled={busy || !supported}>
       <Download size={16} /> {busy ? 'Preparing model…' : ready ? 'Verify / refresh model cache' : 'Download model before class'}
     </button>
-    {!supported && <small>This browser cannot run the local speech worker. Recording still works; use Windows Maximum Accuracy for transcription.</small>}
-    {supported && mobile && <small>There is no LectureAI minute quota. Very long on-device transcription can still hit iOS/iPadOS memory limits; the saved audio remains available for Windows Maximum Accuracy.</small>}
+    {!supported && <small>This browser cannot run the local speech worker. Recording still works; transfer the recording to Windows and use Transcribe on Computer.</small>}
+    {supported && mobile && <small>LectureAI does not impose a transcript minute, segment, or monthly quota. Very long on-device transcription can still hit iOS/iPadOS memory limits; the original recording remains safe and can be transcribed on Windows.</small>}
   </section>;
 }
