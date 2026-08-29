@@ -15,7 +15,7 @@ from hardware import detect_hardware, recommendation
 MODEL_INFO = {
     "small": {"label": "Fast", "download": "~500 MB", "storage": "~1 GB", "memory": "4+ GB RAM"},
     "medium": {"label": "Balanced", "download": "~1.5 GB", "storage": "~3 GB", "memory": "8+ GB RAM or 6+ GB VRAM"},
-    "large-v3": {"label": "Maximum Accuracy", "download": "~3.1 GB", "storage": "~6 GB", "memory": "16+ GB RAM or 10+ GB VRAM preferred"},
+    "large-v3": {"label": "Large", "download": "~3.1 GB", "storage": "~6 GB", "memory": "16+ GB RAM or 10+ GB VRAM preferred"},
 }
 
 _models: dict[tuple[str, str, str], WhisperModel] = {}
