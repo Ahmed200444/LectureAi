@@ -27,6 +27,7 @@ export function MicTest({ onVerified, onReset }: { onVerified?: () => void; onRe
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<Blob[]>([]);
+  const sampleUrlRef = useRef('');
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const frameRef = useRef<number | null>(null);
@@ -34,14 +35,24 @@ export function MicTest({ onVerified, onReset }: { onVerified?: () => void; onRe
   const peakRef = useRef(0);
   const meterReliableRef = useRef(true);
 
+  function replaceSampleUrl(next = '') {
+    if (sampleUrlRef.current) URL.revokeObjectURL(sampleUrlRef.current);
+    sampleUrlRef.current = next;
+    setSampleUrl(next);
+  }
+
   function cleanUp() {
     if (timerRef.current) clearInterval(timerRef.current);
     if (timeoutRef.current) clearTimeout(timeoutRef.current);
     if (frameRef.current) cancelAnimationFrame(frameRef.current);
+    timerRef.current = null;
+    timeoutRef.current = null;
+    frameRef.current = null;
     streamRef.current?.getTracks().forEach((track) => track.stop());
     contextRef.current?.close().catch(() => undefined);
     streamRef.current = null;
     contextRef.current = null;
+    recorderRef.current = null;
   }
 
   async function startTest() {
@@ -56,7 +67,7 @@ export function MicTest({ onVerified, onReset }: { onVerified?: () => void; onRe
       peakRef.current = 0;
       meterReliableRef.current = true;
       chunksRef.current = [];
-      if (sampleUrl) { URL.revokeObjectURL(sampleUrl); setSampleUrl(''); }
+      replaceSampleUrl();
 
       const stream = await navigator.mediaDevices.getUserMedia({ audio: lectureAudioConstraints(), video: false });
       const track = assertLiveMicrophoneStream(stream);
@@ -87,8 +98,6 @@ export function MicTest({ onVerified, onReset }: { onVerified?: () => void; onRe
       contextRef.current = context;
       await context.resume().catch(() => undefined);
       if (context.state !== 'running') {
-        // The recording can still be valid in iOS/iPadOS standalone mode even if the
-        // visual WebAudio meter is temporarily suspended.
         meterReliableRef.current = false;
         return;
       }
@@ -106,8 +115,8 @@ export function MicTest({ onVerified, onReset }: { onVerified?: () => void; onRe
         frameRef.current = requestAnimationFrame(update);
       };
       update();
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Microphone permission was not granted.');
+    } catch (testError) {
+      setMessage(testError instanceof Error ? testError.message : 'Microphone permission was not granted.');
       setTesting(false);
       cleanUp();
     }
@@ -117,15 +126,14 @@ export function MicTest({ onVerified, onReset }: { onVerified?: () => void; onRe
     try {
       const blob = new Blob(chunksRef.current, { type: recorder.mimeType });
       await validatePlayableAudio(blob, 7000);
-      const url = URL.createObjectURL(blob);
-      setSampleUrl(url);
+      replaceSampleUrl(URL.createObjectURL(blob));
       const peak = peakRef.current;
       if (!meterReliableRef.current) setMessage('Sample saved. The visual meter was unavailable, so play the sample and confirm the speech is clear and continuous.');
       else if (peak < 0.03) setMessage('The sample is quiet. Play it back from the same distance you expect in class; LectureAI will normalize a derived copy for transcription without changing the original recording.');
       else if (peak > 0.93) setMessage('Sample saved, but clipping was detected. Move the device a little farther from the sound source if speech sounds distorted.');
       else setMessage('Sample saved. Play it back and confirm the speech is clear, continuous, and not choppy or whooshing before class.');
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'The microphone sample could not be reloaded.');
+    } catch (sampleError) {
+      setMessage(sampleError instanceof Error ? sampleError.message : 'The microphone sample could not be reloaded.');
     } finally {
       setTesting(false);
       cleanUp();
@@ -138,7 +146,7 @@ export function MicTest({ onVerified, onReset }: { onVerified?: () => void; onRe
 
   useEffect(() => () => {
     cleanUp();
-    if (sampleUrl) URL.revokeObjectURL(sampleUrl);
+    if (sampleUrlRef.current) URL.revokeObjectURL(sampleUrlRef.current);
   }, []);
 
   const LevelIcon = level > .65 ? Volume2 : level > .08 ? Volume1 : VolumeX;
