@@ -26,8 +26,9 @@ type ImportedSegment = {
 export function normalizeTranscript(input: unknown, lectureId: string): TranscriptSegment[] {
   const root = input as { segments?: unknown };
   if (!root || !Array.isArray(root.segments)) throw new Error('Transcript JSON must contain a segments array.');
-  if (root.segments.length > 100_000) throw new Error('Transcript contains too many segments.');
 
+  // Do not impose an artificial transcript-length or segment-count quota.
+  // Extremely large transcripts are limited only by the browser/device resources available.
   const normalized = root.segments.map((raw, index) => {
     const segment = raw as ImportedSegment;
     const originalText = String(segment.text ?? segment.originalText ?? '').trim();
