@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { deleteAudioChunks, finalizeAudio, saveAudioChunk } from '../lib/db';
 import { assertLiveMicrophoneStream, validatePlayableAudio, waitForAudibleInput } from '../lib/audio-validation';
-import { lectureAudioConstraints, preferredRecordingMimeType } from '../lib/device';
+import { applyLectureAudioPreferences, lectureAudioConstraints, preferredRecordingMimeType } from '../lib/device';
 
 type WakeLockSentinelLike = { release: () => Promise<void> };
 
@@ -111,6 +111,7 @@ export function useRecorder() {
 
     try {
       const track = assertLiveMicrophoneStream(stream);
+      await applyLectureAudioPreferences(track);
       track.addEventListener('ended', () => setError('The microphone audio track ended unexpectedly. Finish the lecture to preserve saved checkpoints.'));
 
       // The 12-second setup test already proves encoded playback. Here we only check
