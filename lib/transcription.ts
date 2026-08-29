@@ -73,13 +73,15 @@ export async function transcribeWithWindowsHelper(
   fetcher: FetchLike = fetch,
   wait: (milliseconds: number) => Promise<void> = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
 ) {
-  onProgress({ progress: 8, message: 'Sending the saved recording to the private Windows helper…' });
+  onProgress({ progress: 8, message: 'Sending the saved recording to the private Windows transcription helper…' });
   const jobResponse = await fetcher(`${HELPER_URL}/jobs`, { method: 'POST', body: makeForm(lecture, course, audio) });
 
   // Older installed helpers remain compatible while users update the local package.
+  // Use the helper's configured/recommended model rather than exposing a separate
+  // "Maximum Accuracy" mode or forcing a particular model from the web app.
   if (jobResponse.status === 404 || jobResponse.status === 405) {
-    onProgress({ progress: 18, message: 'Transcribing locally with the maximum-accuracy model…' });
-    const response = await fetcher(`${HELPER_URL}/transcribe`, { method: 'POST', body: makeForm(lecture, course, audio, 'large-v3') });
+    onProgress({ progress: 18, message: 'Transcribing locally on this computer…' });
+    const response = await fetcher(`${HELPER_URL}/transcribe`, { method: 'POST', body: makeForm(lecture, course, audio, 'configured') });
     if (!response.ok) throw new Error(await responseError(response) || 'The local transcription helper returned an error.');
     return response.json();
   }
