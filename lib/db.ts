@@ -5,6 +5,8 @@ import { generateNotesHtml } from './notes.ts';
 const LEGACY_DEMO_COURSE_ID = 'course-calculus';
 const LEGACY_DEMO_LECTURE_ID = 'lecture-chain-rule';
 
+type LegacySettings = Omit<AppSettings, 'preferredMode'> & { preferredMode?: string };
+
 interface LectureAIDatabase extends DBSchema {
   courses: { key: string; value: Course; indexes: { semester: string } };
   lectures: { key: string; value: Lecture; indexes: { courseId: string; date: string; status: string } };
@@ -42,7 +44,7 @@ export function getDatabase() {
 export async function initializeDatabase() {
   const db = await getDatabase();
   await removeLegacyDemoData(db);
-  const currentSettings = await db.get('settings', 'app') as (AppSettings & { preferredMode?: string }) | undefined;
+  const currentSettings = await db.get('settings', 'app') as LegacySettings | undefined;
   if (!currentSettings) {
     await db.put('settings', { key: 'app', consentAcknowledged: false, followTranscript: true, preferredMode: 'computer', phoneModelInstalled: false });
   } else if (currentSettings.preferredMode === 'maximum') {
