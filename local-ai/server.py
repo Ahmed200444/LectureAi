@@ -14,13 +14,14 @@ from fastapi.middleware.cors import CORSMiddleware
 
 os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 
-from engine import MODEL_INFO, hardware_payload, transcribe_audio
+from engine import MODEL_INFO, hardware_payload, load_model, transcribe_audio
 
 ROOT = Path(__file__).resolve().parent.parent
 MODELS_DIR = ROOT / "models"
 MODELS_DIR.mkdir(exist_ok=True)
 jobs: dict[str, dict] = {}
 jobs_lock = threading.Lock()
+helper_state: dict[str, str | None] = {"warm_status": "starting", "warm_model": None, "warm_error": None}
 
 DEFAULT_ALLOWED_ORIGINS = (
     "http://localhost:3000",
@@ -56,11 +57,6 @@ async def private_network_header(request, call_next):
     return response
 
 
-@app.get("/health")
-def health():
-    return {"ok": True, "version": "0.3.0", "privacy": "loopback-only", "configured_model": configured_model(), **hardware_payload()}
-
-
 def configured_model():
     selected = MODELS_DIR / "selected-model.txt"
     if selected.exists():
@@ -68,6 +64,35 @@ def configured_model():
         if choice in MODEL_INFO:
             return choice
     return hardware_payload()["recommendation"]["model"]
+
+
+def warm_configured_model():
+    model = configured_model()
+    helper_state.update({"warm_status": "loading", "warm_model": model, "warm_error": None})
+    try:
+        load_model(model, MODELS_DIR)
+        helper_state.update({"warm_status": "ready", "warm_model": model, "warm_error": None})
+    except Exception as error:
+        # Do not stop the helper. A transcription request can retry model loading and
+        # surface the detailed error while recording data remains untouched.
+        helper_state.update({"warm_status": "failed", "warm_model": model, "warm_error": str(error)[:500]})
+
+
+@app.on_event("startup")
+def start_model_warmup():
+    threading.Thread(target=warm_configured_model, name="lectureai-model-warmup", daemon=True).start()
+
+
+@app.get("/health")
+def health():
+    return {
+        "ok": True,
+        "version": "0.4.0",
+        "privacy": "loopback-only",
+        "configured_model": configured_model(),
+        **helper_state,
+        **hardware_payload(),
+    }
 
 
 def resolve_model(choice: str):
