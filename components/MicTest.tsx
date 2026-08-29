@@ -3,7 +3,7 @@
 import { Check, Mic, Square, Volume1, Volume2, VolumeX } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { assertLiveMicrophoneStream, validatePlayableAudio } from '../lib/audio-validation';
-import { deviceLabel, isStandaloneApp, lectureAudioConstraints, preferredRecordingMimeType } from '../lib/device';
+import { applyLectureAudioPreferences, deviceLabel, isStandaloneApp, lectureAudioConstraints, preferredRecordingMimeType } from '../lib/device';
 
 function grantedSettingsText(track: MediaStreamTrack) {
   const settings = track.getSettings?.() || {};
@@ -60,6 +60,7 @@ export function MicTest({ onVerified, onReset }: { onVerified?: () => void; onRe
 
       const stream = await navigator.mediaDevices.getUserMedia({ audio: lectureAudioConstraints(), video: false });
       const track = assertLiveMicrophoneStream(stream);
+      await applyLectureAudioPreferences(track);
       setGrantedSettings(grantedSettingsText(track));
       streamRef.current = stream;
 
@@ -122,7 +123,7 @@ export function MicTest({ onVerified, onReset }: { onVerified?: () => void; onRe
       if (!meterReliableRef.current) setMessage('Sample saved. The visual meter was unavailable, so play the sample and confirm the speech is clear and continuous.');
       else if (peak < 0.03) setMessage('The sample is quiet. Play it back from the same distance you expect in class; LectureAI will normalize a derived copy for transcription without changing the original recording.');
       else if (peak > 0.93) setMessage('Sample saved, but clipping was detected. Move the device a little farther from the sound source if speech sounds distorted.');
-      else setMessage('Sample saved. Play it back and confirm the speech is clear, continuous, and not choppy before class.');
+      else setMessage('Sample saved. Play it back and confirm the speech is clear, continuous, and not choppy or whooshing before class.');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'The microphone sample could not be reloaded.');
     } finally {
