@@ -34,6 +34,8 @@ const WINDOW_SECONDS = 180;
 const OVERLAP_SECONDS = 5;
 
 let sharedWorker: Worker | null = null;
+let preparedModel: { model: string } | null = null;
+let preparationPromise: Promise<{ model: string }> | null = null;
 
 function worker() {
   if (!sharedWorker) sharedWorker = new Worker(new URL('./phone-transcriber.worker.ts', import.meta.url), { type: 'module', name: 'lectureai-phone-transcriber' });
@@ -44,6 +46,8 @@ function resetWorker(instance: Worker) {
   if (sharedWorker === instance) {
     instance.terminate();
     sharedWorker = null;
+    preparedModel = null;
+    preparationPromise = null;
   }
 }
 
@@ -184,7 +188,7 @@ async function transcribeWindowWithRecovery(
     } catch (error) {
       lastError = error instanceof Error ? error : new Error('On-device transcription window failed.');
       if (startModelIndex < 2) {
-        onProgress({ progress: 70, message: `A transcription window was interrupted. Restarting the speech worker with a lighter model…` });
+        onProgress({ progress: 70, message: 'A transcription window was interrupted. Restarting the speech worker with a lighter model…' });
         await new Promise((resolve) => setTimeout(resolve, 250));
       }
     }
@@ -199,8 +203,17 @@ function sameNearbyText(a: WorkerSegment | undefined, b: WorkerSegment) {
 }
 
 export async function preparePhoneTranscriptionModel(onProgress: (update: TranscriptionProgress) => void) {
+  if (preparedModel) {
+    onProgress({ progress: 100, message: `${preparedModel.model} is already loaded and ready on this device.` });
+    return preparedModel;
+  }
+  if (preparationPromise) {
+    onProgress({ progress: 12, message: 'The cached multilingual model is already warming up…' });
+    return preparationPromise;
+  }
+
   const id = `prepare-${crypto.randomUUID()}`;
-  return new Promise<{ model: string }>((resolve, reject) => {
+  const task = new Promise<{ model: string }>((resolve, reject) => {
     const instance = worker();
     const cleanUp = () => {
       instance.removeEventListener('message', listener);
@@ -237,6 +250,15 @@ export async function preparePhoneTranscriptionModel(onProgress: (update: Transc
     instance.addEventListener('messageerror', messageError);
     instance.postMessage({ id, mode: 'prepare', startModelIndex: 0 });
   });
+
+  preparationPromise = task.then((result) => {
+    preparedModel = result;
+    return result;
+  }).catch((error) => {
+    preparationPromise = null;
+    throw error;
+  });
+  return preparationPromise;
 }
 
 export async function transcribeOnPhone(
@@ -245,16 +267,25 @@ export async function transcribeOnPhone(
   onProgress: (update: TranscriptionProgress) => void,
   onModelReady: () => void,
 ) {
-  onProgress({ progress: 4, message: 'Decoding a private transcription copy at 16 kHz…' });
+  onProgress({ progress: 2, message: 'Starting the speech model and preparing audio in parallel…' });
+
+  const warmup = preparePhoneTranscriptionModel(({ progress, message }) => {
+    onProgress({ progress: Math.max(2, Math.min(35, Math.round(progress * 0.35))), message });
+  }).catch(() => null);
+
   if (audio.size > 250 * 1024 * 1024) {
     onProgress({ progress: 5, message: 'This is a large lecture. LectureAI will process it in smaller windows to reduce iPhone/iPad memory pressure; the original recording remains safe.' });
+  } else {
+    onProgress({ progress: 4, message: 'Decoding a private transcription copy at 16 kHz while the model warms up…' });
   }
 
-  const { pcm, signal } = await decodeTo16Khz(audio);
+  const decodePromise = decodeTo16Khz(audio);
+  const [{ pcm, signal }] = await Promise.all([decodePromise, warmup.then(() => undefined)]);
+
   if (signal.gain > 1.03) {
-    onProgress({ progress: 7, message: `Quiet/distant speech detected · applying ${signal.gain.toFixed(1)}× gain to the transcription copy only…` });
+    onProgress({ progress: 36, message: `Quiet/distant speech detected · applying ${signal.gain.toFixed(1)}× gain to the transcription copy only…` });
   } else {
-    onProgress({ progress: 7, message: 'Speech level is suitable · original recording remains untouched…' });
+    onProgress({ progress: 36, message: 'Speech level is suitable · original recording remains untouched…' });
   }
 
   const windowSamples = WINDOW_SECONDS * SAMPLE_RATE;
@@ -264,7 +295,7 @@ export async function transcribeOnPhone(
   for (let start = 0; start < pcm.length; start += stepSamples) starts.push(start);
 
   const segments: WorkerSegment[] = [];
-  let finalModel = 'multilingual Whisper';
+  let finalModel = preparedModel?.model || 'multilingual Whisper';
   let finalPrecision = '';
   let successfulWindows = 0;
   let failedWindows = 0;
@@ -275,7 +306,7 @@ export async function transcribeOnPhone(
     const startSeconds = startSample / SAMPLE_RATE;
     const endSeconds = endSample / SAMPLE_RATE;
     onProgress({
-      progress: Math.max(10, Math.round(70 + 25 * (index / Math.max(1, starts.length)))),
+      progress: Math.max(40, Math.round(70 + 25 * (index / Math.max(1, starts.length)))),
       message: `Transcribing lecture section ${index + 1} of ${starts.length} · ${Math.round(startSeconds)}–${Math.round(endSeconds)}s…`,
     });
 
@@ -308,7 +339,7 @@ export async function transcribeOnPhone(
         confidence: 0,
         speaker: 'Professor',
       });
-      onProgress({ progress: 75, message: `One section could not be processed after automatic retries. LectureAI kept the rest of the transcript and marked this section for review.` });
+      onProgress({ progress: 75, message: 'One section could not be processed after automatic retries. LectureAI kept the rest of the transcript and marked this section for review.' });
     }
 
     if (endSample >= pcm.length) break;
