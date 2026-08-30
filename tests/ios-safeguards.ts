@@ -99,6 +99,11 @@ assert.doesNotMatch(worker, /confidence: 0/);
 assert.doesNotMatch(phone, /confidence: raw\.confidence \?\? 0/);
 assert.doesNotMatch(engine, /confidence_from_logprob|\"confidence\": confidence/);
 assert.doesNotMatch(detail, /Math\.max\(segment\.confidence, \.9\)/);
+
+// English is the preferred completed view when available, without forcing Whisper's language.
+assert.match(detail, /completed\.englishTranslation\.length \? 'english' : 'original'/);
+assert.match(detail, /Original multilingual transcript is preserved/);
+assert.doesNotMatch(worker, /language:\s*['"]english['"]/i);
 assert.doesNotMatch(detail, /50 MB safety limit/i);
 
 // iPhone/iPad share sheet: file first, text fallback for targets that reject .txt/.md.

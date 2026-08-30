@@ -168,9 +168,10 @@ export function LectureDetail({ lecture, course, settings, onSettingsChange, fol
       }, () => {
         if (!settings.phoneModelInstalled) void onSettingsChange({ ...settings, phoneModelInstalled: true, preferredMode: 'phone' });
       });
-      await update(completeTranscription(working, payload, 'phone', 'Whisper small multilingual'));
-      setTab('original');
-      onToast('On-device transcript and editable notes are ready.', 'success');
+      const completed = completeTranscription(working, payload, 'phone', 'Whisper multilingual');
+      await update(completed);
+      setTab(completed.englishTranslation.length ? 'english' : 'original');
+      onToast(completed.englishTranslation.length ? 'Transcript ready · English view opened first. Original multilingual transcript is preserved.' : 'On-device transcript and editable notes are ready.', 'success');
     } catch (error) {
       const message = error instanceof Error ? error.message : 'On-device transcription could not finish.';
       await update({ status: 'needs-transcription', processingProgress: undefined, statusMessage: `Original audio preserved · ${message}` });
