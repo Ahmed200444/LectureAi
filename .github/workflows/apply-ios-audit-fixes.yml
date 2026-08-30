@@ -1,0 +1,133 @@
+name: Apply complete iOS audit fixes
+
+on:
+  push:
+    branches:
+      - iphone-base-q4-20260831-v2
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-verify:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: iphone-base-q4-20260831-v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Apply audited iPhone and iPad fixes
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str):
+              p = Path(path)
+              text = p.read_text()
+              if old not in text:
+                  raise SystemExit(f'Expected pattern not found in {path}: {old[:180]!r}')
+              p.write_text(text.replace(old, new, 1))
+
+          # Safari/PWA: use the same Base-first serialized memory-safe path on iPhone and iPad.
+          replace_once('lib/phone-transcription.ts', "import { detectDeviceKind } from './device.ts';\n", "import { isIOSDevice } from './device.ts';\n")
+          replace_once(
+              'lib/phone-transcription.ts',
+              "function preferredPhoneModelStartIndex() {\n  // iPhone Safari has a tighter per-process memory budget than desktop browsers.\n  // Start with multilingual Base there so WebKit is less likely to kill the page\n  // before our normal Small -> Base -> Tiny fallback can even throw an error.\n  return detectDeviceKind() === 'iphone' ? 1 : 0;\n}\n",
+              "function preferredPhoneModelStartIndex() {\n  // iPhone and iPad WebKit have tighter per-process memory budgets than desktop browsers.\n  // Start with multilingual Base on iOS/iPadOS so WebKit is less likely to kill the page\n  // before our normal model fallback can surface a recoverable error.\n  return isIOSDevice() ? 1 : 0;\n}\n",
+          )
+          replace_once('lib/phone-transcription.ts', "    instance.postMessage({ id, mode: 'transcribe', audio, startModelIndex }, [audio.buffer]);\n", "    instance.postMessage({ id, mode: 'transcribe', audio, startModelIndex, iosMemorySafe: isIOSDevice() }, [audio.buffer]);\n")
+          replace_once('lib/phone-transcription.ts', "    instance.postMessage({ id, mode: 'prepare', startModelIndex: preferredPhoneModelStartIndex() });\n", "    instance.postMessage({ id, mode: 'prepare', startModelIndex: preferredPhoneModelStartIndex(), iosMemorySafe: isIOSDevice() });\n")
+          replace_once(
+              'lib/phone-transcription.ts',
+              "  const isIPhone = detectDeviceKind() === 'iphone';\n  onProgress({\n    progress: 2,\n    message: isIPhone\n      ? 'Preparing audio first to reduce iPhone memory pressure…'\n      : 'Starting the speech model and preparing audio in parallel…',\n  });\n",
+              "  const isIOS = isIOSDevice();\n  onProgress({\n    progress: 2,\n    message: isIOS\n      ? 'Preparing audio first to reduce iPhone/iPad memory pressure…'\n      : 'Starting the speech model and preparing audio in parallel…',\n  });\n",
+          )
+          replace_once('lib/phone-transcription.ts', "  } else if (!isIPhone) {\n", "  } else if (!isIOS) {\n")
+          replace_once(
+              'lib/phone-transcription.ts',
+              "  if (isIPhone) {\n    // Do not overlap the full browser audio decode with model initialization on\n    // iPhone. Either operation can be memory-heavy enough for WebKit to terminate\n    // the page before JavaScript receives a recoverable exception.\n    decoded = await decodeTo16Khz(audio);\n    onProgress({ progress: 18, message: 'Audio prepared · loading the memory-safer multilingual model on iPhone…' });\n    await warmModel();\n",
+              "  if (isIOS) {\n    // Do not overlap the full browser audio decode with model initialization on\n    // iPhone or iPad. Either operation can be memory-heavy enough for WebKit to\n    // terminate the page before JavaScript receives a recoverable exception.\n    decoded = await decodeTo16Khz(audio);\n    onProgress({ progress: 18, message: 'Audio prepared · loading the memory-safer multilingual model on iPhone/iPad…' });\n    await warmModel();\n",
+          )
+
+          # Whisper worker: on iOS/iPadOS keep multilingual Base, but use the smaller q8 decoder
+          # and shorter inference chunks to reduce peak WebKit memory without forcing a language.
+          replace_once(
+              'lib/phone-transcriber.worker.ts',
+              "type WorkerRequest = { id: string; audio?: Float32Array; mode?: 'prepare' | 'transcribe'; startModelIndex?: number };\n\nlet transcriberPromise: Promise<Transcriber> | null = null;\nlet activeModelIndex = 0;\n",
+              "type WorkerRequest = { id: string; audio?: Float32Array; mode?: 'prepare' | 'transcribe'; startModelIndex?: number; iosMemorySafe?: boolean };\n\nlet transcriberPromise: Promise<Transcriber> | null = null;\nlet activeModelIndex = 0;\nlet activeIOSMemorySafe = false;\n\nconst IOS_MEMORY_SAFE_DTYPE = { encoder_model: 'q8', decoder_model_merged: 'q8' } as const;\n\nfunction activePrecision() {\n  return activeIOSMemorySafe && activeModelIndex >= 1 ? 'q8 encoder · q8 decoder' : 'q8 encoder · q4 decoder';\n}\n",
+          )
+          replace_once(
+              'lib/phone-transcriber.worker.ts',
+              "function loadModel(index: number) {\n  activeModelIndex = index;\n  const config = MODELS[index];\n  return pipeline('automatic-speech-recognition', config.id, {\n    device: 'wasm',\n    dtype: config.dtype,\n    progress_callback: progressCallback,\n  });\n}\n\nasync function getTranscriber(startIndex = activeModelIndex) {\n",
+              "function loadModel(index: number, iosMemorySafe = false) {\n  activeModelIndex = index;\n  activeIOSMemorySafe = iosMemorySafe;\n  const config = MODELS[index];\n  const dtype = iosMemorySafe && index >= 1 ? IOS_MEMORY_SAFE_DTYPE : config.dtype;\n  return pipeline('automatic-speech-recognition', config.id, {\n    device: 'wasm',\n    dtype,\n    progress_callback: progressCallback,\n  });\n}\n\nasync function getTranscriber(startIndex = activeModelIndex, iosMemorySafe = activeIOSMemorySafe) {\n",
+          )
+          replace_once('lib/phone-transcriber.worker.ts', "        return await loadModel(index);\n", "        return await loadModel(index, iosMemorySafe);\n")
+          replace_once('lib/phone-transcriber.worker.ts', "  workerScope.postMessage({ type: 'model-ready', model: config.id, modelIndex: activeModelIndex, precision: 'q8 encoder · q4 decoder' });\n", "  workerScope.postMessage({ type: 'model-ready', model: config.id, modelIndex: activeModelIndex, precision: activePrecision() });\n")
+          replace_once(
+              'lib/phone-transcriber.worker.ts',
+              "async function runRecognition(transcriber: Transcriber, audio: Float32Array) {\n  return transcriber(audio, {\n    task: 'transcribe',\n    return_timestamps: true,\n    chunk_length_s: 30,\n    stride_length_s: 5,\n    force_full_sequences: false,\n  }) as Promise<ASROutput>;\n}\n\nasync function recognizeWithInferenceFallback(audio: Float32Array, startModelIndex = activeModelIndex) {\n",
+              "async function runRecognition(transcriber: Transcriber, audio: Float32Array, iosMemorySafe = false) {\n  return transcriber(audio, {\n    task: 'transcribe',\n    return_timestamps: true,\n    // Smaller inference chunks reduce peak WebKit activation memory on iPhone/iPad.\n    // Overlap remains so words near chunk boundaries retain context.\n    chunk_length_s: iosMemorySafe ? 15 : 30,\n    stride_length_s: iosMemorySafe ? 3 : 5,\n    force_full_sequences: false,\n  }) as Promise<ASROutput>;\n}\n\nasync function recognizeWithInferenceFallback(audio: Float32Array, startModelIndex = activeModelIndex, iosMemorySafe = activeIOSMemorySafe) {\n",
+          )
+          replace_once('lib/phone-transcriber.worker.ts', "    const transcriber = await getTranscriber(activeModelIndex);\n    try {\n      return await runRecognition(transcriber, audio);\n", "    const transcriber = await getTranscriber(activeModelIndex, iosMemorySafe);\n    try {\n      return await runRecognition(transcriber, audio, iosMemorySafe);\n")
+          replace_once('lib/phone-transcriber.worker.ts', "  const { id, audio, mode = 'transcribe', startModelIndex = 0 } = event.data;\n", "  const { id, audio, mode = 'transcribe', startModelIndex = 0, iosMemorySafe = false } = event.data;\n")
+          replace_once('lib/phone-transcriber.worker.ts', "      await getTranscriber(startModelIndex);\n      const config = MODELS[activeModelIndex];\n      workerScope.postMessage({ type: 'result', id, payload: { prepared: true, model: config.id, modelIndex: activeModelIndex, precision: 'q8 encoder · q4 decoder' } });\n", "      await getTranscriber(startModelIndex, iosMemorySafe);\n      const config = MODELS[activeModelIndex];\n      workerScope.postMessage({ type: 'result', id, payload: { prepared: true, model: config.id, modelIndex: activeModelIndex, precision: activePrecision() } });\n")
+          replace_once('lib/phone-transcriber.worker.ts', "    const transcriber = await getTranscriber(startModelIndex);\n", "    const transcriber = await getTranscriber(startModelIndex, iosMemorySafe);\n")
+          replace_once('lib/phone-transcriber.worker.ts', "    const output = await recognizeWithInferenceFallback(audio, startModelIndex);\n", "    const output = await recognizeWithInferenceFallback(audio, startModelIndex, iosMemorySafe);\n")
+          replace_once('lib/phone-transcriber.worker.ts', "    workerScope.postMessage({ type: 'result', id, payload: { engine: 'transformers.js', model: finalConfig.id, modelIndex: activeModelIndex, precision: 'q8 encoder · q4 decoder', segments } });\n", "    workerScope.postMessage({ type: 'result', id, payload: { engine: 'transformers.js', model: finalConfig.id, modelIndex: activeModelIndex, precision: activePrecision(), segments } });\n")
+
+          # iOS regression checks.
+          p = Path('tests/ios-safeguards.ts')
+          text = p.read_text()
+          marker = "assert.match(phone, /const modelIndexes = preferredPhoneModelStartIndex\\(\\) === 1 \\? \\[1, 2\\] : \\[0, 1, 2\\]/);\n"
+          addition = marker + "assert.match(phone, /return isIOSDevice\\(\\) \\? 1 : 0/);\nassert.match(phone, /iosMemorySafe: isIOSDevice\\(\\)/);\nassert.match(worker, /IOS_MEMORY_SAFE_DTYPE = \\{ encoder_model: 'q8', decoder_model_merged: 'q8' \\}/);\nassert.match(worker, /chunk_length_s: iosMemorySafe \\? 15 : 30/);\nassert.match(worker, /stride_length_s: iosMemorySafe \\? 3 : 5/);\n"
+          if marker not in text:
+              raise SystemExit('iOS safeguard insertion point missing')
+          p.write_text(text.replace(marker, addition, 1))
+
+          # Multilingual checks must now require iPhone + iPad memory safety, while preserving auto language detection.
+          replace_once(
+              'tests/multilingual-safeguards.ts',
+              "// iPhone transcription must favor process survival over loading Whisper Small first.\n// Audio decode and model initialization are serialized there, and Whisper is released\n// before the separate English/Arabic translation workers are created.\nassert.match(phone, /detectDeviceKind\\(\\) === 'iphone' \\? 1 : 0/);\nassert.match(phone, /preferredPhoneModelStartIndex\\(\\) === 1 \\? \\[1, 2\\] : \\[0, 1, 2\\]/);\nassert.match(phone, /Preparing audio first to reduce iPhone memory pressure/);\nassert.match(phone, /loading the memory-safer multilingual model on iPhone/);\nassert.match(phone, /releasePhoneTranscriptionWorker\\(\\)/);\nassert.match(phone, /releasing speech model memory before translation/);\n",
+              "// iPhone and iPad transcription favor process survival over loading Whisper Small first.\n// Audio decode and model initialization are serialized on iOS/iPadOS, and Whisper is released\n// before the separate English/Arabic translation workers are created.\nassert.match(phone, /return isIOSDevice\\(\\) \\? 1 : 0/);\nassert.match(phone, /preferredPhoneModelStartIndex\\(\\) === 1 \\? \\[1, 2\\] : \\[0, 1, 2\\]/);\nassert.match(phone, /Preparing audio first to reduce iPhone\\/iPad memory pressure/);\nassert.match(phone, /loading the memory-safer multilingual model on iPhone\\/iPad/);\nassert.match(worker, /IOS_MEMORY_SAFE_DTYPE = \\{ encoder_model: 'q8', decoder_model_merged: 'q8' \\}/);\nassert.match(worker, /chunk_length_s: iosMemorySafe \\? 15 : 30/);\nassert.match(phone, /releasePhoneTranscriptionWorker\\(\\)/);\nassert.match(phone, /releasing speech model memory before translation/);\n",
+          )
+
+          # Native recorder: make the same source a real iPhone + iPad target and remove iPhone-only wording.
+          replace_once('ios/LectureAIRecorder/project.yml', '        TARGETED_DEVICE_FAMILY: "1"\n', '        TARGETED_DEVICE_FAMILY: "1,2"\n')
+          replace_once('ios/LectureAIRecorder/project.yml', '        NSMicrophoneUsageDescription: LectureAI uses the microphone only when you choose to record a lecture. Recordings stay on your iPhone unless you explicitly share them.\n', '        NSMicrophoneUsageDescription: LectureAI uses the microphone only when you choose to record a lecture. Recordings stay on this device unless you explicitly share them.\n')
+          replace_once('ios/LectureAIRecorder/Sources/ContentView.swift', '            Label("Native iPhone lecture capture", systemImage: "iphone.gen3")\n', '            Label("Native iPhone/iPad lecture capture", systemImage: "waveform")\n')
+          replace_once('ios/LectureAIRecorder/Sources/ContentView.swift', '            Text("Uses Apple’s native microphone APIs instead of Safari. The original recording stays on this iPhone unless you explicitly share it.")\n', '            Text("Uses Apple’s native microphone APIs instead of Safari. The original recording stays on this device unless you explicitly share it.")\n')
+          replace_once('ios/LectureAIRecorder/Sources/ContentView.swift', '        if recorder.level < 0.02 { return "Audio is quiet, but recording continues. Move the iPhone closer when practical." }\n', '        if recorder.level < 0.02 { return "Audio is quiet, but recording continues. Move the device closer when practical." }\n')
+          replace_once('ios/LectureAIRecorder/Sources/RecorderStore.swift', '    @Published var statusMessage = "Ready for native iPhone recording"\n', '    @Published var statusMessage = "Ready for native iPhone/iPad recording"\n')
+          replace_once('ios/LectureAIRecorder/Sources/RecorderStore.swift', '                ? "Recording stopped unexpectedly · captured audio remains on this iPhone"\n', '                ? "Recording stopped unexpectedly · captured audio remains on this device"\n')
+          replace_once('ios/LectureAIRecorder/Sources/RecorderStore.swift', '                : "The audio encoder stopped unexpectedly · captured audio remains on this iPhone"\n', '                : "The audio encoder stopped unexpectedly · captured audio remains on this device"\n')
+          replace_once('ios/LectureAIRecorder/Sources/RecorderStore.swift', '            let input = AVAudioSession.sharedInstance().currentRoute.inputs.first?.portName ?? "iPhone microphone"\n', '            let input = AVAudioSession.sharedInstance().currentRoute.inputs.first?.portName ?? "built-in microphone"\n')
+          replace_once('ios/LectureAIRecorder/Sources/RecorderStore.swift', '        case .couldNotStart: return "The iPhone microphone recorder could not start."\n', '        case .couldNotStart: return "The native microphone recorder could not start."\n')
+          replace_once('ios/LectureAIRecorder/Sources/RecorderStore.swift', '        case .couldNotResume: return "The iPhone microphone recorder could not continue."\n', '        case .couldNotResume: return "The native microphone recorder could not continue."\n')
+
+          replace_once(
+              'tests/native-ios-safeguards.ts',
+              "assert.match(project, /iOS: \"17\\.0\"/);\n\nconsole.log('✓ native iPhone recorder safeguards are present');\n",
+              "assert.match(project, /iOS: \"17\\.0\"/);\nassert.match(project, /TARGETED_DEVICE_FAMILY: \"1,2\"/);\nassert.match(view, /Native iPhone\\/iPad lecture capture/);\nassert.match(recorder, /Ready for native iPhone\\/iPad recording/);\n\nconsole.log('✓ native iPhone/iPad recorder safeguards are present');\n",
+          )
+          PY
+      - name: Install dependencies
+        run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Lint
+        run: npm run lint
+      - name: Test
+        run: npm run test
+      - name: Build
+        run: npm run build
+      - name: Commit verified audit fixes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add lib/phone-transcription.ts lib/phone-transcriber.worker.ts tests/ios-safeguards.ts tests/multilingual-safeguards.ts tests/native-ios-safeguards.ts ios/LectureAIRecorder/project.yml ios/LectureAIRecorder/Sources/ContentView.swift ios/LectureAIRecorder/Sources/RecorderStore.swift
+          git commit -m "Harden iPhone and iPad transcription and native support"
+          git push origin HEAD:iphone-base-q4-20260831-v2
