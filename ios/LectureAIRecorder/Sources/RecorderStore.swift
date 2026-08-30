@@ -36,7 +36,7 @@ final class RecorderStore: NSObject, ObservableObject, AVAudioRecorderDelegate, 
     @Published var title = "Lecture \(Date().formatted(date: .abbreviated, time: .omitted))"
     @Published var duration: TimeInterval = 0
     @Published var level: Double = 0
-    @Published var statusMessage = "Ready for native iPhone recording"
+    @Published var statusMessage = "Ready for native iPhone/iPad recording"
     @Published var freeStorageBytes: Int64 = 0
     @Published var marks: [RecordingMark] = []
     @Published var recordings: [SavedRecording] = []
@@ -236,8 +236,8 @@ final class RecorderStore: NSObject, ObservableObject, AVAudioRecorderDelegate, 
             self.meterTimer = nil
             self.state = .interrupted
             self.statusMessage = flag
-                ? "Recording stopped unexpectedly · captured audio remains on this iPhone"
-                : "The audio encoder stopped unexpectedly · captured audio remains on this iPhone"
+                ? "Recording stopped unexpectedly · captured audio remains on this device"
+                : "The audio encoder stopped unexpectedly · captured audio remains on this device"
             self.applyIdleTimerPolicy()
         }
     }
@@ -292,7 +292,7 @@ final class RecorderStore: NSObject, ObservableObject, AVAudioRecorderDelegate, 
     @objc private func handleRouteChange(_ notification: Notification) {
         DispatchQueue.main.async {
             guard self.state == .recording || self.state == .paused || self.state == .interrupted else { return }
-            let input = AVAudioSession.sharedInstance().currentRoute.inputs.first?.portName ?? "iPhone microphone"
+            let input = AVAudioSession.sharedInstance().currentRoute.inputs.first?.portName ?? "built-in microphone"
             self.statusMessage = "Audio route checked · input: \(input)"
         }
     }
@@ -440,8 +440,8 @@ private enum RecorderError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .couldNotStart: return "The iPhone microphone recorder could not start."
-        case .couldNotResume: return "The iPhone microphone recorder could not continue."
+        case .couldNotStart: return "The native microphone recorder could not start."
+        case .couldNotResume: return "The native microphone recorder could not continue."
         }
     }
 }

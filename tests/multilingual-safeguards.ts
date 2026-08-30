@@ -32,13 +32,15 @@ assert.match(phone, /second\.rms \* 3/);
 assert.match(phone, /MAX_FAR_FIELD_GAIN = 16/);
 assert.match(phone, /percentilePeak/);
 
-// iPhone transcription must favor process survival over loading Whisper Small first.
-// Audio decode and model initialization are serialized there, and Whisper is released
+// iPhone and iPad transcription favor process survival over loading Whisper Small first.
+// Audio decode and model initialization are serialized on iOS/iPadOS, and Whisper is released
 // before the separate English/Arabic translation workers are created.
-assert.match(phone, /detectDeviceKind\(\) === 'iphone' \? 1 : 0/);
+assert.match(phone, /return isIOSDevice\(\) \? 1 : 0/);
 assert.match(phone, /preferredPhoneModelStartIndex\(\) === 1 \? \[1, 2\] : \[0, 1, 2\]/);
-assert.match(phone, /Preparing audio first to reduce iPhone memory pressure/);
-assert.match(phone, /loading the memory-safer multilingual model on iPhone/);
+assert.match(phone, /Preparing audio first to reduce iPhone\/iPad memory pressure/);
+assert.match(phone, /loading the memory-safer multilingual model on iPhone\/iPad/);
+assert.match(worker, /IOS_MEMORY_SAFE_DTYPE = \{ encoder_model: 'q8', decoder_model_merged: 'q8' \}/);
+assert.match(worker, /chunk_length_s: iosMemorySafe \? 15 : 30/);
 assert.match(phone, /releasePhoneTranscriptionWorker\(\)/);
 assert.match(phone, /releasing speech model memory before translation/);
 

@@ -39,5 +39,8 @@ assert.match(project, /NSMicrophoneUsageDescription/);
 assert.match(project, /UIBackgroundModes:/);
 assert.match(project, /- audio/);
 assert.match(project, /iOS: "17\.0"/);
+assert.match(project, /TARGETED_DEVICE_FAMILY: "1,2"/);
+assert.match(view, /Native iPhone\/iPad lecture capture/);
+assert.match(recorder, /Ready for native iPhone\/iPad recording/);
 
-console.log('✓ native iPhone recorder safeguards are present');
+console.log('✓ native iPhone/iPad recorder safeguards are present');

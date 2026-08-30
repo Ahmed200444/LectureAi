@@ -28,9 +28,9 @@ struct ContentView: View {
 
     private var headerCard: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Label("Native iPhone lecture capture", systemImage: "iphone.gen3")
+            Label("Native iPhone/iPad lecture capture", systemImage: "waveform")
                 .font(.headline)
-            Text("Uses Apple’s native microphone APIs instead of Safari. The original recording stays on this iPhone unless you explicitly share it.")
+            Text("Uses Apple’s native microphone APIs instead of Safari. The original recording stays on this device unless you explicitly share it.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
             HStack(spacing: 14) {
@@ -268,7 +268,7 @@ struct ContentView: View {
         if recorder.state == .paused { return "Paused — the same microphone session is kept ready" }
         if recorder.state == .interrupted { return "iOS interrupted the audio session — captured audio is preserved" }
         if recorder.state != .recording { return "The live meter appears while recording" }
-        if recorder.level < 0.02 { return "Audio is quiet, but recording continues. Move the iPhone closer when practical." }
+        if recorder.level < 0.02 { return "Audio is quiet, but recording continues. Move the device closer when practical." }
         if recorder.level > 0.95 { return "Very loud input — avoid tapping or covering the microphones" }
         return "Audio is reaching the native recorder"
     }
