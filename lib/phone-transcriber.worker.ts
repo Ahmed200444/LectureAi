@@ -8,17 +8,17 @@ const MODELS = [
   {
     id: 'onnx-community/whisper-small',
     label: 'Whisper Small multilingual',
-    dtype: { encoder_model: 'fp32', decoder_model_merged: 'q4' },
+    dtype: { encoder_model: 'q8', decoder_model_merged: 'q4' },
   },
   {
     id: 'onnx-community/whisper-base',
     label: 'Whisper Base multilingual',
-    dtype: { encoder_model: 'fp32', decoder_model_merged: 'q4' },
+    dtype: { encoder_model: 'q8', decoder_model_merged: 'q4' },
   },
   {
     id: 'onnx-community/whisper-tiny',
     label: 'Whisper Tiny multilingual',
-    dtype: { encoder_model: 'fp32', decoder_model_merged: 'q4' },
+    dtype: { encoder_model: 'q8', decoder_model_merged: 'q4' },
   },
 ] as const;
 
@@ -79,7 +79,7 @@ async function getTranscriber(startIndex = activeModelIndex) {
   }
   const transcriber = await transcriberPromise;
   const config = MODELS[activeModelIndex];
-  workerScope.postMessage({ type: 'model-ready', model: config.id, modelIndex: activeModelIndex, precision: 'fp32 encoder · q4 decoder' });
+  workerScope.postMessage({ type: 'model-ready', model: config.id, modelIndex: activeModelIndex, precision: 'q8 encoder · q4 decoder' });
   return transcriber;
 }
 
@@ -116,14 +116,14 @@ workerScope.addEventListener('message', async (event: MessageEvent<WorkerRequest
     if (mode === 'prepare') {
       await getTranscriber(startModelIndex);
       const config = MODELS[activeModelIndex];
-      workerScope.postMessage({ type: 'result', id, payload: { prepared: true, model: config.id, modelIndex: activeModelIndex, precision: 'fp32 encoder · q4 decoder' } });
+      workerScope.postMessage({ type: 'result', id, payload: { prepared: true, model: config.id, modelIndex: activeModelIndex, precision: 'q8 encoder · q4 decoder' } });
       return;
     }
     if (!audio?.length) throw new Error('No decoded audio was provided for transcription.');
 
     const transcriber = await getTranscriber(startModelIndex);
     const config = MODELS[activeModelIndex];
-    workerScope.postMessage({ type: 'transcription-progress', progress: 72, message: `Running ${config.label} locally…` });
+    workerScope.postMessage({ type: 'transcription-progress', progress: 72, message: `Running ${config.label} locally with automatic English/Arabic language detection…` });
     void transcriber;
     const output = await recognizeWithInferenceFallback(audio, startModelIndex);
     const finalConfig = MODELS[activeModelIndex];
@@ -137,7 +137,7 @@ workerScope.addEventListener('message', async (event: MessageEvent<WorkerRequest
       speaker: 'Professor',
     })) : output.text.trim() ? [{ id: `${id}-phone-1`, start: 0, end: audio.length / 16_000, text: output.text.trim(), speaker: 'Professor' }] : [];
 
-    workerScope.postMessage({ type: 'result', id, payload: { engine: 'transformers.js', model: finalConfig.id, modelIndex: activeModelIndex, precision: 'fp32 encoder · q4 decoder', segments } });
+    workerScope.postMessage({ type: 'result', id, payload: { engine: 'transformers.js', model: finalConfig.id, modelIndex: activeModelIndex, precision: 'q8 encoder · q4 decoder', segments } });
   } catch (error) {
     workerScope.postMessage({ type: 'error', id, message: error instanceof Error ? error.message : 'On-device transcription failed.' });
   }
