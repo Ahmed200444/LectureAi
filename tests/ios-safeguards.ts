@@ -136,7 +136,7 @@ assert.doesNotMatch(hostedLauncher, /lectureai-ahmed\.ahmedalkadi02\.chatgpt\.si
 // Installed PWA and iPhone/iPad screen-safe layout.
 assert.match(manifest, /"display": "standalone"/);
 assert.match(manifest, /"scope": "\/"/);
-assert.match(serviceWorker, /lectureai-shell-v7/);
+assert.match(serviceWorker, /lectureai-shell-v8/);
 assert.match(main, /mobile-ios\.css/);
 assert.match(mobileCss, /safe-area-inset-top/);
 assert.match(mobileCss, /safe-area-inset-bottom/);
