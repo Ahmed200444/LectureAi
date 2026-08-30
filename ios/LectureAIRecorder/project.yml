@@ -17,14 +17,14 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.lectureai.recorder
         PRODUCT_NAME: LectureAIRecorder
-        TARGETED_DEVICE_FAMILY: "1"
+        TARGETED_DEVICE_FAMILY: "1,2"
         SUPPORTS_MACCATALYST: NO
         CODE_SIGN_STYLE: Automatic
     info:
       path: Sources/Info.plist
       properties:
         CFBundleDisplayName: LectureAI Recorder
-        NSMicrophoneUsageDescription: LectureAI uses the microphone only when you choose to record a lecture. Recordings stay on your iPhone unless you explicitly share them.
+        NSMicrophoneUsageDescription: LectureAI uses the microphone only when you choose to record a lecture. Recordings stay on this device unless you explicitly share them.
         UIBackgroundModes:
           - audio
         UILaunchScreen: {}

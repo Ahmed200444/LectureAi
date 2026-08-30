@@ -1,7 +1,7 @@
 import type { TranscriptionProgress } from './transcription.ts';
 import type { TranscriptSegment } from './types.ts';
 import { translateTranscriptView } from './translation.ts';
-import { detectDeviceKind } from './device.ts';
+import { isIOSDevice } from './device.ts';
 
 type WorkerMessage = {
   type: 'model-progress' | 'model-ready' | 'transcription-progress' | 'result' | 'error';
@@ -56,10 +56,10 @@ function resetWorker(instance: Worker) {
 }
 
 function preferredPhoneModelStartIndex() {
-  // iPhone Safari has a tighter per-process memory budget than desktop browsers.
-  // Start with multilingual Base there so WebKit is less likely to kill the page
-  // before our normal Small -> Base -> Tiny fallback can even throw an error.
-  return detectDeviceKind() === 'iphone' ? 1 : 0;
+  // iPhone and iPad WebKit have tighter per-process memory budgets than desktop browsers.
+  // Start with multilingual Base on iOS/iPadOS so WebKit is less likely to kill the page
+  // before our normal model fallback can surface a recoverable error.
+  return isIOSDevice() ? 1 : 0;
 }
 
 function releasePhoneTranscriptionWorker() {
@@ -109,13 +109,13 @@ function sampledRms(channel: Float32Array) {
  * stereo but carried essentially all speech on only one side.
  */
 function makeSpeechMonoBuffer(context: AudioContext, decoded: AudioBuffer) {
-  const mono = context.createBuffer(1, decoded.length, decoded.sampleRate);
-  const destination = mono.getChannelData(0);
   if (decoded.numberOfChannels === 1) {
-    destination.set(decoded.getChannelData(0));
-    return { buffer: mono, selectedChannel: 0, channelRms: [sampledRms(destination)] };
+    const source = decoded.getChannelData(0);
+    return { buffer: decoded, selectedChannel: 0, channelRms: [sampledRms(source)] };
   }
 
+  const mono = context.createBuffer(1, decoded.length, decoded.sampleRate);
+  const destination = mono.getChannelData(0);
   const channelRms = Array.from({ length: decoded.numberOfChannels }, (_, index) => sampledRms(decoded.getChannelData(index)));
   const ranked = channelRms.map((rms, index) => ({ rms, index })).sort((a, b) => b.rms - a.rms);
   const strongest = ranked[0];
@@ -205,7 +205,7 @@ async function decodeTo16Khz(blob: Blob) {
     const mono = makeSpeechMonoBuffer(context, decoded);
     let pcm: Float32Array;
     if (decoded.sampleRate === SAMPLE_RATE) {
-      pcm = new Float32Array(mono.buffer.getChannelData(0));
+      pcm = mono.buffer.getChannelData(0);
     } else {
       const outputLength = Math.max(1, Math.ceil(decoded.duration * SAMPLE_RATE));
       const offline = new OfflineAudioContext(1, outputLength, SAMPLE_RATE);
@@ -214,7 +214,7 @@ async function decodeTo16Khz(blob: Blob) {
       source.connect(offline.destination);
       source.start();
       const rendered = await offline.startRendering();
-      pcm = new Float32Array(rendered.getChannelData(0));
+      pcm = rendered.getChannelData(0);
     }
 
     const signal = normalizeSpeechForTranscriptionInPlace(pcm);
@@ -269,7 +269,7 @@ function runWorkerChunk(
     instance.addEventListener('message', listener);
     instance.addEventListener('error', workerError);
     instance.addEventListener('messageerror', messageError);
-    instance.postMessage({ id, mode: 'transcribe', audio, startModelIndex }, [audio.buffer]);
+    instance.postMessage({ id, mode: 'transcribe', audio, startModelIndex, iosMemorySafe: isIOSDevice() }, [audio.buffer]);
   });
 }
 
@@ -351,7 +351,7 @@ export async function preparePhoneTranscriptionModel(onProgress: (update: Transc
     instance.addEventListener('message', listener);
     instance.addEventListener('error', workerError);
     instance.addEventListener('messageerror', messageError);
-    instance.postMessage({ id, mode: 'prepare', startModelIndex: preferredPhoneModelStartIndex() });
+    instance.postMessage({ id, mode: 'prepare', startModelIndex: preferredPhoneModelStartIndex(), iosMemorySafe: isIOSDevice() });
   });
 
   preparationPromise = task.then((result) => {
@@ -370,11 +370,11 @@ export async function transcribeOnPhone(
   onProgress: (update: TranscriptionProgress) => void,
   onModelReady: () => void,
 ) {
-  const isIPhone = detectDeviceKind() === 'iphone';
+  const isIOS = isIOSDevice();
   onProgress({
     progress: 2,
-    message: isIPhone
-      ? 'Preparing audio first to reduce iPhone memory pressure…'
+    message: isIOS
+      ? 'Preparing audio first to reduce iPhone/iPad memory pressure…'
       : 'Starting the speech model and preparing audio in parallel…',
   });
 
@@ -384,17 +384,17 @@ export async function transcribeOnPhone(
 
   if (audio.size > 250 * 1024 * 1024) {
     onProgress({ progress: 5, message: 'This is a large lecture. LectureAI will process it in smaller windows to reduce iPhone/iPad memory pressure; the original recording remains safe.' });
-  } else if (!isIPhone) {
+  } else if (!isIOS) {
     onProgress({ progress: 4, message: 'Preparing a private far-field speech copy at 16 kHz while the model warms up…' });
   }
 
   let decoded: Awaited<ReturnType<typeof decodeTo16Khz>>;
-  if (isIPhone) {
+  if (isIOS) {
     // Do not overlap the full browser audio decode with model initialization on
-    // iPhone. Either operation can be memory-heavy enough for WebKit to terminate
-    // the page before JavaScript receives a recoverable exception.
+    // iPhone or iPad. Either operation can be memory-heavy enough for WebKit to
+    // terminate the page before JavaScript receives a recoverable exception.
     decoded = await decodeTo16Khz(audio);
-    onProgress({ progress: 18, message: 'Audio prepared · loading the memory-safer multilingual model on iPhone…' });
+    onProgress({ progress: 18, message: 'Audio prepared · loading the memory-safer multilingual model on iPhone/iPad…' });
     await warmModel();
   } else {
     const warmup = warmModel();

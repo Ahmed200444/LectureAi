@@ -33,10 +33,17 @@ if (env.backends?.onnx?.wasm) env.backends.onnx.wasm.numThreads = 1;
 type ProgressInfo = { status?: string; progress?: number; loaded?: number; total?: number; file?: string };
 type ASROutput = { text: string; chunks?: Array<{ timestamp: [number, number]; text: string }> };
 type Transcriber = Awaited<ReturnType<typeof pipeline<'automatic-speech-recognition'>>>;
-type WorkerRequest = { id: string; audio?: Float32Array; mode?: 'prepare' | 'transcribe'; startModelIndex?: number };
+type WorkerRequest = { id: string; audio?: Float32Array; mode?: 'prepare' | 'transcribe'; startModelIndex?: number; iosMemorySafe?: boolean };
 
 let transcriberPromise: Promise<Transcriber> | null = null;
 let activeModelIndex = 0;
+let activeIOSMemorySafe = false;
+
+const IOS_MEMORY_SAFE_DTYPE = { encoder_model: 'q8', decoder_model_merged: 'q8' } as const;
+
+function activePrecision() {
+  return activeIOSMemorySafe && activeModelIndex >= 1 ? 'q8 encoder · q8 decoder' : 'q8 encoder · q4 decoder';
+}
 
 function progressCallback(info: ProgressInfo) {
   const progress = info.status === 'progress_total' || info.status === 'progress' ? Math.round(info.progress || 0) : undefined;
@@ -52,22 +59,24 @@ async function disposeCurrent() {
   transcriberPromise = null;
 }
 
-function loadModel(index: number) {
+function loadModel(index: number, iosMemorySafe = false) {
   activeModelIndex = index;
+  activeIOSMemorySafe = iosMemorySafe;
   const config = MODELS[index];
+  const dtype = iosMemorySafe && index >= 1 ? IOS_MEMORY_SAFE_DTYPE : config.dtype;
   return pipeline('automatic-speech-recognition', config.id, {
     device: 'wasm',
-    dtype: config.dtype,
+    dtype,
     progress_callback: progressCallback,
   });
 }
 
-async function getTranscriber(startIndex = activeModelIndex) {
+async function getTranscriber(startIndex = activeModelIndex, iosMemorySafe = activeIOSMemorySafe) {
   if (!transcriberPromise) {
     let index = Math.max(0, Math.min(startIndex, MODELS.length - 1));
     const tryLoad = async (): Promise<Transcriber> => {
       try {
-        return await loadModel(index);
+        return await loadModel(index, iosMemorySafe);
       } catch (error) {
         if (index >= MODELS.length - 1) throw error;
         index += 1;
@@ -79,27 +88,29 @@ async function getTranscriber(startIndex = activeModelIndex) {
   }
   const transcriber = await transcriberPromise;
   const config = MODELS[activeModelIndex];
-  workerScope.postMessage({ type: 'model-ready', model: config.id, modelIndex: activeModelIndex, precision: 'q8 encoder · q4 decoder' });
+  workerScope.postMessage({ type: 'model-ready', model: config.id, modelIndex: activeModelIndex, precision: activePrecision() });
   return transcriber;
 }
 
-async function runRecognition(transcriber: Transcriber, audio: Float32Array) {
+async function runRecognition(transcriber: Transcriber, audio: Float32Array, iosMemorySafe = false) {
   return transcriber(audio, {
     task: 'transcribe',
     return_timestamps: true,
-    chunk_length_s: 30,
-    stride_length_s: 5,
+    // Smaller inference chunks reduce peak WebKit activation memory on iPhone/iPad.
+    // Overlap remains so words near chunk boundaries retain context.
+    chunk_length_s: iosMemorySafe ? 15 : 30,
+    stride_length_s: iosMemorySafe ? 3 : 5,
     force_full_sequences: false,
   }) as Promise<ASROutput>;
 }
 
-async function recognizeWithInferenceFallback(audio: Float32Array, startModelIndex = activeModelIndex) {
+async function recognizeWithInferenceFallback(audio: Float32Array, startModelIndex = activeModelIndex, iosMemorySafe = activeIOSMemorySafe) {
   if (!transcriberPromise) activeModelIndex = Math.max(0, Math.min(startModelIndex, MODELS.length - 1));
 
   for (;;) {
-    const transcriber = await getTranscriber(activeModelIndex);
+    const transcriber = await getTranscriber(activeModelIndex, iosMemorySafe);
     try {
-      return await runRecognition(transcriber, audio);
+      return await runRecognition(transcriber, audio, iosMemorySafe);
     } catch (error) {
       if (activeModelIndex >= MODELS.length - 1) throw error;
       const nextIndex = activeModelIndex + 1;
@@ -111,21 +122,21 @@ async function recognizeWithInferenceFallback(audio: Float32Array, startModelInd
 }
 
 workerScope.addEventListener('message', async (event: MessageEvent<WorkerRequest>) => {
-  const { id, audio, mode = 'transcribe', startModelIndex = 0 } = event.data;
+  const { id, audio, mode = 'transcribe', startModelIndex = 0, iosMemorySafe = false } = event.data;
   try {
     if (mode === 'prepare') {
-      await getTranscriber(startModelIndex);
+      await getTranscriber(startModelIndex, iosMemorySafe);
       const config = MODELS[activeModelIndex];
-      workerScope.postMessage({ type: 'result', id, payload: { prepared: true, model: config.id, modelIndex: activeModelIndex, precision: 'q8 encoder · q4 decoder' } });
+      workerScope.postMessage({ type: 'result', id, payload: { prepared: true, model: config.id, modelIndex: activeModelIndex, precision: activePrecision() } });
       return;
     }
     if (!audio?.length) throw new Error('No decoded audio was provided for transcription.');
 
-    const transcriber = await getTranscriber(startModelIndex);
+    const transcriber = await getTranscriber(startModelIndex, iosMemorySafe);
     const config = MODELS[activeModelIndex];
     workerScope.postMessage({ type: 'transcription-progress', progress: 72, message: `Running ${config.label} locally with automatic English/Arabic language detection…` });
     void transcriber;
-    const output = await recognizeWithInferenceFallback(audio, startModelIndex);
+    const output = await recognizeWithInferenceFallback(audio, startModelIndex, iosMemorySafe);
     const finalConfig = MODELS[activeModelIndex];
 
     const chunks = output.chunks?.filter((chunk) => chunk.text.trim()) || [];
@@ -137,7 +148,7 @@ workerScope.addEventListener('message', async (event: MessageEvent<WorkerRequest
       speaker: 'Professor',
     })) : output.text.trim() ? [{ id: `${id}-phone-1`, start: 0, end: audio.length / 16_000, text: output.text.trim(), speaker: 'Professor' }] : [];
 
-    workerScope.postMessage({ type: 'result', id, payload: { engine: 'transformers.js', model: finalConfig.id, modelIndex: activeModelIndex, precision: 'q8 encoder · q4 decoder', segments } });
+    workerScope.postMessage({ type: 'result', id, payload: { engine: 'transformers.js', model: finalConfig.id, modelIndex: activeModelIndex, precision: activePrecision(), segments } });
   } catch (error) {
     workerScope.postMessage({ type: 'error', id, message: error instanceof Error ? error.message : 'On-device transcription failed.' });
   }
