@@ -1,0 +1,48 @@
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+
+const worker = readFileSync(new URL('../lib/phone-transcriber.worker.ts', import.meta.url), 'utf8');
+const phone = readFileSync(new URL('../lib/phone-transcription.ts', import.meta.url), 'utf8');
+const translationWorker = readFileSync(new URL('../lib/translation.worker.ts', import.meta.url), 'utf8');
+const translation = readFileSync(new URL('../lib/translation.ts', import.meta.url), 'utf8');
+const transcription = readFileSync(new URL('../lib/transcription.ts', import.meta.url), 'utf8');
+const serviceWorker = readFileSync(new URL('../public/sw.js', import.meta.url), 'utf8');
+
+// Keep multilingual Whisper automatic: English is the main use case, but Arabic,
+// Egyptian Arabic, MSA, and mixed speech must not be forced into English.
+assert.match(worker, /task: 'transcribe'/);
+assert.doesNotMatch(worker, /language:\s*['"]english['"]/i);
+assert.match(worker, /automatic English\/Arabic language detection/);
+
+// The encoder is quantized for faster iPhone/iPad startup while retaining the
+// stronger Small -> Base -> Tiny fallback and a q4 decoder for memory pressure.
+assert.match(worker, /whisper-small/);
+assert.match(worker, /whisper-base/);
+assert.match(worker, /whisper-tiny/);
+assert.match(worker, /encoder_model: 'q8'/);
+assert.match(worker, /decoder_model_merged: 'q4'/);
+
+// Stereo/imported media must be rendered to a mono 16 kHz transcription copy;
+// never silently throw away every channel except channel one.
+assert.match(phone, /decoded\.numberOfChannels === 1/);
+assert.match(phone, /new OfflineAudioContext\(1, outputLength, SAMPLE_RATE\)/);
+assert.match(phone, /properly downmixed/);
+
+// Translation stays local and lazy in a Web Worker with browser caching.
+assert.match(translationWorker, /Xenova\/opus-mt-en-ar/);
+assert.match(translationWorker, /Xenova\/opus-mt-ar-en/);
+assert.match(translationWorker, /dtype: 'q8'/);
+assert.match(translationWorker, /env\.useBrowserCache = true/);
+assert.doesNotMatch(translationWorker, /fetch\(|https:\/\//);
+assert.match(translation, /detectedLanguage === 'ar'/);
+assert.match(translation, /detectedLanguage === 'en'/);
+assert.match(translation, /detectedLanguage === 'mixed'/);
+assert.match(phone, /englishTranslation/);
+assert.match(phone, /arabicTranslation/);
+assert.match(transcription, /englishTranslation/);
+assert.match(transcription, /arabicTranslation/);
+
+// The new PWA generation must replace the old cached shell on installed iPhones.
+assert.match(serviceWorker, /lectureai-shell-v8/);
+
+console.log('✓ multilingual transcription, stereo audio preparation, local translation, and PWA refresh safeguards are present');

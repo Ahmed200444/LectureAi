@@ -106,12 +106,30 @@ export async function transcribeWithWindowsHelper(
 }
 
 export function completeTranscription(lecture: Lecture, payload: unknown, engine: 'windows' | 'phone' | 'import', model: string) {
+  const payloadRecord = (payload && typeof payload === 'object' ? payload : {}) as {
+    model?: unknown;
+    englishTranslation?: unknown;
+    arabicTranslation?: unknown;
+    translationWarnings?: unknown;
+  };
   const segments = normalizeTranscript(payload, lecture.id);
-  const actualModel = String((payload as { model?: unknown })?.model || model);
+  const actualModel = String(payloadRecord.model || model);
   if (!segments.length) throw new Error('No speech was detected in this recording. Check the audio and try again.');
+
+  const normalizeOptionalTranslation = (value: unknown) => Array.isArray(value) && value.length
+    ? normalizeTranscript({ segments: value }, lecture.id)
+    : [];
+  const englishTranslation = normalizeOptionalTranslation(payloadRecord.englishTranslation);
+  const arabicTranslation = normalizeOptionalTranslation(payloadRecord.arabicTranslation);
+  const translationWarnings = Array.isArray(payloadRecord.translationWarnings)
+    ? payloadRecord.translationWarnings.filter((value): value is string => typeof value === 'string' && Boolean(value.trim()))
+    : [];
+
   const withTranscript: Lecture = {
     ...lecture,
     segments,
+    englishTranslation,
+    arabicTranslation,
     duration: Math.max(lecture.duration, segments.at(-1)?.endTime || 0),
     status: 'generating-notes',
     statusMessage: 'Transcript complete · generating editable lecture notes',
@@ -120,13 +138,16 @@ export function completeTranscription(lecture: Lecture, payload: unknown, engine
     transcriptionModel: actualModel,
   };
   const notes = generateNotesHtml(withTranscript);
+  const translationStatus = englishTranslation.length || arabicTranslation.length
+    ? ` · English/Arabic views ${translationWarnings.length ? 'partially ready' : 'ready'}`
+    : '';
   return {
     ...withTranscript,
     notesOriginal: notes,
     notesCurrent: notes,
     noteVersions: [...withTranscript.noteVersions, { id: crypto.randomUUID(), html: notes, createdAt: new Date().toISOString(), label: 'Original generated notes' }],
     status: 'done' as const,
-    statusMessage: `${segments.length} timestamped segment${segments.length === 1 ? '' : 's'} ready · editable notes generated · model: ${actualModel}`,
+    statusMessage: `${segments.length} timestamped segment${segments.length === 1 ? '' : 's'} ready${translationStatus} · editable notes generated · model: ${actualModel}`,
     processingProgress: 100,
     updatedAt: new Date().toISOString(),
   };
