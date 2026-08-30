@@ -27,26 +27,8 @@ jobs:
 
           p = Path('lib/phone-transcription.ts')
           text = p.read_text()
-          old = """function makeSpeechMonoBuffer(context: AudioContext, decoded: AudioBuffer) {
-  const mono = context.createBuffer(1, decoded.length, decoded.sampleRate);
-  const destination = mono.getChannelData(0);
-  if (decoded.numberOfChannels === 1) {
-    destination.set(decoded.getChannelData(0));
-    return { buffer: mono, selectedChannel: 0, channelRms: [sampledRms(destination)] };
-  }
-
-  const channelRms = Array.from({ length: decoded.numberOfChannels }, (_, index) => sampledRms(decoded.getChannelData(index)));
-"""
-          new = """function makeSpeechMonoBuffer(context: AudioContext, decoded: AudioBuffer) {
-  if (decoded.numberOfChannels === 1) {
-    const source = decoded.getChannelData(0);
-    return { buffer: decoded, selectedChannel: 0, channelRms: [sampledRms(source)] };
-  }
-
-  const mono = context.createBuffer(1, decoded.length, decoded.sampleRate);
-  const destination = mono.getChannelData(0);
-  const channelRms = Array.from({ length: decoded.numberOfChannels }, (_, index) => sampledRms(decoded.getChannelData(index)));
-"""
+          old = "function makeSpeechMonoBuffer(context: AudioContext, decoded: AudioBuffer) {\n  const mono = context.createBuffer(1, decoded.length, decoded.sampleRate);\n  const destination = mono.getChannelData(0);\n  if (decoded.numberOfChannels === 1) {\n    destination.set(decoded.getChannelData(0));\n    return { buffer: mono, selectedChannel: 0, channelRms: [sampledRms(destination)] };\n  }\n\n  const channelRms = Array.from({ length: decoded.numberOfChannels }, (_, index) => sampledRms(decoded.getChannelData(index)));\n"
+          new = "function makeSpeechMonoBuffer(context: AudioContext, decoded: AudioBuffer) {\n  if (decoded.numberOfChannels === 1) {\n    const source = decoded.getChannelData(0);\n    return { buffer: decoded, selectedChannel: 0, channelRms: [sampledRms(source)] };\n  }\n\n  const mono = context.createBuffer(1, decoded.length, decoded.sampleRate);\n  const destination = mono.getChannelData(0);\n  const channelRms = Array.from({ length: decoded.numberOfChannels }, (_, index) => sampledRms(decoded.getChannelData(index)));\n"
           if old not in text:
               raise SystemExit('mono-copy pattern not found')
           text = text.replace(old, new, 1)
