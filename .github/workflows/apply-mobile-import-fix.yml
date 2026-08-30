@@ -1,0 +1,83 @@
+name: Apply mobile recording import fix
+
+on:
+  push:
+    branches:
+      - iphone-import-recording-20260830
+    paths:
+      - '.github/workflows/apply-mobile-import-fix.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: iphone-import-recording-20260830
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Make Import Recording available on iPhone and iPad
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          app_path = Path('src/App.tsx')
+          app = app_path.read_text()
+
+          home_old = "{detectDeviceKind() === 'windows' && <button className=\"secondary-button\" onClick={onImport}><Upload size={17} /> Import recording from phone/iPad</button>}"
+          home_new = "<button className=\"secondary-button\" onClick={onImport}><Upload size={17} /> Import recording</button>"
+          library_old = "{detectDeviceKind() === 'windows' && <button className=\"secondary-button\" onClick={onImport}><Upload size={17} /> Import recording</button>}"
+          library_new = "<button className=\"secondary-button\" onClick={onImport}><Upload size={17} /> Import recording</button>"
+
+          if app.count(home_old) != 1:
+              raise SystemExit(f'Expected exactly one Windows-only home import button, found {app.count(home_old)}')
+          if app.count(library_old) != 1:
+              raise SystemExit(f'Expected exactly one Windows-only library import button, found {app.count(library_old)}')
+
+          app = app.replace(home_old, home_new).replace(library_old, library_new)
+          app_path.write_text(app)
+
+          test_path = Path('tests/native-ios-safeguards.ts')
+          test = test_path.read_text()
+          if "const app = readFileSync(new URL('../src/App.tsx'" not in test:
+              test = test.replace(
+                  "const recorder = readFileSync(new URL('../ios/LectureAIRecorder/Sources/RecorderStore.swift', import.meta.url), 'utf8');",
+                  "const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');\nconst recorder = readFileSync(new URL('../ios/LectureAIRecorder/Sources/RecorderStore.swift', import.meta.url), 'utf8');"
+              )
+          marker = "assert.match(recorder, /AVAudioRecorder/);"
+          assertions = """const importButtons = app.match(/<button className=\\\"secondary-button\\\" onClick=\\{onImport\\}><Upload size=\\{17\\} \\/> Import recording<\\/button>/g) || [];\nassert.equal(importButtons.length, 2, 'Home and Lectures must both expose Import recording on iPhone/iPad and Windows');\nassert.doesNotMatch(app, /detectDeviceKind\\(\\) === 'windows' && <button className=\\\"secondary-button\\\" onClick=\\{onImport\\}/);\n\n"""
+          if "Home and Lectures must both expose Import recording" not in test:
+              test = test.replace(marker, assertions + marker)
+          test_path.write_text(test)
+          PY
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm run test
+
+      - name: Build
+        run: npm run build
+
+      - name: Commit verified fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/App.tsx tests/native-ios-safeguards.ts
+          git commit -m "Show recording import on iPhone and iPad"
+          git push origin HEAD:iphone-import-recording-20260830
