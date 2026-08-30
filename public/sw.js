@@ -1,4 +1,4 @@
-const CACHE_NAME = 'lectureai-shell-v7';
+const CACHE_NAME = 'lectureai-shell-v8';
 const CORE = ['/', '/manifest.webmanifest', '/icon-192.png', '/icon-512.png'];
 
 self.addEventListener('install', (event) => {
