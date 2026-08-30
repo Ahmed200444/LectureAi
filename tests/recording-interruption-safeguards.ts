@@ -26,10 +26,34 @@ assert.match(recorder, /requested an immediate recovery checkpoint/);
 assert.match(recorder, /document\.visibilityState === 'visible' && !wakeLockRef\.current/);
 assert.doesNotMatch(recorder, /rms\s*<[^\n]+\n[^\n]*(?:recorder\.stop|recorder\.pause|track\.stop|track\.enabled\s*=\s*false)/);
 
+// Pause/continue must stay inside the same MediaRecorder and microphone session.
+// Pausing flushes a checkpoint but never stops or disables the microphone track;
+// resuming revalidates the live stream and restarts timing/checkpoint health.
+const pauseStart = recorder.indexOf('const pause = useCallback');
+const resumeStart = recorder.indexOf('const resume = useCallback');
+const stopStart = recorder.indexOf('const stop = useCallback');
+assert.ok(pauseStart >= 0 && resumeStart > pauseStart && stopStart > resumeStart);
+const pauseBlock = recorder.slice(pauseStart, resumeStart);
+const resumeBlock = recorder.slice(resumeStart, stopStart);
+assert.match(pauseBlock, /recorder\.requestData\(\)/);
+assert.match(pauseBlock, /recorder\.pause\(\)/);
+assert.match(pauseBlock, /Promise\.allSettled\(Array\.from\(pendingWritesRef\.current\)\)/);
+assert.doesNotMatch(pauseBlock, /\.stop\(\)/);
+assert.doesNotMatch(pauseBlock, /\.enabled\s*=/);
+assert.match(resumeBlock, /assertLiveMicrophoneStream\(stream\)/);
+assert.match(resumeBlock, /recorder\.resume\(\)/);
+assert.match(resumeBlock, /activeStartedRef\.current = Date\.now\(\)/);
+assert.match(resumeBlock, /lastChunkAtRef\.current = Date\.now\(\)/);
+assert.match(resumeBlock, /requestWakeLock\(\)/);
+assert.doesNotMatch(resumeBlock, /\.stop\(\)/);
+assert.doesNotMatch(resumeBlock, /\.enabled\s*=/);
+
+assert.match(flow, /Pause recording/);
+assert.match(flow, /Continue recording/);
+assert.match(flow, /same microphone session/);
 assert.match(flow, /Finish & save recovered recording/);
 assert.match(flow, /Microphone session ended — the audio already checkpointed is preserved/);
 assert.match(flow, /Finish & save/);
 assert.doesNotMatch(flow, />Stop recording</);
-assert.doesNotMatch(flow, /Continue current recording/);
 
-console.log('✓ recording interruption, long-session watchdog, and finalization safeguards are present');
+console.log('✓ recording interruption, long-session watchdog, pause/continue, and finalization safeguards are present');

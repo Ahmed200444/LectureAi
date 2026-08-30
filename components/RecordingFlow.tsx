@@ -1,6 +1,6 @@
 'use client';
 
-import { AlertTriangle, Bookmark, Check, ChevronLeft, CircleStop, Download, FilePlus2, HardDrive, Mic, ShieldCheck, Star } from 'lucide-react';
+import { AlertTriangle, Bookmark, Check, ChevronLeft, CircleStop, Download, FilePlus2, HardDrive, Mic, Pause, Play, ShieldCheck, Star } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { getAudio, saveLecture } from '../lib/db';
 import { downloadBlob } from '../lib/export';
@@ -26,6 +26,7 @@ export function RecordingFlow({ courses, onClose, onSaved, onOpenLecture }: Reco
   const [visibilityWarning, setVisibilityWarning] = useState(false);
   const [storageWarning, setStorageWarning] = useState('');
   const [setupError, setSetupError] = useState('');
+  const [controlError, setControlError] = useState('');
   const [micVerified, setMicVerified] = useState(false);
   const [savedAudioUrl, setSavedAudioUrl] = useState('');
   const recorder = useRecorder();
@@ -80,6 +81,7 @@ export function RecordingFlow({ courses, onClose, onSaved, onOpenLecture }: Reco
     };
     try {
       setSetupError('');
+      setControlError('');
       await navigator.storage?.persist?.().catch(() => false);
       await recorder.start(newLecture.id);
       await saveLecture(newLecture);
@@ -99,10 +101,50 @@ export function RecordingFlow({ courses, onClose, onSaved, onOpenLecture }: Reco
     onSaved(updated);
   }
 
+  async function pauseCurrent() {
+    if (!lecture || recorder.isInterrupted || recorder.isPaused) return;
+    try {
+      setControlError('');
+      const result = await recorder.pause();
+      const updated: Lecture = {
+        ...lecture,
+        duration: result.duration,
+        status: 'recording',
+        statusMessage: 'Recording paused · microphone session kept live and checkpoints preserved · ready to continue',
+        updatedAt: new Date().toISOString(),
+      };
+      setLecture(updated);
+      await saveLecture(updated);
+      onSaved(updated);
+    } catch (error) {
+      setControlError(error instanceof Error ? error.message : 'Could not pause the recording safely. Recording state was left unchanged.');
+    }
+  }
+
+  async function resumeCurrent() {
+    if (!lecture || recorder.isInterrupted || !recorder.isPaused) return;
+    try {
+      setControlError('');
+      await recorder.resume();
+      const updated: Lecture = {
+        ...lecture,
+        status: 'recording',
+        statusMessage: 'Recording continued · same microphone session and checkpoint sequence are active',
+        updatedAt: new Date().toISOString(),
+      };
+      setLecture(updated);
+      await saveLecture(updated);
+      onSaved(updated);
+    } catch (error) {
+      setControlError(error instanceof Error ? error.message : 'Could not continue the recording. Saved checkpoints remain protected.');
+    }
+  }
+
   function prepareNewRecording() {
     setLecture(null);
     setMicVerified(false);
     setSavedAudioUrl('');
+    setControlError('');
     setTitle(`Lecture ${new Date().toLocaleDateString('en', { month: 'short', day: 'numeric' })}`);
     setVisibilityWarning(false);
     setStage('setup');
@@ -111,6 +153,7 @@ export function RecordingFlow({ courses, onClose, onSaved, onOpenLecture }: Reco
   async function finishCurrent(startAnother = false) {
     if (!lecture) return;
     try {
+      setControlError('');
       const result = await recorder.stop();
       const recovered = result.recoveredFromInterruption;
       const updated: Lecture = {
@@ -146,27 +189,34 @@ export function RecordingFlow({ courses, onClose, onSaved, onOpenLecture }: Reco
   }
 
   if (stage === 'recording' && lecture) {
+    const temporarilyPaused = recorder.isPaused && !recorder.isInterrupted;
     return (
       <div className="recording-screen" role="dialog" aria-modal="true" aria-label="Recording lecture">
         <header>
-          <span className={recorder.isInterrupted ? 'recording-paused' : 'recording-live'}>{!recorder.isInterrupted && <i />} {recorder.isInterrupted ? 'Microphone interrupted' : 'Recording'}</span>
-          <span>{recorder.isInterrupted ? 'Saved checkpoints are ready to finalize' : ['iphone', 'ipad'].includes(detectDeviceKind()) ? `Keep LectureAI visible on your ${deviceLabel()}` : `Recording on ${deviceLabel()}`}</span>
+          <span className={recorder.isInterrupted || temporarilyPaused ? 'recording-paused' : 'recording-live'}>{!recorder.isInterrupted && !temporarilyPaused && <i />} {recorder.isInterrupted ? 'Microphone interrupted' : temporarilyPaused ? 'Paused' : 'Recording'}</span>
+          <span>{recorder.isInterrupted ? 'Saved checkpoints are ready to finalize' : temporarilyPaused ? 'Microphone session kept live · tap Continue recording when ready' : ['iphone', 'ipad'].includes(detectDeviceKind()) ? `Keep LectureAI visible on your ${deviceLabel()}` : `Recording on ${deviceLabel()}`}</span>
         </header>
         <main>
           <p className="eyebrow">{course?.code || 'LECTURE'} · {course?.name || 'NO COURSE'}</p>
           <h1>{lecture.title}</h1>
           <div className="recording-clock">{formatTime(recorder.duration, true)}</div>
-          <div className="big-meter" aria-label={`Audio level ${Math.round(recorder.level * 100)} percent`}><i style={{ width: `${recorder.isInterrupted ? 0 : Math.max(1, recorder.level * 100)}%` }} /></div>
-          <p className={`level-label ${!recorder.isInterrupted && recorder.level < .04 ? 'warn' : ''}`}>{recorder.isInterrupted ? 'Microphone session ended — the audio already checkpointed is preserved.' : recorder.level < .04 ? 'Audio is quiet — check device position' : recorder.level > .94 ? 'Clipping risk — move the device farther away' : 'Audio level looks good'}</p>
+          <div className="big-meter" aria-label={`Audio level ${Math.round(recorder.level * 100)} percent`}><i style={{ width: `${recorder.isInterrupted || temporarilyPaused ? 0 : Math.max(1, recorder.level * 100)}%` }} /></div>
+          <p className={`level-label ${!recorder.isInterrupted && !temporarilyPaused && recorder.level < .04 ? 'warn' : ''}`}>{recorder.isInterrupted ? 'Microphone session ended — the audio already checkpointed is preserved.' : temporarilyPaused ? 'Recording paused — the same microphone session is being kept ready to continue.' : recorder.level < .04 ? 'Audio is quiet — recording is still running' : recorder.level > .94 ? 'Clipping risk — move the device farther away' : 'Audio level looks good'}</p>
           <div className="checkpoint-status"><ShieldCheck size={16} /> {recorder.chunkCount} secure checkpoints saved</div>
           {visibilityWarning && <div className="inline-warning"><AlertTriangle size={17} /> iOS/iPadOS may suspend browser recording in the background. Return to LectureAI and keep the screen awake.</div>}
           {storageWarning && <div className="inline-warning"><AlertTriangle size={17} /> {storageWarning}</div>}
           {recorder.error && <div className="inline-warning"><AlertTriangle size={17} /> {recorder.error}</div>}
+          {controlError && <div className="inline-warning"><AlertTriangle size={17} /> {controlError}</div>}
           {recorder.isInterrupted ? <div className="recording-actions paused-actions">
             <button className="finish-button" onClick={() => finishCurrent(false)}><CircleStop size={20} /> Finish & save recovered recording</button>
             <small>LectureAI will assemble the checkpoints already saved on this device and verify that the resulting audio can be played before deleting those checkpoints.</small>
+          </div> : temporarilyPaused ? <div className="recording-actions paused-actions">
+            <button className="mark-button" onClick={resumeCurrent}><Play size={20} /> Continue recording</button>
+            <button className="stop-button" onClick={() => finishCurrent(false)}><CircleStop size={22} /> Finish & save</button>
+            <small>Continue resumes the same microphone session and same lecture. Finish & save permanently ends this recording.</small>
           </div> : <div className="recording-actions">
             <button className="mark-button" onClick={markMoment}><Star size={20} /> Mark moment</button>
+            <button className="mark-button" onClick={pauseCurrent}><Pause size={20} /> Pause recording</button>
             <button className="stop-button" onClick={() => finishCurrent(false)}><CircleStop size={22} /> Finish & save</button>
           </div>}
         </main>
