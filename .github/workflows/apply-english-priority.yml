@@ -1,0 +1,65 @@
+name: Apply English-priority lecture view
+
+on:
+  push:
+    branches:
+      - english-priority-20260831
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-verify:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: english-priority-20260831
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Apply English-priority behavior
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str):
+              p = Path(path)
+              text = p.read_text()
+              if old not in text:
+                  raise SystemExit(f'Expected pattern not found in {path}: {old!r}')
+              p.write_text(text.replace(old, new, 1))
+
+          replace_once(
+              'components/LectureDetail.tsx',
+              "      await update(completeTranscription(working, payload, 'phone', 'Whisper small multilingual'));\n      setTab('original');\n      onToast('On-device transcript and editable notes are ready.', 'success');\n",
+              "      const completed = completeTranscription(working, payload, 'phone', 'Whisper multilingual');\n      await update(completed);\n      setTab(completed.englishTranslation.length ? 'english' : 'original');\n      onToast(completed.englishTranslation.length ? 'Transcript ready · English view opened first. Original multilingual transcript is preserved.' : 'On-device transcript and editable notes are ready.', 'success');\n",
+          )
+
+          test_path = Path('tests/ios-safeguards.ts')
+          test = test_path.read_text()
+          marker = "assert.doesNotMatch(detail, /Math\\.max\\(segment\\.confidence, \\.9\\)/);\n"
+          addition = marker + "\n// English is the preferred completed view when available, without forcing Whisper's language.\nassert.match(detail, /completed\\.englishTranslation\\.length \\? 'english' : 'original'/);\nassert.match(detail, /Original multilingual transcript is preserved/);\nassert.doesNotMatch(worker, /language:\\s*['\"]english['\"]/i);\n"
+          if marker not in test:
+              raise SystemExit('ios safeguard insertion point missing')
+          test_path.write_text(test.replace(marker, addition, 1))
+          PY
+      - name: Install dependencies
+        run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Lint
+        run: npm run lint
+      - name: Test
+        run: npm run test
+      - name: Build
+        run: npm run build
+      - name: Commit verified change
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add components/LectureDetail.tsx tests/ios-safeguards.ts
+          git commit -m "Prefer English view without forcing language"
+          git push origin HEAD:english-priority-20260831
