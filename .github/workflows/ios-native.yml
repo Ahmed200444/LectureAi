@@ -1,0 +1,40 @@
+name: LectureAI Native iOS CI
+
+on:
+  push:
+    branches:
+      - native-ios-*
+    paths:
+      - 'ios/**'
+      - '.github/workflows/ios-native.yml'
+  pull_request:
+    paths:
+      - 'ios/**'
+      - '.github/workflows/ios-native.yml'
+
+jobs:
+  build-ios-recorder:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: ios/LectureAIRecorder
+        run: xcodegen generate
+
+      - name: Build iPhone Simulator app
+        working-directory: ios/LectureAIRecorder
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project LectureAIRecorder.xcodeproj \
+            -scheme LectureAIRecorder \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO \
+            build
