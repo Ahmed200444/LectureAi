@@ -43,31 +43,36 @@ export function deviceLabel() {
 }
 
 /**
- * Lecture capture favors a faithful source recording over call-style processing.
- * iOS/iPadOS may ignore unsupported preferences, so every field is a preference,
- * not a hard requirement that would make microphone access fail.
+ * Lecture capture on iPhone/iPad is tuned for distant classroom speech. The user's
+ * real sample showed speech tens of dB below occasional taps/peaks, so letting iOS
+ * apply speech-oriented automatic gain and noise suppression is more useful than
+ * forcing raw call-processing controls off. These are still best-effort ideals: a
+ * Safari build may ignore unsupported settings, and failure to apply them must never
+ * block recording.
  */
 export function lectureAudioConstraints(): MediaTrackConstraints {
+  const ios = isIOSDevice();
   return {
     echoCancellation: { ideal: false },
-    noiseSuppression: { ideal: false },
-    autoGainControl: { ideal: false },
+    noiseSuppression: { ideal: ios },
+    autoGainControl: { ideal: ios },
     channelCount: { ideal: 1 },
     sampleRate: { ideal: 48_000 },
   };
 }
 
 /**
- * After permission is granted, make one best-effort attempt to disable call-style
- * processing on the real microphone track. This helps avoid pumping/whooshing
- * artifacts without making recording fail on Safari builds that ignore a control.
+ * Re-apply the same best-effort lecture preferences after permission is granted.
+ * On iPhone/iPad we favor far-field speech intelligibility with AGC/noise suppression;
+ * elsewhere we preserve the existing low-processing capture preference.
  */
 export async function applyLectureAudioPreferences(track: MediaStreamTrack) {
   const supported = navigator.mediaDevices?.getSupportedConstraints?.() || {};
   const preferred: MediaTrackConstraints = {};
+  const ios = isIOSDevice();
   if (supported.echoCancellation) preferred.echoCancellation = false;
-  if (supported.noiseSuppression) preferred.noiseSuppression = false;
-  if (supported.autoGainControl) preferred.autoGainControl = false;
+  if (supported.noiseSuppression) preferred.noiseSuppression = ios;
+  if (supported.autoGainControl) preferred.autoGainControl = ios;
   if (supported.channelCount) preferred.channelCount = { ideal: 1 };
   if (supported.sampleRate) preferred.sampleRate = { ideal: 48_000 };
 

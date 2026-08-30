@@ -34,6 +34,7 @@ type WorkerPayload = {
 const SAMPLE_RATE = 16_000;
 const WINDOW_SECONDS = 180;
 const OVERLAP_SECONDS = 5;
+const MAX_FAR_FIELD_GAIN = 16;
 
 let sharedWorker: Worker | null = null;
 let preparedModel: { model: string } | null = null;
@@ -77,37 +78,99 @@ function asTranscriptSegments(segments: WorkerSegment[], lectureId: string): Tra
   }));
 }
 
-/**
- * Boost quiet/distant speech only in the disposable transcription copy.
- * The original recording Blob is never changed. Gain is capped to avoid turning
- * classroom noise into clipping when the professor is far from the device.
- */
-function normalizeSpeechForTranscriptionInPlace(samples: Float32Array) {
-  if (!samples.length) return { gain: 1, rms: 0, peak: 0 };
-  const stride = Math.max(1, Math.floor(samples.length / 320_000));
+function sampledRms(channel: Float32Array) {
+  if (!channel.length) return 0;
+  const stride = Math.max(1, Math.floor(channel.length / 50_000));
   let sumSquares = 0;
-  let peak = 0;
   let count = 0;
-  for (let index = 0; index < samples.length; index += stride) {
-    const value = Math.abs(samples[index] || 0);
+  for (let index = 0; index < channel.length; index += stride) {
+    const value = channel[index] || 0;
     sumSquares += value * value;
-    peak = Math.max(peak, value);
     count += 1;
   }
-  const rms = count ? Math.sqrt(sumSquares / count) : 0;
-  if (rms < 0.00005 || peak < 0.0001) return { gain: 1, rms, peak };
+  return count ? Math.sqrt(sumSquares / count) : 0;
+}
 
-  // Aim around -22 dBFS RMS for speech, never boost more than 4x, and retain peak headroom.
-  const targetRms = 0.08;
-  const rmsGain = targetRms / Math.max(rms, 0.00005);
-  const peakGain = 0.92 / Math.max(peak, 0.0001);
-  const gain = Math.max(1, Math.min(4, rmsGain, peakGain));
-  if (gain > 1.03) {
-    for (let index = 0; index < samples.length; index += 1) {
-      samples[index] = Math.max(-0.98, Math.min(0.98, samples[index] * gain));
+/**
+ * Convert decoded audio to one channel without blindly averaging a useful channel
+ * with a nearly silent channel. The real iPhone sample that exposed this issue was
+ * stereo but carried essentially all speech on only one side.
+ */
+function makeSpeechMonoBuffer(context: AudioContext, decoded: AudioBuffer) {
+  const mono = context.createBuffer(1, decoded.length, decoded.sampleRate);
+  const destination = mono.getChannelData(0);
+  if (decoded.numberOfChannels === 1) {
+    destination.set(decoded.getChannelData(0));
+    return { buffer: mono, selectedChannel: 0, channelRms: [sampledRms(destination)] };
+  }
+
+  const channelRms = Array.from({ length: decoded.numberOfChannels }, (_, index) => sampledRms(decoded.getChannelData(index)));
+  const ranked = channelRms.map((rms, index) => ({ rms, index })).sort((a, b) => b.rms - a.rms);
+  const strongest = ranked[0];
+  const second = ranked[1];
+  const useStrongestOnly = strongest && (!second || strongest.rms > Math.max(0.00001, second.rms * 3));
+
+  if (useStrongestOnly) {
+    destination.set(decoded.getChannelData(strongest.index));
+    return { buffer: mono, selectedChannel: strongest.index, channelRms };
+  }
+
+  for (let channel = 0; channel < decoded.numberOfChannels; channel += 1) {
+    const source = decoded.getChannelData(channel);
+    for (let index = 0; index < destination.length; index += 1) destination[index] += source[index] / decoded.numberOfChannels;
+  }
+  return { buffer: mono, selectedChannel: undefined, channelRms };
+}
+
+/**
+ * Prepare a disposable Whisper copy for distant classroom speech. Rare taps or
+ * clipped spikes must not prevent quiet speech from being amplified, so gain is
+ * based on a winsorized RMS rather than the absolute file peak. A gentle high-pass
+ * removes low-frequency rumble and a soft limiter contains those rare peaks after
+ * gain. The stored original recording is never modified.
+ */
+function normalizeSpeechForTranscriptionInPlace(samples: Float32Array) {
+  if (!samples.length) return { gain: 1, rms: 0, peak: 0, percentilePeak: 0 };
+
+  const stride = Math.max(1, Math.floor(samples.length / 40_000));
+  const magnitudes: number[] = [];
+  let peak = 0;
+  for (let index = 0; index < samples.length; index += stride) {
+    const value = Math.abs(samples[index] || 0);
+    magnitudes.push(value);
+    peak = Math.max(peak, value);
+  }
+  if (!magnitudes.length || peak < 0.0001) return { gain: 1, rms: 0, peak, percentilePeak: peak };
+
+  magnitudes.sort((a, b) => a - b);
+  const percentileIndex = Math.min(magnitudes.length - 1, Math.floor(magnitudes.length * 0.995));
+  const percentilePeak = Math.max(0.0001, magnitudes[percentileIndex] || peak);
+  let winsorizedSquares = 0;
+  for (const value of magnitudes) winsorizedSquares += Math.min(value, percentilePeak) ** 2;
+  const rms = Math.sqrt(winsorizedSquares / magnitudes.length);
+
+  const targetRms = 0.05;
+  const gain = Math.max(1, Math.min(MAX_FAR_FIELD_GAIN, targetRms / Math.max(rms, 0.00005)));
+  const highPassMemory = { previousInput: 0, previousOutput: 0 };
+  const highPassCoefficient = 0.97;
+
+  for (let index = 0; index < samples.length; index += 1) {
+    const input = samples[index] || 0;
+    const highPassed = highPassCoefficient * (highPassMemory.previousOutput + input - highPassMemory.previousInput);
+    highPassMemory.previousInput = input;
+    highPassMemory.previousOutput = highPassed;
+
+    const scaled = highPassed * gain;
+    const magnitude = Math.abs(scaled);
+    if (magnitude <= 0.72) {
+      samples[index] = scaled;
+    } else {
+      const compressed = 0.72 + 0.26 * (1 - Math.exp(-(magnitude - 0.72) / 0.26));
+      samples[index] = Math.sign(scaled) * Math.min(0.98, compressed);
     }
   }
-  return { gain, rms, peak };
+
+  return { gain, rms, peak, percentilePeak };
 }
 
 async function decodeTo16Khz(blob: Blob) {
@@ -127,25 +190,24 @@ async function decodeTo16Khz(blob: Blob) {
     const decoded = await context.decodeAudioData(encoded);
     if (!decoded.duration || !decoded.numberOfChannels) throw new Error('The browser decoded no usable audio channels.');
 
+    const mono = makeSpeechMonoBuffer(context, decoded);
     let pcm: Float32Array;
-    if (decoded.sampleRate === SAMPLE_RATE && decoded.numberOfChannels === 1) {
-      pcm = decoded.getChannelData(0);
+    if (decoded.sampleRate === SAMPLE_RATE) {
+      pcm = new Float32Array(mono.buffer.getChannelData(0));
     } else {
-      // Always render to one 16 kHz channel so stereo imports are properly downmixed
-      // instead of silently discarding every channel except channel 1.
       const outputLength = Math.max(1, Math.ceil(decoded.duration * SAMPLE_RATE));
       const offline = new OfflineAudioContext(1, outputLength, SAMPLE_RATE);
       const source = offline.createBufferSource();
-      source.buffer = decoded;
+      source.buffer = mono.buffer;
       source.connect(offline.destination);
       source.start();
       const rendered = await offline.startRendering();
-      pcm = rendered.getChannelData(0);
+      pcm = new Float32Array(rendered.getChannelData(0));
     }
 
     const signal = normalizeSpeechForTranscriptionInPlace(pcm);
     if (signal.peak < 0.0001) throw new Error('The saved recording decoded as silence. Keep the original recording and check microphone playback before retrying.');
-    return { pcm, signal };
+    return { pcm, signal, channelInfo: mono };
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Audio decoding failed.';
     throw new Error(`The saved recording could not be prepared for on-device transcription. ${message}`);
@@ -304,16 +366,17 @@ export async function transcribeOnPhone(
   if (audio.size > 250 * 1024 * 1024) {
     onProgress({ progress: 5, message: 'This is a large lecture. LectureAI will process it in smaller windows to reduce iPhone/iPad memory pressure; the original recording remains safe.' });
   } else {
-    onProgress({ progress: 4, message: 'Decoding a private transcription copy at 16 kHz while the model warms up…' });
+    onProgress({ progress: 4, message: 'Preparing a private far-field speech copy at 16 kHz while the model warms up…' });
   }
 
   const decodePromise = decodeTo16Khz(audio);
-  const [{ pcm, signal }] = await Promise.all([decodePromise, warmup.then(() => undefined)]);
+  const [{ pcm, signal, channelInfo }] = await Promise.all([decodePromise, warmup.then(() => undefined)]);
 
+  const channelMessage = channelInfo.selectedChannel === undefined ? '' : ` · using the stronger audio channel ${channelInfo.selectedChannel + 1}`;
   if (signal.gain > 1.03) {
-    onProgress({ progress: 36, message: `Quiet/distant speech detected · applying ${signal.gain.toFixed(1)}× gain to the transcription copy only…` });
+    onProgress({ progress: 36, message: `Quiet/distant speech detected · adaptive ${signal.gain.toFixed(1)}× far-field enhancement on the transcription copy only${channelMessage}…` });
   } else {
-    onProgress({ progress: 36, message: 'Speech level is suitable · original recording remains untouched…' });
+    onProgress({ progress: 36, message: `Speech level is suitable${channelMessage} · original recording remains untouched…` });
   }
 
   const windowSamples = WINDOW_SECONDS * SAMPLE_RATE;
@@ -360,12 +423,7 @@ export async function transcribeOnPhone(
     } catch {
       failedWindows += 1;
       const gapStart = index === 0 ? startSeconds : startSeconds + OVERLAP_SECONDS * 0.55;
-      segments.push({
-        start: gapStart,
-        end: endSeconds,
-        text: '[inaudible]',
-        speaker: 'Professor',
-      });
+      segments.push({ start: gapStart, end: endSeconds, text: '[inaudible]', speaker: 'Professor' });
       onProgress({ progress: 75, message: 'One section could not be processed after automatic retries. LectureAI kept the rest of the transcript and marked this section for review.' });
     }
 
