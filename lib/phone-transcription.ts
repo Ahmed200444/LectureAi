@@ -1,6 +1,7 @@
 import type { TranscriptionProgress } from './transcription.ts';
 import type { TranscriptSegment } from './types.ts';
 import { translateTranscriptView } from './translation.ts';
+import { detectDeviceKind } from './device.ts';
 
 type WorkerMessage = {
   type: 'model-progress' | 'model-ready' | 'transcription-progress' | 'result' | 'error';
@@ -52,6 +53,17 @@ function resetWorker(instance: Worker) {
     preparedModel = null;
     preparationPromise = null;
   }
+}
+
+function preferredPhoneModelStartIndex() {
+  // iPhone Safari has a tighter per-process memory budget than desktop browsers.
+  // Start with multilingual Base there so WebKit is less likely to kill the page
+  // before our normal Small -> Base -> Tiny fallback can even throw an error.
+  return detectDeviceKind() === 'iphone' ? 1 : 0;
+}
+
+function releasePhoneTranscriptionWorker() {
+  if (sharedWorker) resetWorker(sharedWorker);
 }
 
 function guessLanguage(text: string): TranscriptSegment['detectedLanguage'] {
@@ -271,7 +283,8 @@ async function transcribeWindowWithRecovery(
   onModelReady: () => void,
 ) {
   let lastError: Error | null = null;
-  for (const startModelIndex of [0, 1, 2]) {
+  const modelIndexes = preferredPhoneModelStartIndex() === 1 ? [1, 2] : [0, 1, 2];
+  for (const startModelIndex of modelIndexes) {
     const windowAudio = pcm.slice(startSample, endSample);
     try {
       return await runWorkerChunk(`${lectureId}-window-${windowIndex}-${startModelIndex}`, windowAudio, startModelIndex, onProgress, onModelReady);
@@ -338,7 +351,7 @@ export async function preparePhoneTranscriptionModel(onProgress: (update: Transc
     instance.addEventListener('message', listener);
     instance.addEventListener('error', workerError);
     instance.addEventListener('messageerror', messageError);
-    instance.postMessage({ id, mode: 'prepare', startModelIndex: 0 });
+    instance.postMessage({ id, mode: 'prepare', startModelIndex: preferredPhoneModelStartIndex() });
   });
 
   preparationPromise = task.then((result) => {
@@ -357,20 +370,37 @@ export async function transcribeOnPhone(
   onProgress: (update: TranscriptionProgress) => void,
   onModelReady: () => void,
 ) {
-  onProgress({ progress: 2, message: 'Starting the speech model and preparing audio in parallel…' });
+  const isIPhone = detectDeviceKind() === 'iphone';
+  onProgress({
+    progress: 2,
+    message: isIPhone
+      ? 'Preparing audio first to reduce iPhone memory pressure…'
+      : 'Starting the speech model and preparing audio in parallel…',
+  });
 
-  const warmup = preparePhoneTranscriptionModel(({ progress, message }) => {
+  const warmModel = () => preparePhoneTranscriptionModel(({ progress, message }) => {
     onProgress({ progress: Math.max(2, Math.min(35, Math.round(progress * 0.35))), message });
   }).catch(() => null);
 
   if (audio.size > 250 * 1024 * 1024) {
     onProgress({ progress: 5, message: 'This is a large lecture. LectureAI will process it in smaller windows to reduce iPhone/iPad memory pressure; the original recording remains safe.' });
-  } else {
+  } else if (!isIPhone) {
     onProgress({ progress: 4, message: 'Preparing a private far-field speech copy at 16 kHz while the model warms up…' });
   }
 
-  const decodePromise = decodeTo16Khz(audio);
-  const [{ pcm, signal, channelInfo }] = await Promise.all([decodePromise, warmup.then(() => undefined)]);
+  let decoded: Awaited<ReturnType<typeof decodeTo16Khz>>;
+  if (isIPhone) {
+    // Do not overlap the full browser audio decode with model initialization on
+    // iPhone. Either operation can be memory-heavy enough for WebKit to terminate
+    // the page before JavaScript receives a recoverable exception.
+    decoded = await decodeTo16Khz(audio);
+    onProgress({ progress: 18, message: 'Audio prepared · loading the memory-safer multilingual model on iPhone…' });
+    await warmModel();
+  } else {
+    const warmup = warmModel();
+    [decoded] = await Promise.all([decodeTo16Khz(audio), warmup.then(() => undefined)]);
+  }
+  const { pcm, signal, channelInfo } = decoded;
 
   const channelMessage = channelInfo.selectedChannel === undefined ? '' : ` · using the stronger audio channel ${channelInfo.selectedChannel + 1}`;
   if (signal.gain > 1.03) {
@@ -431,10 +461,18 @@ export async function transcribeOnPhone(
   }
 
   if (!successfulWindows) {
-    throw new Error('The iPhone/iPad could not process any transcription section after automatic Small, Base, and Tiny model retries. The original recording is still safe.');
+    throw new Error('The iPhone/iPad could not process any transcription section after automatic model retries. The original recording is still safe.');
   }
 
   const sourceSegments = asTranscriptSegments(segments, lectureId);
+
+  // Translation uses separate local models. Release Whisper first so the speech
+  // model and translation model are never resident together on memory-constrained
+  // iPhone Safari. Browser-cached model files remain cached for the next lecture.
+  onProgress({ progress: 93, message: 'Original transcript ready · releasing speech model memory before translation…' });
+  releasePhoneTranscriptionWorker();
+  await new Promise((resolve) => setTimeout(resolve, 80));
+
   let englishTranslation: TranscriptSegment[] = [];
   let arabicTranslation: TranscriptSegment[] = [];
   const translationWarnings: string[] = [];

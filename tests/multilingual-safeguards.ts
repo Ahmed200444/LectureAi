@@ -32,6 +32,16 @@ assert.match(phone, /second\.rms \* 3/);
 assert.match(phone, /MAX_FAR_FIELD_GAIN = 16/);
 assert.match(phone, /percentilePeak/);
 
+// iPhone transcription must favor process survival over loading Whisper Small first.
+// Audio decode and model initialization are serialized there, and Whisper is released
+// before the separate English/Arabic translation workers are created.
+assert.match(phone, /detectDeviceKind\(\) === 'iphone' \? 1 : 0/);
+assert.match(phone, /preferredPhoneModelStartIndex\(\) === 1 \? \[1, 2\] : \[0, 1, 2\]/);
+assert.match(phone, /Preparing audio first to reduce iPhone memory pressure/);
+assert.match(phone, /loading the memory-safer multilingual model on iPhone/);
+assert.match(phone, /releasePhoneTranscriptionWorker\(\)/);
+assert.match(phone, /releasing speech model memory before translation/);
+
 // Translation stays local and lazy in a Web Worker with browser caching.
 assert.match(translationWorker, /Xenova\/opus-mt-en-ar/);
 assert.match(translationWorker, /Xenova\/opus-mt-ar-en/);
