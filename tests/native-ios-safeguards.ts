@@ -1,9 +1,14 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
+const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
 const recorder = readFileSync(new URL('../ios/LectureAIRecorder/Sources/RecorderStore.swift', import.meta.url), 'utf8');
 const view = readFileSync(new URL('../ios/LectureAIRecorder/Sources/ContentView.swift', import.meta.url), 'utf8');
 const project = readFileSync(new URL('../ios/LectureAIRecorder/project.yml', import.meta.url), 'utf8');
+
+const importButtons = app.match(/<button className=\"secondary-button\" onClick=\{onImport\}><Upload size=\{17\} \/> Import recording<\/button>/g) || [];
+assert.equal(importButtons.length, 2, 'Home and Lectures must both expose Import recording on iPhone/iPad and Windows');
+assert.doesNotMatch(app, /detectDeviceKind\(\) === 'windows' && <button className=\"secondary-button\" onClick=\{onImport\}/);
 
 assert.match(recorder, /AVAudioRecorder/);
 assert.match(recorder, /setCategory\(\.record, mode: \.videoRecording\)/);
