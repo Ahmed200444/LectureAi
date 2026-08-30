@@ -34,8 +34,8 @@ assert.match(device, /touchMac/);
 assert.match(device, /isStandaloneApp/);
 assert.match(device, /standalone\?: boolean/);
 assert.match(device, /display-mode: standalone/);
-assert.match(device, /autoGainControl: \{ ideal: false \}/);
-assert.match(device, /noiseSuppression: \{ ideal: false \}/);
+assert.match(device, /autoGainControl: \{ ideal: ios \}/);
+assert.match(device, /noiseSuppression: \{ ideal: ios \}/);
 assert.match(device, /echoCancellation: \{ ideal: false \}/);
 assert.match(device, /applyLectureAudioPreferences/);
 assert.match(device, /track\.applyConstraints/);
@@ -64,8 +64,8 @@ assert.match(micTest, /I can hear it clearly/);
 assert.match(flow, /disabled=\{!micVerified\}/);
 assert.match(flow, /Verify saved lecture audio/);
 
-// Multilingual on-device transcription has stronger-to-lighter fallback and no
-// LectureAI minute/segment quota. The 250 MB branch is informational only.
+// Multilingual on-device transcription has stronger-to-lighter fallback, far-field
+// speech preparation, and no LectureAI minute/segment quota.
 assert.match(worker, /onnx-community\/whisper-small/);
 assert.match(worker, /onnx-community\/whisper-base/);
 assert.match(worker, /onnx-community\/whisper-tiny/);
@@ -73,7 +73,12 @@ assert.match(worker, /device: 'wasm'/);
 assert.match(worker, /for \(;;\)/);
 assert.match(worker, /Retrying automatically with/);
 assert.match(phone, /normalizeSpeechForTranscriptionInPlace/);
-assert.match(phone, /Math\.min\(4, rmsGain, peakGain\)/);
+assert.match(phone, /MAX_FAR_FIELD_GAIN = 16/);
+assert.match(phone, /makeSpeechMonoBuffer/);
+assert.match(phone, /strongest\.rms > Math\.max\(0\.00001, second\.rms \* 3\)/);
+assert.match(phone, /percentilePeak/);
+assert.match(phone, /highPassCoefficient = 0\.97/);
+assert.match(phone, /targetRms = 0\.05/);
 assert.match(phone, /WINDOW_SECONDS = 180/);
 assert.match(phone, /OVERLAP_SECONDS = 5/);
 assert.match(phone, /transcribeWindowWithRecovery/);
@@ -136,11 +141,11 @@ assert.doesNotMatch(hostedLauncher, /lectureai-ahmed\.ahmedalkadi02\.chatgpt\.si
 // Installed PWA and iPhone/iPad screen-safe layout.
 assert.match(manifest, /"display": "standalone"/);
 assert.match(manifest, /"scope": "\/"/);
-assert.match(serviceWorker, /lectureai-shell-v8/);
+assert.match(serviceWorker, /lectureai-shell-v9/);
 assert.match(main, /mobile-ios\.css/);
 assert.match(mobileCss, /safe-area-inset-top/);
 assert.match(mobileCss, /safe-area-inset-bottom/);
 assert.match(mobileCss, /\.audio-player/);
 assert.match(mobileCss, /\.lecture-actions/);
 
-console.log('✓ iPhone/iPad recording, encoded mic proof, unlimited-policy transcription, sharing, deletion, PWA layout, recovery, and Windows-transfer safeguards are present');
+console.log('✓ iPhone/iPad recording, far-field capture, encoded mic proof, unlimited-policy transcription, sharing, deletion, PWA layout, recovery, and Windows-transfer safeguards are present');
