@@ -75,6 +75,8 @@ assert.match(worker, /Retrying automatically with/);
 assert.match(phone, /normalizeSpeechForTranscriptionInPlace/);
 assert.match(phone, /MAX_FAR_FIELD_GAIN = 16/);
 assert.match(phone, /makeSpeechMonoBuffer/);
+assert.match(phone, /return \{ buffer: decoded, selectedChannel: 0/);
+assert.doesNotMatch(phone, /new Float32Array\(rendered\.getChannelData/);
 assert.match(phone, /strongest\.rms > Math\.max\(0\.00001, second\.rms \* 3\)/);
 assert.match(phone, /percentilePeak/);
 assert.match(phone, /highPassCoefficient = 0\.97/);

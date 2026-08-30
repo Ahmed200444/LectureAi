@@ -109,13 +109,13 @@ function sampledRms(channel: Float32Array) {
  * stereo but carried essentially all speech on only one side.
  */
 function makeSpeechMonoBuffer(context: AudioContext, decoded: AudioBuffer) {
-  const mono = context.createBuffer(1, decoded.length, decoded.sampleRate);
-  const destination = mono.getChannelData(0);
   if (decoded.numberOfChannels === 1) {
-    destination.set(decoded.getChannelData(0));
-    return { buffer: mono, selectedChannel: 0, channelRms: [sampledRms(destination)] };
+    const source = decoded.getChannelData(0);
+    return { buffer: decoded, selectedChannel: 0, channelRms: [sampledRms(source)] };
   }
 
+  const mono = context.createBuffer(1, decoded.length, decoded.sampleRate);
+  const destination = mono.getChannelData(0);
   const channelRms = Array.from({ length: decoded.numberOfChannels }, (_, index) => sampledRms(decoded.getChannelData(index)));
   const ranked = channelRms.map((rms, index) => ({ rms, index })).sort((a, b) => b.rms - a.rms);
   const strongest = ranked[0];
@@ -205,7 +205,7 @@ async function decodeTo16Khz(blob: Blob) {
     const mono = makeSpeechMonoBuffer(context, decoded);
     let pcm: Float32Array;
     if (decoded.sampleRate === SAMPLE_RATE) {
-      pcm = new Float32Array(mono.buffer.getChannelData(0));
+      pcm = mono.buffer.getChannelData(0);
     } else {
       const outputLength = Math.max(1, Math.ceil(decoded.duration * SAMPLE_RATE));
       const offline = new OfflineAudioContext(1, outputLength, SAMPLE_RATE);
@@ -214,7 +214,7 @@ async function decodeTo16Khz(blob: Blob) {
       source.connect(offline.destination);
       source.start();
       const rendered = await offline.startRendering();
-      pcm = new Float32Array(rendered.getChannelData(0));
+      pcm = rendered.getChannelData(0);
     }
 
     const signal = normalizeSpeechForTranscriptionInPlace(pcm);

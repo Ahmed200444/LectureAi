@@ -27,6 +27,8 @@ assert.match(worker, /decoder_model_merged: 'q4'/);
 assert.match(phone, /decoded\.numberOfChannels === 1/);
 assert.match(phone, /new OfflineAudioContext\(1, outputLength, SAMPLE_RATE\)/);
 assert.match(phone, /makeSpeechMonoBuffer/);
+assert.match(phone, /return \{ buffer: decoded, selectedChannel: 0/);
+assert.doesNotMatch(phone, /new Float32Array\(rendered\.getChannelData/);
 assert.match(phone, /useStrongestOnly/);
 assert.match(phone, /second\.rms \* 3/);
 assert.match(phone, /MAX_FAR_FIELD_GAIN = 16/);
