@@ -22,11 +22,15 @@ assert.match(worker, /whisper-tiny/);
 assert.match(worker, /encoder_model: 'q8'/);
 assert.match(worker, /decoder_model_merged: 'q4'/);
 
-// Stereo/imported media must be rendered to a mono 16 kHz transcription copy;
-// never silently throw away every channel except channel one.
+// Stereo/imported media becomes a mono 16 kHz transcription copy. If one channel
+// is effectively dead, keep the stronger channel instead of averaging speech down.
 assert.match(phone, /decoded\.numberOfChannels === 1/);
 assert.match(phone, /new OfflineAudioContext\(1, outputLength, SAMPLE_RATE\)/);
-assert.match(phone, /properly downmixed/);
+assert.match(phone, /makeSpeechMonoBuffer/);
+assert.match(phone, /useStrongestOnly/);
+assert.match(phone, /second\.rms \* 3/);
+assert.match(phone, /MAX_FAR_FIELD_GAIN = 16/);
+assert.match(phone, /percentilePeak/);
 
 // Translation stays local and lazy in a Web Worker with browser caching.
 assert.match(translationWorker, /Xenova\/opus-mt-en-ar/);
@@ -43,6 +47,6 @@ assert.match(transcription, /englishTranslation/);
 assert.match(transcription, /arabicTranslation/);
 
 // The new PWA generation must replace the old cached shell on installed iPhones.
-assert.match(serviceWorker, /lectureai-shell-v8/);
+assert.match(serviceWorker, /lectureai-shell-v9/);
 
-console.log('✓ multilingual transcription, stereo audio preparation, local translation, and PWA refresh safeguards are present');
+console.log('✓ multilingual transcription, far-field stereo audio preparation, local translation, and PWA refresh safeguards are present');
