@@ -1,4 +1,6 @@
 import type { TranscriptionProgress } from './transcription.ts';
+import type { TranscriptSegment } from './types.ts';
+import { translateTranscriptView } from './translation.ts';
 
 type WorkerMessage = {
   type: 'model-progress' | 'model-ready' | 'transcription-progress' | 'result' | 'error';
@@ -49,6 +51,30 @@ function resetWorker(instance: Worker) {
     preparedModel = null;
     preparationPromise = null;
   }
+}
+
+function guessLanguage(text: string): TranscriptSegment['detectedLanguage'] {
+  const arabic = (text.match(/[\u0600-\u06FF]/g) || []).length;
+  const english = (text.match(/[A-Za-z]/g) || []).length;
+  if (arabic && english) return 'mixed';
+  if (arabic) return 'ar';
+  if (english) return 'en';
+  return 'unknown';
+}
+
+function asTranscriptSegments(segments: WorkerSegment[], lectureId: string): TranscriptSegment[] {
+  return segments.map((segment, index) => ({
+    id: `${lectureId}-phone-source-${index + 1}`,
+    lectureId,
+    startTime: segment.start,
+    endTime: segment.end,
+    originalText: segment.text,
+    editedText: segment.text,
+    detectedLanguage: guessLanguage(segment.text),
+    confidence: undefined,
+    manuallyReviewed: false,
+    speaker: segment.speaker || 'Professor',
+  }));
 }
 
 /**
@@ -102,9 +128,11 @@ async function decodeTo16Khz(blob: Blob) {
     if (!decoded.duration || !decoded.numberOfChannels) throw new Error('The browser decoded no usable audio channels.');
 
     let pcm: Float32Array;
-    if (decoded.sampleRate === SAMPLE_RATE) {
+    if (decoded.sampleRate === SAMPLE_RATE && decoded.numberOfChannels === 1) {
       pcm = decoded.getChannelData(0);
     } else {
+      // Always render to one 16 kHz channel so stereo imports are properly downmixed
+      // instead of silently discarding every channel except channel 1.
       const outputLength = Math.max(1, Math.ceil(decoded.duration * SAMPLE_RATE));
       const offline = new OfflineAudioContext(1, outputLength, SAMPLE_RATE);
       const source = offline.createBufferSource();
@@ -306,8 +334,8 @@ export async function transcribeOnPhone(
     const startSeconds = startSample / SAMPLE_RATE;
     const endSeconds = endSample / SAMPLE_RATE;
     onProgress({
-      progress: Math.max(40, Math.round(70 + 25 * (index / Math.max(1, starts.length)))),
-      message: `Transcribing lecture section ${index + 1} of ${starts.length} · ${Math.round(startSeconds)}–${Math.round(endSeconds)}s…`,
+      progress: Math.max(40, Math.round(70 + 23 * (index / Math.max(1, starts.length)))),
+      message: `Transcribing lecture section ${index + 1} of ${starts.length} · ${Math.round(startSeconds)}–${Math.round(endSeconds)}s · auto-detecting English/Arabic…`,
     });
 
     try {
@@ -348,7 +376,38 @@ export async function transcribeOnPhone(
     throw new Error('The iPhone/iPad could not process any transcription section after automatic Small, Base, and Tiny model retries. The original recording is still safe.');
   }
 
-  onProgress({ progress: 98, message: failedWindows ? `Transcript assembled · ${failedWindows} section${failedWindows === 1 ? '' : 's'} marked for review.` : 'Transcript assembled successfully on this device.' });
+  const sourceSegments = asTranscriptSegments(segments, lectureId);
+  let englishTranslation: TranscriptSegment[] = [];
+  let arabicTranslation: TranscriptSegment[] = [];
+  const translationWarnings: string[] = [];
+
+  try {
+    onProgress({ progress: 94, message: 'Original transcript ready · preparing the English view from detected speech…' });
+    englishTranslation = await translateTranscriptView(sourceSegments, 'en', ({ message }) => {
+      onProgress({ progress: 95, message: `${message} Original audio remains playable and unchanged.` });
+    });
+  } catch (error) {
+    translationWarnings.push(`English translation: ${error instanceof Error ? error.message : 'unavailable'}`);
+  }
+
+  try {
+    onProgress({ progress: 97, message: 'Preparing the Arabic view from detected speech…' });
+    arabicTranslation = await translateTranscriptView(sourceSegments, 'ar', ({ message }) => {
+      onProgress({ progress: 98, message: `${message} Original audio remains playable and unchanged.` });
+    });
+  } catch (error) {
+    translationWarnings.push(`Arabic translation: ${error instanceof Error ? error.message : 'unavailable'}`);
+  }
+
+  onProgress({
+    progress: 99,
+    message: translationWarnings.length
+      ? `Transcript assembled · ${translationWarnings.join(' · ')}`
+      : failedWindows
+        ? `Transcript and translations assembled · ${failedWindows} section${failedWindows === 1 ? '' : 's'} marked for review.`
+        : 'Transcript and English/Arabic views assembled successfully on this device.',
+  });
+
   return {
     engine: 'transformers.js',
     model: finalModel,
@@ -356,5 +415,8 @@ export async function transcribeOnPhone(
     windowed: true,
     failedWindows,
     segments,
+    englishTranslation,
+    arabicTranslation,
+    translationWarnings,
   };
 }
