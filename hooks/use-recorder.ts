@@ -7,9 +7,14 @@ import { applyLectureAudioPreferences, lectureAudioConstraints, preferredRecordi
 
 type WakeLockSentinelLike = { release: () => Promise<void> };
 
+function wait(milliseconds: number) {
+  return new Promise<void>((resolve) => window.setTimeout(resolve, milliseconds));
+}
+
 export function useRecorder() {
   const [isRecording, setIsRecording] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
+  const [isInterrupted, setIsInterrupted] = useState(false);
   const [duration, setDuration] = useState(0);
   const [level, setLevel] = useState(0);
   const [error, setError] = useState('');
@@ -29,6 +34,9 @@ export function useRecorder() {
   const mimeTypeRef = useRef('');
   const quietSinceRef = useRef<number | null>(null);
   const lastChunkAtRef = useRef(0);
+  const interruptedRef = useRef(false);
+  const finishingRef = useRef(false);
+  const recorderStoppedRef = useRef<Promise<void> | null>(null);
 
   const startDurationTimer = useCallback(() => {
     if (intervalRef.current) clearInterval(intervalRef.current);
@@ -99,6 +107,10 @@ export function useRecorder() {
 
   const start = useCallback(async (lectureId: string) => {
     setError('');
+    setIsInterrupted(false);
+    interruptedRef.current = false;
+    finishingRef.current = false;
+    recorderStoppedRef.current = null;
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
       throw new Error('This browser does not support reliable microphone recording.');
     }
@@ -111,7 +123,6 @@ export function useRecorder() {
     try {
       const track = assertLiveMicrophoneStream(stream);
       await applyLectureAudioPreferences(track);
-      track.addEventListener('ended', () => setError('The microphone audio track ended unexpectedly. Finish the lecture to preserve saved checkpoints.'));
 
       // Prove that this exact newly granted stream can produce real encoded,
       // non-silent microphone audio before the lecture MediaRecorder begins.
@@ -137,6 +148,31 @@ export function useRecorder() {
 
       recorderRef.current = recorder;
       mimeTypeRef.current = recorder.mimeType || requestedMimeType;
+
+      const enterInterruptedState = (message: string) => {
+        if (finishingRef.current || interruptedRef.current) return;
+        interruptedRef.current = true;
+        setIsInterrupted(true);
+        if (recorder.state === 'recording') {
+          elapsedRef.current += Math.max(0, (Date.now() - activeStartedRef.current) / 1000);
+          try { recorder.requestData(); } catch { /* The recorder may already be shutting down. */ }
+        }
+        setDuration(elapsedRef.current);
+        if (intervalRef.current) clearInterval(intervalRef.current);
+        intervalRef.current = null;
+        wakeLockRef.current?.release().catch(() => undefined);
+        wakeLockRef.current = null;
+        quietSinceRef.current = null;
+        setLevel(0);
+        setIsRecording(false);
+        setIsPaused(true);
+        setError(message);
+      };
+
+      track.addEventListener('ended', () => {
+        enterInterruptedState('The microphone audio track ended unexpectedly. Your saved checkpoints are preserved — finish and save this lecture now.');
+      });
+
       recorder.ondataavailable = (event) => {
         if (!event.data.size) return;
         const now = Date.now();
@@ -164,7 +200,16 @@ export function useRecorder() {
           pendingWritesRef.current.delete(write);
         });
       };
-      recorder.onerror = () => setError('The recorder reported an error. Saved checkpoints remain recoverable.');
+
+      let resolveStopped!: () => void;
+      recorderStoppedRef.current = new Promise<void>((resolve) => { resolveStopped = resolve; });
+      recorder.addEventListener('stop', () => {
+        resolveStopped();
+        if (!finishingRef.current) {
+          enterInterruptedState('The recorder stopped unexpectedly. Your saved checkpoints are preserved — finish and save this lecture now.');
+        }
+      }, { once: true });
+      recorder.onerror = () => enterInterruptedState('The recorder reported an error. Your saved checkpoints are preserved — finish and save this lecture now.');
 
       elapsedRef.current = 0;
       activeStartedRef.current = Date.now();
@@ -185,7 +230,14 @@ export function useRecorder() {
 
   const pause = useCallback(async () => {
     const recorder = recorderRef.current;
-    if (!recorder || recorder.state !== 'recording') throw new Error('No recording is active.');
+    if (!recorder) throw new Error('No recording is active.');
+    if (interruptedRef.current || recorder.state === 'inactive') {
+      setIsRecording(false);
+      setIsPaused(true);
+      setIsInterrupted(true);
+      return { duration: elapsedRef.current };
+    }
+    if (recorder.state !== 'recording') throw new Error('No recording is active.');
     const paused = new Promise<void>((resolve) => recorder.addEventListener('pause', () => resolve(), { once: true }));
     recorder.requestData();
     recorder.pause();
@@ -206,6 +258,9 @@ export function useRecorder() {
   }, []);
 
   const resume = useCallback(async () => {
+    if (interruptedRef.current) {
+      throw new Error('The iPhone/iPad microphone session ended. Finish and save the preserved recording, then start a new recording if you need to continue.');
+    }
     const recorder = recorderRef.current;
     if (!recorder || recorder.state !== 'paused') throw new Error('The current recording is not stopped.');
     const stream = streamRef.current;
@@ -230,13 +285,24 @@ export function useRecorder() {
 
   const stop = useCallback(async () => {
     const recorder = recorderRef.current;
-    if (!recorder || recorder.state === 'inactive') throw new Error('No recording is active.');
-    const wasRecording = recorder.state === 'recording';
+    if (!recorder) throw new Error('No recording is available to save.');
+    const recoveredFromInterruption = interruptedRef.current;
+    const wasRecording = recorder.state === 'recording' && !recoveredFromInterruption;
     if (wasRecording) elapsedRef.current += (Date.now() - activeStartedRef.current) / 1000;
-    const stopped = new Promise<void>((resolve) => recorder.addEventListener('stop', () => resolve(), { once: true }));
-    if (wasRecording) recorder.requestData();
-    recorder.stop();
-    await stopped;
+
+    finishingRef.current = true;
+    if (recorder.state !== 'inactive') {
+      if (recorder.state === 'recording') {
+        try { recorder.requestData(); } catch { /* Stop still proceeds. */ }
+      }
+      recorder.stop();
+    }
+
+    // When iOS ends the microphone itself, MediaRecorder may already be inactive.
+    // Wait for its final dataavailable/stop delivery before assembling checkpoints.
+    if (recorderStoppedRef.current) {
+      await Promise.race([recorderStoppedRef.current, wait(1_200)]);
+    }
     await Promise.allSettled(Array.from(pendingWritesRef.current));
 
     if (checkpointFailureRef.current) {
@@ -262,28 +328,54 @@ export function useRecorder() {
     }
 
     recorderRef.current = null;
+    recorderStoppedRef.current = null;
+    interruptedRef.current = false;
+    finishingRef.current = false;
+    setIsInterrupted(false);
     setIsRecording(false);
     setIsPaused(false);
     setDuration(elapsedRef.current);
     stopMeters();
-    return { blob, duration: elapsedRef.current, mimeType: blob.type, chunkCount: chunkIndexRef.current };
+    return { blob, duration: elapsedRef.current, mimeType: blob.type, chunkCount: chunkIndexRef.current, recoveredFromInterruption };
   }, [stopMeters]);
 
   useEffect(() => {
-    const resumeMeter = () => {
-      if (document.visibilityState === 'visible') void audioContextRef.current?.resume().catch(() => undefined);
+    const handleVisibility = () => {
+      const recorder = recorderRef.current;
+      if (document.visibilityState === 'hidden' && recorder?.state === 'recording') {
+        // Best-effort flush before iOS gets a chance to suspend the page.
+        try { recorder.requestData(); } catch { /* Existing 5-second checkpoints remain. */ }
+        return;
+      }
+      if (document.visibilityState === 'visible') {
+        void audioContextRef.current?.resume().catch(() => undefined);
+        if (recorder?.state === 'recording' && !interruptedRef.current && !wakeLockRef.current) void requestWakeLock();
+      }
     };
-    document.addEventListener('visibilitychange', resumeMeter);
-    return () => document.removeEventListener('visibilitychange', resumeMeter);
-  }, []);
+    const flushBeforePageHide = () => {
+      const recorder = recorderRef.current;
+      if (recorder?.state === 'recording') {
+        try { recorder.requestData(); } catch { /* Existing checkpoints remain recoverable. */ }
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+    window.addEventListener('pagehide', flushBeforePageHide);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibility);
+      window.removeEventListener('pagehide', flushBeforePageHide);
+    };
+  }, [requestWakeLock]);
 
   useEffect(() => () => {
     if (recorderRef.current && recorderRef.current.state !== 'inactive') {
-      if (recorderRef.current.state === 'recording') recorderRef.current.requestData();
+      finishingRef.current = true;
+      if (recorderRef.current.state === 'recording') {
+        try { recorderRef.current.requestData(); } catch { /* Best effort during teardown. */ }
+      }
       recorderRef.current.stop();
     }
     stopMeters();
   }, [stopMeters]);
 
-  return { isRecording, isPaused, duration, level, error, chunkCount, start, pause, resume, stop };
+  return { isRecording, isPaused, isInterrupted, duration, level, error, chunkCount, start, pause, resume, stop };
 }
