@@ -24,6 +24,7 @@ export function useRecorder() {
   const activeStartedRef = useRef(0);
   const elapsedRef = useRef(0);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const healthIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const frameRef = useRef<number | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const wakeLockRef = useRef<WakeLockSentinelLike | null>(null);
@@ -55,8 +56,10 @@ export function useRecorder() {
   const stopMeters = useCallback(() => {
     if (frameRef.current) cancelAnimationFrame(frameRef.current);
     if (intervalRef.current) clearInterval(intervalRef.current);
+    if (healthIntervalRef.current) clearInterval(healthIntervalRef.current);
     frameRef.current = null;
     intervalRef.current = null;
+    healthIntervalRef.current = null;
     audioContextRef.current?.close().catch(() => undefined);
     audioContextRef.current = null;
     streamRef.current?.getTracks().forEach((track) => track.stop());
@@ -93,11 +96,12 @@ export function useRecorder() {
         if (rms < 0.0015) {
           quietSinceRef.current ??= Date.now();
           if (Date.now() - quietSinceRef.current > 10_000) {
-            setError('No sound has reached the recorder for 10 seconds. Check that the iPhone/iPad microphone is unobstructed and keep LectureAI visible.');
+            // Quiet/far-away speech is never a stop condition. It only warns the user.
+            setError('Audio is very quiet. Recording is still running — keep the microphone unobstructed and LectureAI visible.');
           }
         } else {
           quietSinceRef.current = null;
-          setError((current) => current.startsWith('No sound has reached') ? '' : current);
+          setError((current) => current.startsWith('Audio is very quiet') ? '' : current);
         }
       }
       frameRef.current = requestAnimationFrame(update);
@@ -159,7 +163,9 @@ export function useRecorder() {
         }
         setDuration(elapsedRef.current);
         if (intervalRef.current) clearInterval(intervalRef.current);
+        if (healthIntervalRef.current) clearInterval(healthIntervalRef.current);
         intervalRef.current = null;
+        healthIntervalRef.current = null;
         wakeLockRef.current?.release().catch(() => undefined);
         wakeLockRef.current = null;
         quietSinceRef.current = null;
@@ -178,8 +184,9 @@ export function useRecorder() {
         const now = Date.now();
         const gap = lastChunkAtRef.current ? now - lastChunkAtRef.current : 0;
         lastChunkAtRef.current = now;
+        setError((current) => current.startsWith('Recording checkpoint is delayed') ? '' : current);
         if (gap > 12_000 && recorder.state === 'recording') {
-          setError('iOS/iPadOS delayed a recording checkpoint. Keep LectureAI visible and the screen awake; saved checkpoints remain protected.');
+          setError('iOS/iPadOS delayed a recording checkpoint. Recording is still active; keep LectureAI visible and the screen awake.');
         }
 
         const index = chunkIndexRef.current++;
@@ -220,9 +227,43 @@ export function useRecorder() {
       setIsPaused(false);
       startDurationTimer();
       startMeters(stream);
+
+      // While LectureAI stays visible, independently verify that iOS has not silently
+      // killed the mic/recorder and that 5-second checkpoint delivery is still moving.
+      // Distance, silence, and low audio level are deliberately NOT failure signals.
+      if (healthIntervalRef.current) clearInterval(healthIntervalRef.current);
+      healthIntervalRef.current = setInterval(() => {
+        if (finishingRef.current || interruptedRef.current) return;
+        const currentRecorder = recorderRef.current;
+        const currentTrack = streamRef.current?.getAudioTracks()[0];
+
+        if (!currentRecorder || currentRecorder.state === 'inactive') {
+          enterInterruptedState('The recorder became inactive unexpectedly. Your saved checkpoints are preserved — finish and save this lecture now.');
+          return;
+        }
+        if (!currentTrack || currentTrack.readyState !== 'live' || !currentTrack.enabled) {
+          enterInterruptedState('The microphone session is no longer live. Your saved checkpoints are preserved — finish and save this lecture now.');
+          return;
+        }
+        if (currentRecorder.state === 'recording') {
+          if (document.visibilityState === 'visible' && !wakeLockRef.current) void requestWakeLock();
+          void audioContextRef.current?.resume().catch(() => undefined);
+
+          const checkpointAge = Date.now() - lastChunkAtRef.current;
+          if (checkpointAge > 12_000) {
+            try { currentRecorder.requestData(); } catch { /* Existing event/error recovery remains authoritative. */ }
+            if (!checkpointFailureRef.current) {
+              setError('Recording checkpoint is delayed — LectureAI requested an immediate recovery checkpoint. Recording remains active.');
+            }
+          }
+        }
+      }, 4_000);
+
       await requestWakeLock();
       return recorder.mimeType;
     } catch (startError) {
+      if (healthIntervalRef.current) clearInterval(healthIntervalRef.current);
+      healthIntervalRef.current = null;
       stream.getTracks().forEach((track) => track.stop());
       throw startError;
     }

@@ -13,10 +13,23 @@ assert.match(recorder, /finalizeAudio\(lectureIdRef\.current/);
 assert.match(recorder, /document\.visibilityState === 'hidden'/);
 assert.match(recorder, /window\.addEventListener\('pagehide'/);
 assert.match(recorder, /recorder\.requestData\(\)/);
+
+// Long visible recordings get an independent health watchdog. Distance/silence is
+// only an audio-quality warning and must never be treated as a recording failure.
+assert.match(recorder, /healthIntervalRef/);
+assert.match(recorder, /Distance, silence, and low audio level are deliberately NOT failure signals/);
+assert.match(recorder, /Quiet\/far-away speech is never a stop condition/);
+assert.match(recorder, /Audio is very quiet\. Recording is still running/);
+assert.match(recorder, /currentTrack\.readyState !== 'live'/);
+assert.match(recorder, /checkpointAge > 12_000/);
+assert.match(recorder, /requested an immediate recovery checkpoint/);
+assert.match(recorder, /document\.visibilityState === 'visible' && !wakeLockRef\.current/);
+assert.doesNotMatch(recorder, /rms\s*<[^\n]+\n[^\n]*(?:recorder\.stop|recorder\.pause|track\.stop|track\.enabled\s*=\s*false)/);
+
 assert.match(flow, /Finish & save recovered recording/);
 assert.match(flow, /Microphone session ended — the audio already checkpointed is preserved/);
 assert.match(flow, /Finish & save/);
 assert.doesNotMatch(flow, />Stop recording</);
 assert.doesNotMatch(flow, /Continue current recording/);
 
-console.log('✓ recording interruption/finalization safeguards are present');
+console.log('✓ recording interruption, long-session watchdog, and finalization safeguards are present');
