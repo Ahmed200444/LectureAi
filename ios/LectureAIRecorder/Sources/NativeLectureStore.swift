@@ -100,24 +100,35 @@ actor NativeTranscriptionEngine {
 
             try Task.checkCancellation()
 
-            let segments = results
-                .flatMap(\.segments)
-                .filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-                .map { segment in
-                    NativeTranscriptSegment(
-                        startTime: Double(segment.start),
-                        endTime: Double(segment.end),
-                        text: segment.text
-                    )
-                }
-                .sorted { lhs, rhs in
-                    lhs.startTime == rhs.startTime ? lhs.endTime < rhs.endTime : lhs.startTime < rhs.startTime
-                }
+            let whisperSegments = results.flatMap { result in
+                result.segments
+            }
 
-            let fallbackText = results
-                .map(\.text)
-                .joined(separator: " ")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let nonEmptySegments = whisperSegments.filter { segment in
+                let cleaned = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                return !cleaned.isEmpty
+            }
+
+            var segments: [NativeTranscriptSegment] = []
+            segments.reserveCapacity(nonEmptySegments.count)
+            for segment in nonEmptySegments {
+                let mapped = NativeTranscriptSegment(
+                    startTime: Double(segment.start),
+                    endTime: Double(segment.end),
+                    text: segment.text
+                )
+                segments.append(mapped)
+            }
+            segments.sort { lhs, rhs in
+                if lhs.startTime == rhs.startTime {
+                    return lhs.endTime < rhs.endTime
+                }
+                return lhs.startTime < rhs.startTime
+            }
+
+            let resultTexts = results.map { $0.text }
+            let joinedResultText = resultTexts.joined(separator: " ")
+            let fallbackText = joinedResultText.trimmingCharacters(in: .whitespacesAndNewlines)
 
             let finalSegments: [NativeTranscriptSegment]
             if segments.isEmpty, !fallbackText.isEmpty {
@@ -130,9 +141,8 @@ actor NativeTranscriptionEngine {
                 throw NativeTranscriptionError.emptyTranscript
             }
 
-            let language = results
-                .map(\.language)
-                .first(where: { !$0.isEmpty }) ?? "unknown"
+            let resultLanguages = results.map { $0.language }
+            let language = resultLanguages.first(where: { !$0.isEmpty }) ?? "unknown"
             let model = pipe.modelFolder?.lastPathComponent ?? pipe.modelVariant.description
 
             await pipe.unloadModels()
@@ -205,8 +215,20 @@ final class NativeLectureStore: ObservableObject {
             record.modelName = output.modelName
             record.detectedLanguage = output.detectedLanguage
             record.segments = output.segments
-            record.englishText = output.detectedLanguage.lowercased().hasPrefix("en") ? output.segments.map(\.text).joined(separator: " ") : nil
-            record.arabicText = output.detectedLanguage.lowercased().hasPrefix("ar") ? output.segments.map(\.text).joined(separator: " ") : nil
+
+            let outputText = output.segments.map(\.text).joined(separator: " ")
+            let normalizedLanguage = output.detectedLanguage.lowercased()
+            if normalizedLanguage.hasPrefix("en") {
+                record.englishText = outputText
+            } else {
+                record.englishText = nil
+            }
+            if normalizedLanguage.hasPrefix("ar") {
+                record.arabicText = outputText
+            } else {
+                record.arabicText = nil
+            }
+
             record.notes = NativeNotesGenerator.generate(segments: output.segments, marks: recording.marks)
             record.lastError = nil
             transcripts[recording.id] = record
