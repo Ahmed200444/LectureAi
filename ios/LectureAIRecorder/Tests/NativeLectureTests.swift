@@ -66,11 +66,19 @@ final class NativeLectureTests: XCTestCase {
     }
 
     func testLongLectureNotesCoverBeginningAndEnd() {
-        let segments = (0..<80).map { index in
-            NativeTranscriptSegment(
-                startTime: Double(index * 30),
-                endTime: Double(index * 30 + 20),
-                text: "Lecture segment \(index) concept"
+        var segments: [NativeTranscriptSegment] = []
+        segments.reserveCapacity(80)
+
+        for index in 0..<80 {
+            let startTime = Double(index) * 30
+            let endTime = startTime + 20
+            let text = "Lecture segment \(index) concept"
+            segments.append(
+                NativeTranscriptSegment(
+                    startTime: startTime,
+                    endTime: endTime,
+                    text: text
+                )
             )
         }
 
