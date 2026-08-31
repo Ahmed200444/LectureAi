@@ -239,23 +239,31 @@ private struct OnDeviceTranslationView: View {
             target: Locale.Language(identifier: targetLanguageCode)
         ) { session in
             do {
-                let chunks = NativeTranslationChunker.chunks(from: sourceSegments)
-                guard !chunks.isEmpty else {
+                let batches = NativeTranslationChunker.batches(from: sourceSegments)
+                guard !batches.isEmpty else {
                     status = "No transcript is available to translate"
                     return
                 }
 
-                status = "Preparing the required on-device language pair…"
-                try await session.prepareTranslation()
-
+                // The session intentionally keeps source=nil. Apple can identify the
+                // source from each actual request and request a language download when
+                // needed. Calling prepareTranslation() with a nil source would fail
+                // before any text is available for language identification.
                 var translatedChunks: [String] = []
-                translatedChunks.reserveCapacity(chunks.count)
-                for (index, chunk) in chunks.enumerated() {
+                translatedChunks.reserveCapacity(batches.count)
+
+                for (index, batch) in batches.enumerated() {
                     try Task.checkCancellation()
-                    status = chunks.count == 1
+                    status = batches.count == 1
                         ? "Translating locally on this device…"
-                        : "Translating part \(index + 1) of \(chunks.count) locally…"
-                    let response = try await session.translate(chunk)
+                        : "Translating part \(index + 1) of \(batches.count) locally…"
+
+                    if batch.sourceLanguageCode == targetLanguageCode.lowercased() {
+                        translatedChunks.append(batch.text)
+                        continue
+                    }
+
+                    let response = try await session.translate(batch.text)
                     let cleaned = response.targetText.trimmingCharacters(in: .whitespacesAndNewlines)
                     if !cleaned.isEmpty { translatedChunks.append(cleaned) }
                 }
