@@ -1,8 +1,14 @@
 import AVFoundation
+import WhisperKit
 import XCTest
 @testable import LectureAIRecorder
 
 final class NativeLectureTests: XCTestCase {
+    func testRecommendedWhisperModelIsMultilingual() {
+        let model = WhisperKit.recommendedModels().default.lowercased()
+        XCTAssertFalse(model.contains(".en"), "LectureAI must never default to an English-only Whisper model: \(model)")
+    }
+
     func testNotesStayGroundedInTranscriptAndMarks() {
         let segments = [
             NativeTranscriptSegment(startTime: 0, endTime: 4, text: "A derivative measures the rate of change."),
