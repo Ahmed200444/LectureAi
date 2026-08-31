@@ -204,22 +204,35 @@ final class NativeLectureStore: ObservableObject {
             return
         }
 
+        let previousRecord = transcript(for: recording.id)
+        let previousCompleted: NativeLectureTranscript? =
+            previousRecord.state == .done && !previousRecord.segments.isEmpty ? previousRecord : nil
+
         activeRecordingID = recording.id
-        var record = transcript(for: recording.id)
+        defer { activeRecordingID = nil }
+
+        var record = previousRecord
         record.updatedAt = Date()
         record.state = .preparing
         record.statusMessage = "Preparing a safe 16 kHz transcription copy and the multilingual Whisper model…"
         record.progress = 0.12
         record.lastError = nil
         transcripts[recording.id] = record
-        persist(record)
+        // For a retranscription, keep the last completed transcript on disk until the
+        // replacement succeeds. A crash or termination therefore cannot destroy the
+        // last known-good result.
+        if previousCompleted == nil {
+            persist(record)
+        }
 
         do {
             record.state = .transcribing
             record.statusMessage = "Transcribing saved audio locally with automatic language detection…"
             record.progress = 0.42
             transcripts[recording.id] = record
-            persist(record)
+            if previousCompleted == nil {
+                persist(record)
+            }
 
             let output = try await engine.transcribe(audioURL: recording.audioURL)
 
@@ -249,17 +262,31 @@ final class NativeLectureStore: ObservableObject {
             transcripts[recording.id] = record
             persist(record)
         } catch is CancellationError {
-            record.updatedAt = Date()
-            record.state = .idle
-            record.statusMessage = "Transcription cancelled · original audio remains saved"
-            record.progress = 0
-            transcripts[recording.id] = record
-            persist(record)
+            if var previousCompleted {
+                previousCompleted.updatedAt = Date()
+                previousCompleted.statusMessage = "Retranscription cancelled · previous transcript kept"
+                previousCompleted.lastError = nil
+                transcripts[recording.id] = previousCompleted
+                persist(previousCompleted)
+            } else {
+                record.updatedAt = Date()
+                record.state = .idle
+                record.statusMessage = "Transcription cancelled · original audio remains saved"
+                record.progress = 0
+                transcripts[recording.id] = record
+                persist(record)
+            }
         } catch {
-            fail(recordingID: recording.id, message: error.localizedDescription)
+            if var previousCompleted {
+                previousCompleted.updatedAt = Date()
+                previousCompleted.statusMessage = "Retranscription failed · previous transcript kept"
+                previousCompleted.lastError = error.localizedDescription
+                transcripts[recording.id] = previousCompleted
+                persist(previousCompleted)
+            } else {
+                fail(recordingID: recording.id, message: error.localizedDescription)
+            }
         }
-
-        activeRecordingID = nil
     }
 
     func saveTranslation(recordingID: UUID, languageCode: String, text: String) {
