@@ -1,3 +1,4 @@
+import AVFoundation
 import XCTest
 @testable import LectureAIRecorder
 
@@ -111,5 +112,59 @@ final class NativeLectureTests: XCTestCase {
         XCTAssertEqual(batches[0].sourceLanguageCode, "en")
         XCTAssertEqual(batches[1].sourceLanguageCode, "ar")
         XCTAssertEqual(batches[2].sourceLanguageCode, "en")
+    }
+
+    func testAudioPreparerConvertsStereo48kToTemporary16kMono() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LectureAI-AudioPreparer-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let sourceURL = directory.appendingPathComponent("stereo-48k.wav")
+        guard let sourceFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 48_000,
+            channels: 2,
+            interleaved: false
+        ) else {
+            XCTFail("Could not create source audio format")
+            return
+        }
+
+        let sourceFile = try AVAudioFile(
+            forWriting: sourceURL,
+            settings: sourceFormat.settings,
+            commonFormat: .pcmFormatFloat32,
+            interleaved: false
+        )
+        let frameCount: AVAudioFrameCount = 48_000
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: sourceFormat, frameCapacity: frameCount),
+              let channels = buffer.floatChannelData else {
+            XCTFail("Could not allocate source audio buffer")
+            return
+        }
+        buffer.frameLength = frameCount
+
+        for frame in 0..<Int(frameCount) {
+            let phase = 2 * Double.pi * 440 * Double(frame) / 48_000
+            let sample = Float(sin(phase) * 0.2)
+            channels[0][frame] = sample
+            channels[1][frame] = sample * 0.8
+        }
+        try sourceFile.write(from: buffer)
+
+        let prepared = try TranscriptionAudioPreparer.prepare(sourceURL: sourceURL)
+        defer { TranscriptionAudioPreparer.cleanup(prepared) }
+
+        XCTAssertTrue(prepared.isTemporary)
+        XCTAssertNotEqual(prepared.url, sourceURL)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: prepared.url.path))
+
+        let converted = try AVAudioFile(forReading: prepared.url)
+        XCTAssertEqual(converted.processingFormat.sampleRate, 16_000, accuracy: 1)
+        XCTAssertEqual(converted.processingFormat.channelCount, 1)
+
+        let convertedDuration = Double(converted.length) / converted.processingFormat.sampleRate
+        XCTAssertEqual(convertedDuration, 1.0, accuracy: 0.05)
     }
 }
