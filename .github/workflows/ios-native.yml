@@ -47,7 +47,28 @@ jobs:
             -sdk iphonesimulator \
             -destination 'generic/platform=iOS Simulator' \
             CODE_SIGNING_ALLOWED=NO \
-            build
+            build 2>&1 | tee simulator-build.log
+
+      - name: Extract simulator compiler errors
+        if: always()
+        working-directory: ios/LectureAIRecorder
+        run: |
+          if [ -f simulator-build.log ]; then
+            grep -E '(^|[[:space:]])(error:|fatal error:)|:[0-9]+:[0-9]+: error:' simulator-build.log > simulator-compiler-errors.txt || true
+          else
+            echo 'simulator-build.log was not created' > simulator-compiler-errors.txt
+          fi
+
+      - name: Upload simulator build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: LectureAI-simulator-build-diagnostics
+          path: |
+            ios/LectureAIRecorder/simulator-compiler-errors.txt
+            ios/LectureAIRecorder/simulator-build.log
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Run native unit tests
         working-directory: ios/LectureAIRecorder
