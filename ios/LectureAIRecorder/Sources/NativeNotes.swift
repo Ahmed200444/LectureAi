@@ -41,10 +41,11 @@ enum NativeNotesGenerator {
             containsAny($0.text, terms: ["equation", "formula", "algorithm", "function", "derivative", "integral", "معادلة", "خوارزمية"])
                 || $0.text.rangeOfCharacter(from: CharacterSet(charactersIn: "=+−*/^")) != nil
         }.prefix(5)
+        let detailed = representativeSegments(useful, limit: 24)
 
         var sections: [String] = []
         sections.append("LECTURE SUMMARY\n\(summary)")
-        sections.append("DETAILED LECTURE NOTES\n" + useful.prefix(20).map(noteLine).joined(separator: "\n"))
+        sections.append("DETAILED LECTURE NOTES\n" + detailed.map(noteLine).joined(separator: "\n"))
         sections.append("KEY CONCEPTS\n" + (keywords.isEmpty ? "No strong recurring concepts were detected." : keywords.map { "• \($0)" }.joined(separator: "\n")))
         sections.append("DEFINITIONS\n" + listOrEmpty(definitions.map(noteLine), empty: "No explicit definitions were detected."))
         sections.append("EXAMPLES\n" + listOrEmpty(examples.map(noteLine), empty: "No explicit examples were detected."))
@@ -61,6 +62,20 @@ enum NativeNotesGenerator {
         sections.append("STUDY QUESTIONS\n" + listOrEmpty(questions, empty: "• What was the central idea of this lecture?"))
 
         return sections.joined(separator: "\n\n")
+    }
+
+    private static func representativeSegments(_ segments: [NativeTranscriptSegment], limit: Int) -> [NativeTranscriptSegment] {
+        guard limit > 0, !segments.isEmpty else { return [] }
+        guard segments.count > limit else { return segments }
+        guard limit > 1 else { return [segments[0]] }
+
+        var indices = Set<Int>()
+        for slot in 0..<limit {
+            let fraction = Double(slot) / Double(limit - 1)
+            let index = Int((fraction * Double(segments.count - 1)).rounded())
+            indices.insert(min(segments.count - 1, max(0, index)))
+        }
+        return indices.sorted().map { segments[$0] }
     }
 
     private static func noteLine(_ segment: NativeTranscriptSegment) -> String {

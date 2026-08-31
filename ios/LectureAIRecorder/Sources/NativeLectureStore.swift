@@ -58,7 +58,12 @@ actor NativeTranscriptionEngine {
         let prepared = try TranscriptionAudioPreparer.prepare(sourceURL: audioURL)
         defer { TranscriptionAudioPreparer.cleanup(prepared) }
 
+        // Keep model selection reproducible for this pinned WhisperKit release. The
+        // package's bundled device table is deterministic; leaving model nil would ask
+        // a remote support file for today's default and could silently change behavior.
+        let selectedModel = WhisperKit.recommendedModels().default
         let config = WhisperKitConfig(
+            model: selectedModel,
             verbose: false,
             prewarm: true,
             load: false,
@@ -141,9 +146,19 @@ actor NativeTranscriptionEngine {
                 throw NativeTranscriptionError.emptyTranscript
             }
 
-            let resultLanguages = results.map { $0.language }
-            let language = resultLanguages.first(where: { !$0.isEmpty }) ?? "unknown"
-            let model = pipe.modelFolder?.lastPathComponent ?? pipe.modelVariant.description
+            let languages = results
+                .map { $0.language.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+                .filter { !$0.isEmpty && $0 != "unknown" }
+            let uniqueLanguages = Array(Set(languages)).sorted()
+            let language: String
+            if uniqueLanguages.count == 1 {
+                language = uniqueLanguages[0]
+            } else if uniqueLanguages.count > 1 {
+                language = "mixed: " + uniqueLanguages.joined(separator: ", ")
+            } else {
+                language = "unknown"
+            }
+            let model = pipe.modelFolder?.lastPathComponent ?? selectedModel
 
             await pipe.unloadModels()
             return NativeTranscriptionOutput(

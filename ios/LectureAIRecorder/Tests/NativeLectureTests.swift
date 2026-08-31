@@ -57,4 +57,44 @@ final class NativeLectureTests: XCTestCase {
         XCTAssertEqual(NativeNotesGenerator.timestamp(65), "01:05")
         XCTAssertEqual(NativeNotesGenerator.timestamp(3_661), "1:01:01")
     }
+
+    func testLongLectureNotesCoverBeginningAndEnd() {
+        let segments = (0..<80).map { index in
+            NativeTranscriptSegment(
+                startTime: Double(index * 30),
+                endTime: Double(index * 30 + 20),
+                text: "Lecture segment \(index) concept"
+            )
+        }
+
+        let notes = NativeNotesGenerator.generate(segments: segments, marks: [])
+
+        XCTAssertTrue(notes.contains("Lecture segment 0 concept"))
+        XCTAssertTrue(notes.contains("Lecture segment 79 concept"))
+    }
+
+    func testTranslationChunkingIsBoundedAndPreservesOrder() {
+        let segments = [
+            NativeTranscriptSegment(startTime: 0, endTime: 1, text: "alpha beta gamma delta"),
+            NativeTranscriptSegment(startTime: 1, endTime: 2, text: "epsilon zeta eta theta"),
+            NativeTranscriptSegment(startTime: 2, endTime: 3, text: "iota kappa lambda mu")
+        ]
+
+        let chunks = NativeTranslationChunker.chunks(from: segments, maxCharacters: 24)
+
+        XCTAssertFalse(chunks.isEmpty)
+        XCTAssertTrue(chunks.allSatisfy { $0.count <= 24 })
+        XCTAssertEqual(chunks.joined(separator: " "), segments.map(\.text).joined(separator: " "))
+    }
+
+    func testTranslationChunkerSplitsSingleOversizedSegment() {
+        let text = Array(repeating: "word", count: 30).joined(separator: " ")
+        let segments = [NativeTranscriptSegment(startTime: 0, endTime: 5, text: text)]
+
+        let chunks = NativeTranslationChunker.chunks(from: segments, maxCharacters: 20)
+
+        XCTAssertTrue(chunks.count > 1)
+        XCTAssertTrue(chunks.allSatisfy { $0.count <= 20 })
+        XCTAssertEqual(chunks.joined(separator: " "), text)
+    }
 }

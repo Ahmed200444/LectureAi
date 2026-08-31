@@ -152,9 +152,16 @@ struct LectureDetailView: View {
         VStack(alignment: .leading, spacing: 12) {
             ForEach(transcript.segments) { segment in
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(NativeNotesGenerator.timestamp(segment.startTime))
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
+                    Button {
+                        recorder.play(recording, from: segment.startTime)
+                    } label: {
+                        Label(NativeNotesGenerator.timestamp(segment.startTime), systemImage: "play.circle")
+                            .font(.caption.monospacedDigit())
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("Play recording from \(NativeNotesGenerator.timestamp(segment.startTime))")
+
                     Text(segment.text)
                         .font(.body)
                         .textSelection(.enabled)
@@ -177,7 +184,7 @@ struct LectureDetailView: View {
                 .foregroundStyle(.secondary)
         } else if #available(iOS 18.0, *) {
             OnDeviceTranslationView(
-                sourceText: transcript.originalText,
+                sourceSegments: transcript.segments,
                 targetLanguageCode: languageCode
             ) { translated in
                 lectureStore.saveTranslation(
@@ -208,7 +215,7 @@ struct LectureDetailView: View {
 
 @available(iOS 18.0, *)
 private struct OnDeviceTranslationView: View {
-    let sourceText: String
+    let sourceSegments: [NativeTranscriptSegment]
     let targetLanguageCode: String
     let onTranslated: (String) -> Void
 
@@ -232,11 +239,33 @@ private struct OnDeviceTranslationView: View {
             target: Locale.Language(identifier: targetLanguageCode)
         ) { session in
             do {
+                let chunks = NativeTranslationChunker.chunks(from: sourceSegments)
+                guard !chunks.isEmpty else {
+                    status = "No transcript is available to translate"
+                    return
+                }
+
                 status = "Preparing the required on-device language pair…"
                 try await session.prepareTranslation()
-                status = "Translating locally on this device…"
-                let response = try await session.translate(sourceText)
-                onTranslated(response.targetText)
+
+                var translatedChunks: [String] = []
+                translatedChunks.reserveCapacity(chunks.count)
+                for (index, chunk) in chunks.enumerated() {
+                    try Task.checkCancellation()
+                    status = chunks.count == 1
+                        ? "Translating locally on this device…"
+                        : "Translating part \(index + 1) of \(chunks.count) locally…"
+                    let response = try await session.translate(chunk)
+                    let cleaned = response.targetText.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !cleaned.isEmpty { translatedChunks.append(cleaned) }
+                }
+
+                let translated = translatedChunks.joined(separator: "\n\n")
+                guard !translated.isEmpty else {
+                    status = "Translation completed without usable text"
+                    return
+                }
+                onTranslated(translated)
             } catch is CancellationError {
                 return
             } catch {

@@ -122,7 +122,7 @@ struct ContentView: View {
             }
 
             if sessionActive {
-                Label("LectureAI keeps the screen awake during this recording session. Quiet or distant audio never stops the recorder.", systemImage: "sun.max")
+                Label("LectureAI keeps the audio session active in the background. Locking the screen or switching apps does not intentionally stop the recorder; normal iOS microphone interruptions are handled separately.", systemImage: "lock.iphone")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -187,13 +187,19 @@ struct ContentView: View {
             .buttonStyle(.bordered)
 
         case .interrupted:
-            Button {
-                recorder.continueRecording()
-            } label: {
-                Label("Try to continue recording", systemImage: "arrow.clockwise")
-                    .frame(maxWidth: .infinity)
+            if recorder.canContinueRecording {
+                Button {
+                    recorder.continueRecording()
+                } label: {
+                    Label("Try to continue recording", systemImage: "arrow.clockwise")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+            } else {
+                Text("The current encoder cannot safely resume the same file. Save what was captured, then start a new recording.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
-            .buttonStyle(.borderedProminent)
 
             Button(role: .destructive) {
                 recorder.finishAndSave()
