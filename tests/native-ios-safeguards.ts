@@ -49,7 +49,7 @@ assert.doesNotMatch(lectureStore, /AudioStreamTranscriber/);
 // Compressed originals are preserved; transcription works from a temporary 16 kHz mono copy.
 assert.match(audioPreparer, /sampleRate = 16_000\.0/);
 assert.match(audioPreparer, /outputChannels: AVAudioChannelCount = 1/);
-assert.match(audioPreparer, /TranscriptionAudioPreparer\.cleanup/);
+assert.match(audioPreparer, /static func cleanup\(/);
 assert.match(detail, /The original audio is never modified by transcription or translation/);
 assert.match(detail, /translationTask\(/);
 
