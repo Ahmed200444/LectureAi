@@ -9,12 +9,16 @@ const lectureStore = readFileSync(new URL('../ios/LectureAIRecorder/Sources/Nati
 const audioPreparer = readFileSync(new URL('../ios/LectureAIRecorder/Sources/TranscriptionAudioPreparer.swift', import.meta.url), 'utf8');
 const project = readFileSync(new URL('../ios/LectureAIRecorder/project.yml', import.meta.url), 'utf8');
 
-// Native recording stays local, high-quality, interruption-aware, and uncapped.
+// Native recording stays local, high-quality, interruption-aware, uncapped, and neutral for lecture pickup.
 assert.match(recorder, /AVAudioRecorder/);
+assert.match(recorder, /setCategory\(\.record, mode: \.default\)/);
+assert.doesNotMatch(recorder, /setCategory\(\.record, mode: \.videoRecording\)/);
 assert.match(recorder, /setPreferredSampleRate\(48_000\)/);
 assert.match(recorder, /AVSampleRateKey: 48_000\.0/);
 assert.match(recorder, /AVNumberOfChannelsKey: 1/);
 assert.match(recorder, /AVEncoderBitRateKey: 192_000/);
+assert.match(recorder, /portType == \.builtInMic/);
+assert.doesNotMatch(recorder, /setPreferredPolarPattern\(\.cardioid\)/);
 assert.match(recorder, /AVAudioSession\.interruptionNotification/);
 assert.match(recorder, /AVAudioSession\.routeChangeNotification/);
 assert.match(recorder, /AVAudioSession\.mediaServicesWereResetNotification/);
