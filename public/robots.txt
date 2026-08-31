@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://lecture-ai-blush.vercel.app/sitemap.xml
