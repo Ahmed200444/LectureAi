@@ -55,6 +55,9 @@ actor NativeTranscriptionEngine {
     func transcribe(audioURL: URL) async throws -> NativeTranscriptionOutput {
         try Task.checkCancellation()
 
+        let prepared = try TranscriptionAudioPreparer.prepare(sourceURL: audioURL)
+        defer { TranscriptionAudioPreparer.cleanup(prepared) }
+
         let config = WhisperKitConfig(
             verbose: false,
             prewarm: true,
@@ -90,7 +93,7 @@ actor NativeTranscriptionEngine {
             )
 
             let results = try await pipe.transcribe(
-                audioPath: audioURL.path,
+                audioPath: prepared.url.path,
                 audioInputOptions: audioOptions,
                 decodeOptions: decodeOptions
             )
@@ -153,6 +156,7 @@ final class NativeLectureStore: ObservableObject {
     private let engine = NativeTranscriptionEngine()
 
     init() {
+        TranscriptionAudioPreparer.removeAbandonedTemporaryFiles()
         loadPersistedTranscripts()
     }
 
@@ -179,7 +183,7 @@ final class NativeLectureStore: ObservableObject {
         var record = transcript(for: recording.id)
         record.updatedAt = Date()
         record.state = .preparing
-        record.statusMessage = "Preparing the device-recommended multilingual Whisper model…"
+        record.statusMessage = "Preparing a safe 16 kHz transcription copy and the multilingual Whisper model…"
         record.progress = 0.12
         record.lastError = nil
         transcripts[recording.id] = record
