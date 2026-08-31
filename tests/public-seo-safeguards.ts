@@ -28,7 +28,7 @@ assert.match(gitignore, /\/\.seo-god\//);
 assert.match(index, /rel="canonical" href="https:\/\/lecture-ai-blush\.vercel\.app\/"/);
 assert.match(index, /application\/ld\+json/);
 assert.match(index, /SoftwareApplication/);
-assert.doesNotMatch(index, /AggregateRating|Review|userCount|award/i);
+assert.doesNotMatch(index, /AggregateRating|reviewRating|ratingValue|userCount|award|"@type"\s*:\s*"Review"/i);
 
 assert.match(robots, /User-agent: \*/);
 assert.match(robots, /Sitemap: https:\/\/lecture-ai-blush\.vercel\.app\/sitemap\.xml/);
@@ -44,7 +44,7 @@ assert.doesNotMatch(privacy, /100% local|perfect accuracy|guaranteed/i);
 assert.match(howItWorks, /multilingual Whisper/i);
 assert.match(howItWorks, /Accuracy varies/i);
 assert.match(howItWorks, /does not impose recording-minute or transcription-minute quotas/i);
-assert.doesNotMatch(howItWorks, /AggregateRating|Review|millions of users|100% accurate/i);
+assert.doesNotMatch(howItWorks, /AggregateRating|reviewRating|ratingValue|"@type"\s*:\s*"Review"|millions of users|100% accurate/i);
 
 assert.match(vercel, /"source": "\/privacy"/);
 assert.match(vercel, /"source": "\/how-it-works"/);
