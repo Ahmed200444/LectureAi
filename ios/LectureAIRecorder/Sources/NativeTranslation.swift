@@ -8,6 +8,7 @@ struct NativeTranslationBatch: Hashable, Sendable {
 
 enum NativeTranslationChunker {
     static let defaultMaxCharacters = 2_800
+    private static let minimumLanguageConfidence = 0.80
 
     static func batches(
         from segments: [NativeTranscriptSegment],
@@ -37,6 +38,16 @@ enum NativeTranslationChunker {
             let cleaned = piece.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !cleaned.isEmpty else { return }
 
+            // When NaturalLanguage is not confident enough, do not combine this text
+            // with another unknown-language segment. Keeping the request separate lets
+            // Apple's Translation framework identify the source from the actual text
+            // instead of creating one potentially mixed-language batch.
+            guard let languageCode else {
+                flushCurrent()
+                result.append(NativeTranslationBatch(text: cleaned, sourceLanguageCode: nil))
+                return
+            }
+
             let sameLanguage = currentText.isEmpty || currentLanguage == languageCode
             let fits = currentText.isEmpty || currentText.count + 1 + cleaned.count <= maxCharacters
 
@@ -56,14 +67,14 @@ enum NativeTranslationChunker {
             let text = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { continue }
 
-            let languageCode = dominantLanguageCode(for: text)
+            let languageCode = confidentLanguageCode(for: text)
             if text.count <= maxCharacters {
                 appendPiece(text, languageCode: languageCode)
                 continue
             }
 
             for piece in splitOversizedText(text, maxCharacters: maxCharacters) {
-                appendPiece(piece, languageCode: dominantLanguageCode(for: piece) ?? languageCode)
+                appendPiece(piece, languageCode: confidentLanguageCode(for: piece) ?? languageCode)
             }
         }
 
@@ -71,10 +82,14 @@ enum NativeTranslationChunker {
         return result
     }
 
-    private static func dominantLanguageCode(for text: String) -> String? {
+    private static func confidentLanguageCode(for text: String) -> String? {
         let recognizer = NLLanguageRecognizer()
         recognizer.processString(text)
-        return recognizer.dominantLanguage?.rawValue.lowercased()
+        guard let best = recognizer.languageHypotheses(withMaximum: 1).max(by: { $0.value < $1.value }),
+              best.value >= minimumLanguageConfidence else {
+            return nil
+        }
+        return best.key.rawValue.lowercased()
     }
 
     private static func splitOversizedText(_ text: String, maxCharacters: Int) -> [String] {
