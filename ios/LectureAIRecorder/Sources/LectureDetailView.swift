@@ -20,6 +20,10 @@ struct LectureDetailView: View {
         lectureStore.transcript(for: recording.id)
     }
 
+    private var recordingSessionActive: Bool {
+        recorder.state == .recording || recorder.state == .paused || recorder.state == .interrupted
+    }
+
     var body: some View {
         ScrollView {
             VStack(spacing: 16) {
@@ -78,12 +82,8 @@ struct LectureDetailView: View {
                 Spacer()
                 if lectureStore.activeRecordingID == recording.id {
                     ProgressView()
+                        .accessibilityLabel("Transcription in progress")
                 }
-            }
-
-            if transcript.state == .preparing || transcript.state == .transcribing {
-                ProgressView(value: transcript.progress)
-                    .progressViewStyle(.linear)
             }
 
             if let model = transcript.modelName {
@@ -109,7 +109,13 @@ struct LectureDetailView: View {
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
-            .disabled(lectureStore.activeRecordingID != nil)
+            .disabled(lectureStore.activeRecordingID != nil || recordingSessionActive)
+
+            if recordingSessionActive {
+                Text("Finish the current microphone recording before starting Core ML transcription. Recording is kept isolated from the heavier speech-model workload.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
 
             Text("WhisperKit v1.1.0 runs after the recording is saved. LectureAI does not use live streaming transcription, Safari, or a cloud speech API on iPhone/iPad.")
                 .font(.caption2)
