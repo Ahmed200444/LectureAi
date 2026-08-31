@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 
 const recorder = readFileSync(new URL('../ios/LectureAIRecorder/Sources/RecorderStore.swift', import.meta.url), 'utf8');
 const recorderDelete = readFileSync(new URL('../ios/LectureAIRecorder/Sources/RecorderStore+Delete.swift', import.meta.url), 'utf8');
+const preflight = readFileSync(new URL('../ios/LectureAIRecorder/Sources/MicrophonePreflightStore.swift', import.meta.url), 'utf8');
 const view = readFileSync(new URL('../ios/LectureAIRecorder/Sources/ContentView.swift', import.meta.url), 'utf8');
 const detail = readFileSync(new URL('../ios/LectureAIRecorder/Sources/LectureDetailView.swift', import.meta.url), 'utf8');
 const lectureStore = readFileSync(new URL('../ios/LectureAIRecorder/Sources/NativeLectureStore.swift', import.meta.url), 'utf8');
@@ -30,6 +31,23 @@ assert.match(recorder, /guard recorder\.record\(\)/);
 assert.match(recorder, /UIApplication\.shared\.isIdleTimerDisabled/);
 assert.doesNotMatch(recorder, /record\(forDuration:/);
 assert.doesNotMatch(recorder, /maximumDuration|maxDuration|minuteQuota|monthlyQuota/i);
+
+// Permission alone can never unlock a lecture. A temporary AAC sample is encoded,
+// decoded from the saved file, checked for non-silent PCM, played back, and confirmed.
+assert.match(preflight, /AVAudioRecorder/);
+assert.match(preflight, /kAudioFormatMPEG4AAC/);
+assert.match(preflight, /validateEncodedSample/);
+assert.match(preflight, /AVAudioFile\(forReading:/);
+assert.match(preflight, /peakAmplitude >= 0\.0001/);
+assert.match(preflight, /sampleReady = true/);
+assert.match(preflight, /func playSample\(\)/);
+assert.match(preflight, /func confirmAudibleSample\(\)/);
+assert.match(preflight, /Microphone verified with real encoded, audible audio/);
+assert.match(preflight, /Audio route changed · test the microphone again before recording/);
+assert.match(view, /guard preflight\.verified else \{ return \}/);
+assert.match(view, /disabled\(transcriptionActive \|\| !preflight\.verified/);
+assert.match(view, /I can hear it clearly/);
+assert.match(view, /real encoded sample/);
 
 // The unified app owns import, background capture, playback, deletion confirmation, and lecture opening.
 assert.match(view, /Import recording/);
