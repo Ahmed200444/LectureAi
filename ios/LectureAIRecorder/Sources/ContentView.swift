@@ -5,6 +5,8 @@ struct ContentView: View {
     @EnvironmentObject private var recorder: RecorderStore
     @EnvironmentObject private var lectureStore: NativeLectureStore
     @State private var showingImporter = false
+    @State private var showingDeleteConfirmation = false
+    @State private var pendingDeletion: SavedRecording?
 
     private var sessionActive: Bool {
         recorder.state == .recording || recorder.state == .paused || recorder.state == .interrupted
@@ -41,6 +43,24 @@ struct ContentView: View {
                 case .failure(let error):
                     recorder.statusMessage = "Could not open the selected recording: \(error.localizedDescription)"
                 }
+            }
+            .confirmationDialog(
+                "Delete lecture?",
+                isPresented: $showingDeleteConfirmation,
+                titleVisibility: .visible,
+                presenting: pendingDeletion
+            ) { item in
+                Button("Delete from this device", role: .destructive) {
+                    if recorder.deleteSafely(item) {
+                        lectureStore.deleteTranscript(for: item.id)
+                    }
+                    pendingDeletion = nil
+                }
+                Button("Cancel", role: .cancel) {
+                    pendingDeletion = nil
+                }
+            } message: { item in
+                Text("This permanently removes the original audio and its local transcript for “\(item.title)”.")
             }
         }
     }
@@ -293,8 +313,8 @@ struct ContentView: View {
                             .buttonStyle(.borderless)
                             Spacer()
                             Button("Delete", role: .destructive) {
-                                lectureStore.deleteTranscript(for: item.id)
-                                recorder.delete(item)
+                                pendingDeletion = item
+                                showingDeleteConfirmation = true
                             }
                             .buttonStyle(.borderless)
                             .disabled(lectureStore.activeRecordingID == item.id)
