@@ -1,8 +1,10 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ContentView: View {
     @EnvironmentObject private var recorder: RecorderStore
-    @Environment(\.openURL) private var openURL
+    @EnvironmentObject private var lectureStore: NativeLectureStore
+    @State private var showingImporter = false
 
     private var sessionActive: Bool {
         recorder.state == .recording || recorder.state == .paused || recorder.state == .interrupted
@@ -21,16 +23,29 @@ struct ContentView: View {
                 }
                 .padding()
             }
-            .navigationTitle("LectureAI Recorder")
+            .navigationTitle("LectureAI")
             .background(Color(.systemGroupedBackground))
+            .fileImporter(
+                isPresented: $showingImporter,
+                allowedContentTypes: [.audio],
+                allowsMultipleSelection: false
+            ) { result in
+                switch result {
+                case .success(let urls):
+                    guard let url = urls.first else { return }
+                    Task { await recorder.importRecording(from: url) }
+                case .failure(let error):
+                    recorder.statusMessage = "Could not open the selected recording: \(error.localizedDescription)"
+                }
+            }
         }
     }
 
     private var headerCard: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Label("Native iPhone/iPad lecture capture", systemImage: "waveform")
+            Label("One native LectureAI app", systemImage: "waveform.and.mic")
                 .font(.headline)
-            Text("Uses Apple’s native microphone APIs instead of Safari. The original recording stays on this device unless you explicitly share it.")
+            Text("Record, import, transcribe, translate, review notes, and play lectures without sending the original audio to a cloud speech service.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
             HStack(spacing: 14) {
@@ -40,6 +55,14 @@ struct ContentView: View {
             }
             .font(.caption)
             .foregroundStyle(.secondary)
+
+            Button {
+                showingImporter = true
+            } label: {
+                Label("Import recording", systemImage: "square.and.arrow.down")
+            }
+            .buttonStyle(.bordered)
+            .disabled(sessionActive)
         }
         .cardStyle()
     }
@@ -173,13 +196,21 @@ struct ContentView: View {
 
     private func savedCard(_ recording: SavedRecording) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Latest recording")
+            Text("Latest lecture")
                 .font(.headline)
             Text(recording.title)
                 .font(.title3.weight(.semibold))
             Text("\(formatDuration(recording.duration)) · \(formatBytes(recording.size))")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+
+            NavigationLink {
+                LectureDetailView(recording: recording)
+            } label: {
+                Label("Open lecture", systemImage: "doc.text.magnifyingglass")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
 
             HStack {
                 Button {
@@ -190,30 +221,17 @@ struct ContentView: View {
                 .buttonStyle(.bordered)
 
                 ShareLink(item: recording.audioURL) {
-                    Label("Send to LectureAI", systemImage: "square.and.arrow.up")
+                    Label("Share original", systemImage: "square.and.arrow.up")
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.bordered)
             }
-
-            Button {
-                if let url = URL(string: "https://lecture-ai-blush.vercel.app/") {
-                    openURL(url)
-                }
-            } label: {
-                Label("Open LectureAI library", systemImage: "safari")
-            }
-            .buttonStyle(.plain)
-
-            Text("To move this native recording into the current LectureAI web library, use Send to LectureAI → Save to Files, then open LectureAI and choose Import Recording. The web app already accepts .m4a files and queues them for transcription.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
         }
         .cardStyle()
     }
 
     private var libraryCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Native recordings")
+            Text("Lecture library")
                 .font(.headline)
 
             if recorder.recordings.isEmpty {
@@ -223,17 +241,28 @@ struct ContentView: View {
             } else {
                 ForEach(recorder.recordings) { item in
                     VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            VStack(alignment: .leading) {
-                                Text(item.title)
-                                    .font(.subheadline.weight(.semibold))
-                                Text("\(item.createdAt.formatted(date: .abbreviated, time: .shortened)) · \(formatDuration(item.duration))")
+                        NavigationLink {
+                            LectureDetailView(recording: item)
+                        } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(item.title)
+                                        .font(.subheadline.weight(.semibold))
+                                        .foregroundStyle(.primary)
+                                    Text("\(item.createdAt.formatted(date: .abbreviated, time: .shortened)) · \(formatDuration(item.duration))")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    let transcript = lectureStore.transcript(for: item.id)
+                                    if transcript.state == .done {
+                                        Text("Transcribed · \(transcript.detectedLanguage ?? "language unknown")")
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                                Spacer()
+                                Image(systemName: "chevron.right")
                                     .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            ShareLink(item: item.audioURL) {
-                                Image(systemName: "square.and.arrow.up")
+                                    .foregroundStyle(.tertiary)
                             }
                         }
 
@@ -241,8 +270,16 @@ struct ContentView: View {
                             Button("Listen") { recorder.play(item) }
                                 .buttonStyle(.borderless)
                             Spacer()
-                            Button("Delete", role: .destructive) { recorder.delete(item) }
-                                .buttonStyle(.borderless)
+                            ShareLink(item: item.audioURL) {
+                                Text("Share")
+                            }
+                            .buttonStyle(.borderless)
+                            Spacer()
+                            Button("Delete", role: .destructive) {
+                                lectureStore.deleteTranscript(for: item.id)
+                                recorder.delete(item)
+                            }
+                            .buttonStyle(.borderless)
                         }
                         .font(.caption)
                     }
