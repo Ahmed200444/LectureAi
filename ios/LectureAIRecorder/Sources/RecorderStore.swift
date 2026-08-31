@@ -276,15 +276,6 @@ final class RecorderStore: NSObject, ObservableObject, AVAudioRecorderDelegate, 
         deactivateAudioSession()
     }
 
-    func delete(_ recording: SavedRecording) {
-        if player?.url == recording.audioURL { stopPlayback() }
-        try? FileManager.default.removeItem(at: recording.audioURL)
-        try? FileManager.default.removeItem(at: metadataURL(for: recording.audioURL))
-        if lastSavedRecording?.id == recording.id { lastSavedRecording = nil }
-        refreshLibrary()
-        refreshStorage()
-    }
-
     func audioRecorderDidFinishRecording(_ recorder: AVAudioRecorder, successfully flag: Bool) {
         guard !finishing else { return }
         DispatchQueue.main.async {
@@ -407,7 +398,10 @@ final class RecorderStore: NSObject, ObservableObject, AVAudioRecorderDelegate, 
 
     private func configureAudioSession() throws {
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.record, mode: .videoRecording)
+        // Use a neutral recording mode for lectures. `.videoRecording` is camera-oriented
+        // and can choose a mic/data source optimized for a movie rather than a phone lying
+        // on a desk with speech arriving from different directions.
+        try session.setCategory(.record, mode: .default)
         try session.setPreferredSampleRate(48_000)
         try session.setPreferredIOBufferDuration(0.02)
         try session.setActive(true)
@@ -415,15 +409,11 @@ final class RecorderStore: NSObject, ObservableObject, AVAudioRecorderDelegate, 
     }
 
     private func preferBuiltInLectureMicrophone(_ session: AVAudioSession) throws {
+        // Prefer the phone/tablet's built-in microphone, but do not force a front-facing
+        // data source or cardioid polar pattern. Directional beam choices can attenuate
+        // a lecturer who is off-axis; iOS may choose the suitable built-in data source.
         guard let builtIn = session.availableInputs?.first(where: { $0.portType == .builtInMic }) else { return }
         try session.setPreferredInput(builtIn)
-
-        guard let sources = builtIn.dataSources, !sources.isEmpty else { return }
-        let source = sources.first(where: { $0.orientation == .front }) ?? sources.first!
-        if source.supportedPolarPatterns?.contains(.cardioid) == true {
-            try? source.setPreferredPolarPattern(.cardioid)
-        }
-        try? builtIn.setPreferredDataSource(source)
     }
 
     private func deactivateAudioSession() {
