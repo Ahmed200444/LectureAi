@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 struct ContentView: View {
     @EnvironmentObject private var recorder: RecorderStore
     @EnvironmentObject private var lectureStore: NativeLectureStore
+    @StateObject private var preflight = MicrophonePreflightStore()
     @State private var showingImporter = false
     @State private var showingDeleteConfirmation = false
     @State private var pendingDeletion: SavedRecording?
@@ -133,6 +134,10 @@ struct ContentView: View {
             .font(.caption)
             .foregroundStyle(.secondary)
 
+            if !sessionActive {
+                microphonePreflightControls
+            }
+
             controlButtons
 
             if transcriptionActive && !sessionActive {
@@ -151,18 +156,93 @@ struct ContentView: View {
     }
 
     @ViewBuilder
+    private var microphonePreflightControls: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("Microphone preflight", systemImage: preflight.verified ? "checkmark.shield.fill" : "waveform.badge.mic")
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                if preflight.isTesting || preflight.isPlaying {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+            }
+
+            Text(preflight.statusMessage)
+                .font(.caption)
+                .foregroundStyle(preflight.verified ? .green : .secondary)
+
+            if preflight.verified {
+                Button("Test again") {
+                    Task { await preflight.runTest() }
+                }
+                .buttonStyle(.bordered)
+                .disabled(transcriptionActive || preflight.isTesting)
+            } else if preflight.sampleReady {
+                HStack {
+                    Button {
+                        preflight.playSample()
+                    } label: {
+                        Label(preflight.isPlaying ? "Playing…" : "Listen to sample", systemImage: "play.fill")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(preflight.isPlaying)
+
+                    Button {
+                        preflight.confirmAudibleSample()
+                    } label: {
+                        Label("I can hear it clearly", systemImage: "checkmark")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(preflight.isPlaying)
+                }
+
+                Button("Record a new sample") {
+                    Task { await preflight.runTest() }
+                }
+                .buttonStyle(.borderless)
+                .disabled(preflight.isTesting || preflight.isPlaying)
+            } else {
+                Button {
+                    Task { await preflight.runTest() }
+                } label: {
+                    Label(preflight.isTesting ? "Testing microphone…" : "Test microphone", systemImage: "mic.badge.plus")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .disabled(transcriptionActive || preflight.isTesting)
+            }
+
+            if !preflight.verified {
+                Text("Lecture recording stays locked until LectureAI creates a real encoded sample, confirms it is not digitally silent, and you verify the playback is audible.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(12)
+        .background(Color(.tertiarySystemGroupedBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    @ViewBuilder
     private var controlButtons: some View {
         switch recorder.state {
         case .idle, .saved, .failed:
             Button {
-                Task { await recorder.startRecording() }
+                guard preflight.verified else { return }
+                Task {
+                    await recorder.startRecording()
+                    if recorder.state == .recording {
+                        preflight.consumeVerification()
+                    }
+                }
             } label: {
                 Label("Start native recording", systemImage: "record.circle")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
-            .disabled(transcriptionActive)
+            .disabled(transcriptionActive || !preflight.verified || preflight.isTesting || preflight.isPlaying)
 
         case .recording:
             HStack {
@@ -357,21 +437,4 @@ private extension View {
             .background(Color(.secondarySystemGroupedBackground))
             .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
-}
-
-private func formatDuration(_ seconds: TimeInterval) -> String {
-    let total = max(0, Int(seconds.rounded(.down)))
-    let hours = total / 3600
-    let minutes = (total % 3600) / 60
-    let secs = total % 60
-    return hours > 0
-        ? String(format: "%d:%02d:%02d", hours, minutes, secs)
-        : String(format: "%02d:%02d", minutes, secs)
-}
-
-private func formatBytes(_ bytes: Int64) -> String {
-    let formatter = ByteCountFormatter()
-    formatter.allowedUnits = [.useMB, .useGB]
-    formatter.countStyle = .file
-    return formatter.string(fromByteCount: max(0, bytes))
 }
