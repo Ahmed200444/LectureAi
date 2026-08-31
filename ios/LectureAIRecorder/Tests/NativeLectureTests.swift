@@ -145,12 +145,6 @@ final class NativeLectureTests: XCTestCase {
             return
         }
 
-        let sourceFile = try AVAudioFile(
-            forWriting: sourceURL,
-            settings: sourceFormat.settings,
-            commonFormat: .pcmFormatFloat32,
-            interleaved: false
-        )
         let frameCount: AVAudioFrameCount = 48_000
         guard let buffer = AVAudioPCMBuffer(pcmFormat: sourceFormat, frameCapacity: frameCount),
               let channels = buffer.floatChannelData else {
@@ -165,7 +159,23 @@ final class NativeLectureTests: XCTestCase {
             channels[0][frame] = sample
             channels[1][frame] = sample * 0.8
         }
-        try sourceFile.write(from: buffer)
+
+        do {
+            let sourceFile = try AVAudioFile(
+                forWriting: sourceURL,
+                settings: sourceFormat.settings,
+                commonFormat: .pcmFormatFloat32,
+                interleaved: false
+            )
+            try sourceFile.write(from: buffer)
+            if #available(iOS 18.0, *) {
+                sourceFile.close()
+            }
+        }
+
+        let finalizedSource = try AVAudioFile(forReading: sourceURL)
+        let sourceDuration = Double(finalizedSource.length) / finalizedSource.processingFormat.sampleRate
+        XCTAssertEqual(sourceDuration, 1.0, accuracy: 0.05)
 
         let prepared = try TranscriptionAudioPreparer.prepare(sourceURL: sourceURL)
         defer { TranscriptionAudioPreparer.cleanup(prepared) }
