@@ -21,6 +21,9 @@ extension RecorderStore {
             if accessed { sourceURL.stopAccessingSecurityScopedResource() }
         }
 
+        var copiedAudioURL: URL?
+        var copiedMetadataURL: URL?
+
         do {
             let baseName = sourceURL.deletingPathExtension().lastPathComponent
                 .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -32,12 +35,17 @@ extension RecorderStore {
             )
 
             try FileManager.default.copyItem(at: sourceURL, to: destination)
+            copiedAudioURL = destination
 
             let audioFile = try AVAudioFile(forReading: destination)
             let sampleRate = audioFile.processingFormat.sampleRate
             let duration = sampleRate > 0 ? Double(audioFile.length) / sampleRate : 0
             let attributes = try FileManager.default.attributesOfItem(atPath: destination.path)
             let size = (attributes[.size] as? NSNumber)?.int64Value ?? 0
+
+            guard duration > 0, size > 0 else {
+                throw RecordingImportError.invalidAudio
+            }
 
             let item = SavedRecording(
                 id: UUID(),
@@ -53,6 +61,7 @@ extension RecorderStore {
             encoder.dateEncodingStrategy = .iso8601
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             let metadataURL = destination.deletingPathExtension().appendingPathExtension("lectureai.json")
+            copiedMetadataURL = metadataURL
             try encoder.encode(item).write(to: metadataURL, options: .atomic)
 
             recordings = ([item] + recordings.filter { $0.id != item.id })
@@ -64,7 +73,24 @@ extension RecorderStore {
             let fileSystem = try? FileManager.default.attributesOfFileSystem(forPath: NSHomeDirectory())
             freeStorageBytes = (fileSystem?[.systemFreeSize] as? NSNumber)?.int64Value ?? freeStorageBytes
         } catch {
+            if let copiedMetadataURL {
+                try? FileManager.default.removeItem(at: copiedMetadataURL)
+            }
+            if let copiedAudioURL {
+                try? FileManager.default.removeItem(at: copiedAudioURL)
+            }
             statusMessage = "Could not import recording: \(error.localizedDescription)"
+        }
+    }
+}
+
+private enum RecordingImportError: LocalizedError {
+    case invalidAudio
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidAudio:
+            return "The selected file does not contain readable audio."
         }
     }
 }
