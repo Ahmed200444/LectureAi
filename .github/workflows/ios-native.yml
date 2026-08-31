@@ -6,19 +6,7 @@ on:
     branches:
       - native-ios-*
       - ios-cloud-ipa-*
-    paths:
-      - 'ios/**'
-      - 'tests/native-ios-safeguards.ts'
-      - 'package.json'
-      - 'package-lock.json'
-      - '.github/workflows/ios-native.yml'
   pull_request:
-    paths:
-      - 'ios/**'
-      - 'tests/native-ios-safeguards.ts'
-      - 'package.json'
-      - 'package-lock.json'
-      - '.github/workflows/ios-native.yml'
 
 jobs:
   repo-check:
