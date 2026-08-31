@@ -73,28 +73,43 @@ final class NativeLectureTests: XCTestCase {
         XCTAssertTrue(notes.contains("Lecture segment 79 concept"))
     }
 
-    func testTranslationChunkingIsBoundedAndPreservesOrder() {
+    func testTranslationBatchingIsBoundedAndPreservesOrder() {
         let segments = [
             NativeTranscriptSegment(startTime: 0, endTime: 1, text: "alpha beta gamma delta"),
             NativeTranscriptSegment(startTime: 1, endTime: 2, text: "epsilon zeta eta theta"),
             NativeTranscriptSegment(startTime: 2, endTime: 3, text: "iota kappa lambda mu")
         ]
 
-        let chunks = NativeTranslationChunker.chunks(from: segments, maxCharacters: 24)
+        let batches = NativeTranslationChunker.batches(from: segments, maxCharacters: 24)
 
-        XCTAssertFalse(chunks.isEmpty)
-        XCTAssertTrue(chunks.allSatisfy { $0.count <= 24 })
-        XCTAssertEqual(chunks.joined(separator: " "), segments.map(\.text).joined(separator: " "))
+        XCTAssertFalse(batches.isEmpty)
+        XCTAssertTrue(batches.allSatisfy { $0.text.count <= 24 })
+        XCTAssertEqual(batches.map(\.text).joined(separator: " "), segments.map(\.text).joined(separator: " "))
     }
 
-    func testTranslationChunkerSplitsSingleOversizedSegment() {
+    func testTranslationBatcherSplitsSingleOversizedSegment() {
         let text = Array(repeating: "word", count: 30).joined(separator: " ")
         let segments = [NativeTranscriptSegment(startTime: 0, endTime: 5, text: text)]
 
-        let chunks = NativeTranslationChunker.chunks(from: segments, maxCharacters: 20)
+        let batches = NativeTranslationChunker.batches(from: segments, maxCharacters: 20)
 
-        XCTAssertTrue(chunks.count > 1)
-        XCTAssertTrue(chunks.allSatisfy { $0.count <= 20 })
-        XCTAssertEqual(chunks.joined(separator: " "), text)
+        XCTAssertTrue(batches.count > 1)
+        XCTAssertTrue(batches.allSatisfy { $0.text.count <= 20 })
+        XCTAssertEqual(batches.map(\.text).joined(separator: " "), text)
+    }
+
+    func testTranslationBatcherSeparatesEnglishAndArabic() {
+        let segments = [
+            NativeTranscriptSegment(startTime: 0, endTime: 3, text: "The derivative measures change over time."),
+            NativeTranscriptSegment(startTime: 3, endTime: 6, text: "المشتقة تقيس معدل التغير مع الزمن"),
+            NativeTranscriptSegment(startTime: 6, endTime: 9, text: "Now we return to the English explanation.")
+        ]
+
+        let batches = NativeTranslationChunker.batches(from: segments, maxCharacters: 500)
+
+        XCTAssertEqual(batches.count, 3)
+        XCTAssertEqual(batches[0].sourceLanguageCode, "en")
+        XCTAssertEqual(batches[1].sourceLanguageCode, "ar")
+        XCTAssertEqual(batches[2].sourceLanguageCode, "en")
     }
 }
