@@ -95,7 +95,28 @@ jobs:
             -configuration Debug \
             -destination "platform=iOS Simulator,id=$DEVICE_ID" \
             CODE_SIGNING_ALLOWED=NO \
-            test
+            test 2>&1 | tee simulator-test.log
+
+      - name: Extract native unit test failures
+        if: always()
+        working-directory: ios/LectureAIRecorder
+        run: |
+          if [ -f simulator-test.log ]; then
+            grep -E 'Test Case|Test Suite|XCTAssert|failed|failure|error:|Testing failed|NativeLectureTests' simulator-test.log > simulator-test-failures.txt || true
+          else
+            echo 'simulator-test.log was not created; the test step may have failed before xcodebuild started' > simulator-test-failures.txt
+          fi
+
+      - name: Upload native unit test diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: LectureAI-native-test-diagnostics
+          path: |
+            ios/LectureAIRecorder/simulator-test-failures.txt
+            ios/LectureAIRecorder/simulator-test.log
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Build unsigned iPhone/iPad device app
         working-directory: ios/LectureAIRecorder
