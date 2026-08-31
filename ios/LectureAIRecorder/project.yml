@@ -30,7 +30,7 @@ targets:
     info:
       path: Sources/Info.plist
       properties:
-        CFBundleDisplayName: LectureAI Recorder
+        CFBundleDisplayName: LectureAI
         NSMicrophoneUsageDescription: LectureAI uses the microphone only when you choose to record a lecture. Recordings stay on this device unless you explicitly share them.
         UIBackgroundModes:
           - audio
