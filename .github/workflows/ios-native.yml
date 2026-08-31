@@ -8,14 +8,39 @@ on:
       - ios-cloud-ipa-*
     paths:
       - 'ios/**'
+      - 'tests/native-ios-safeguards.ts'
+      - 'package.json'
+      - 'package-lock.json'
       - '.github/workflows/ios-native.yml'
   pull_request:
     paths:
       - 'ios/**'
+      - 'tests/native-ios-safeguards.ts'
+      - 'package.json'
+      - 'package-lock.json'
       - '.github/workflows/ios-native.yml'
 
 jobs:
+  repo-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck, lint, safeguards, and production build
+        run: npm run check
+
   build-ios-recorder:
+    needs: repo-check
     runs-on: macos-latest
     timeout-minutes: 40
     steps:
