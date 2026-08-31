@@ -41,14 +41,17 @@ assert.doesNotMatch(view, /lecture-ai-blush\.vercel\.app/);
 assert.match(recorderDelete, /Could not delete the original recording\. Nothing else was removed/);
 
 // Native transcription uses pinned WhisperKit, file-based incremental loading, multilingual detection,
-// explicit safe suppression settings, and never the live streaming transcriber.
+// no forced language, and never the live streaming transcriber or an English-only hard-coded model.
 assert.match(lectureStore, /import WhisperKit/);
 assert.match(lectureStore, /WhisperKit\.recommendedModels\(\)\.default/);
-assert.match(lectureStore, /audioLoadingMode: \.incremental/);
+assert.match(lectureStore, /task: \.transcribe/);
+assert.match(lectureStore, /language: nil/);
 assert.match(lectureStore, /detectLanguage: true/);
+assert.match(lectureStore, /audioLoadingMode: \.incremental/);
 assert.match(lectureStore, /suppressTokens: \[\]/);
 assert.match(lectureStore, /concurrentWorkerCount: 1/);
 assert.doesNotMatch(lectureStore, /AudioStreamTranscriber/);
+assert.doesNotMatch(lectureStore, /whisper-[^"\n]*\.en/);
 
 // Compressed originals are preserved; transcription works from a temporary 16 kHz mono copy.
 assert.match(audioPreparer, /sampleRate = 16_000\.0/);
