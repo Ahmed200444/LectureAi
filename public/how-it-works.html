@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>How LectureAI Works — Record, verify, transcribe, study</title>
+  <meta name="description" content="How LectureAI records university lectures, verifies microphone audio, preserves recordings locally, transcribes with multilingual Whisper, and creates study notes." />
+  <link rel="canonical" href="https://lecture-ai-blush.vercel.app/how-it-works" />
+  <meta property="og:title" content="How LectureAI Works" />
+  <meta property="og:description" content="Record, verify, transcribe, review, and study while keeping lecture content local by default." />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://lecture-ai-blush.vercel.app/how-it-works" />
+  <link rel="stylesheet" href="/public-info.css" />
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"LectureAI","url":"https://lecture-ai-blush.vercel.app/","applicationCategory":"EducationalApplication","operatingSystem":"Web, iOS/iPadOS browser or PWA, Windows","description":"Local-first university lecture recording, multilingual transcription, playback-linked transcripts, and editable study notes."}</script>
+</head>
+<body>
+<header>
+  <a class="brand" href="/">LectureAI</a>
+  <nav aria-label="Public information"><a href="/how-it-works" aria-current="page">How it works</a><a href="/privacy">Privacy</a></nav>
+</header>
+<main>
+  <p class="lede">How it works</p>
+  <h1>Record the real lecture first. AI comes after.</h1>
+  <p>LectureAI is built around preserving the original recording as the source of truth. The browser recording path does not treat microphone permission alone as success: it verifies that the microphone stream can produce encoded, non-silent audio before a lecture starts.</p>
+
+  <div class="facts">
+    <div><strong>1. Verify</strong><br />Record and replay a short microphone sample before class.</div>
+    <div><strong>2. Record</strong><br />Capture encoded audio in frequent local checkpoints with no LectureAI-imposed minute limit.</div>
+    <div><strong>3. Preserve</strong><br />Assemble and reload the finished audio before calling the recording saved.</div>
+    <div><strong>4. Transcribe</strong><br />Use multilingual Whisper locally on supported devices, or the optional local Windows helper.</div>
+  </div>
+
+  <section class="card">
+    <h2>Does LectureAI work on iPhone and iPad?</h2>
+    <p>Safari and an installed Add to Home Screen PWA are supported targets. The browser version preserves frequent checkpoints and warns about background/suspension risk, but iOS and iPadOS do not guarantee indefinite browser microphone recording while an app is backgrounded or the device is locked.</p>
+  </section>
+
+  <section class="card">
+    <h2>Does LectureAI upload recordings to the cloud?</h2>
+    <p>Not by default. Recordings and lecture data are stored locally. Speech-model files may need to be downloaded, but local transcription does not require sending the lecture recording to a paid speech service.</p>
+  </section>
+
+  <section class="card">
+    <h2>What languages can it transcribe?</h2>
+    <p>LectureAI uses multilingual Whisper models with automatic language detection rather than an English-only model. Accuracy varies by language, accent, audio quality, distance, background noise, and model size, so the original recording remains the authority for corrections.</p>
+  </section>
+
+  <section class="card">
+    <h2>Are there recording or transcription quotas?</h2>
+    <p>LectureAI does not impose recording-minute or transcription-minute quotas. Real device limits still exist, including storage capacity, memory pressure, battery, browser suspension, and model-download size.</p>
+  </section>
+
+  <a class="cta" href="/">Open LectureAI</a>
+</main>
+<footer><a href="/privacy">Read the privacy overview</a>.</footer>
+</body>
+</html>
