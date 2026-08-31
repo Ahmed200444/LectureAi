@@ -109,6 +109,28 @@ jobs:
           ditto -c -k --sequesterRsrc --keepParent Payload LectureAIRecorder-unsigned.ipa
           test -s LectureAIRecorder-unsigned.ipa
 
+      - name: Verify packaged app metadata
+        working-directory: ios/LectureAIRecorder
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import plistlib
+          from pathlib import Path
+
+          plist_path = Path('Payload/LectureAIRecorder.app/Info.plist')
+          assert plist_path.exists(), f'Missing packaged Info.plist: {plist_path}'
+          with plist_path.open('rb') as handle:
+              info = plistlib.load(handle)
+
+          assert info.get('CFBundleIdentifier') == 'com.lectureai.recorder', info.get('CFBundleIdentifier')
+          assert info.get('CFBundleDisplayName') == 'LectureAI', info.get('CFBundleDisplayName')
+          assert {1, 2}.issubset(set(info.get('UIDeviceFamily', []))), info.get('UIDeviceFamily')
+          assert 'audio' in info.get('UIBackgroundModes', []), info.get('UIBackgroundModes')
+          minimum = str(info.get('MinimumOSVersion', ''))
+          assert minimum.startswith('17.'), minimum
+          print('Packaged LectureAI metadata verified:', info.get('CFBundleIdentifier'), info.get('UIDeviceFamily'), info.get('UIBackgroundModes'), minimum)
+          PY
+
       - name: Upload unsigned IPA
         uses: actions/upload-artifact@v4
         with:

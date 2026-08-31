@@ -88,6 +88,7 @@ final class RecorderStore: NSObject, ObservableObject, AVAudioRecorderDelegate, 
         NotificationCenter.default.addObserver(self, selector: #selector(handleWillTerminate(_:)), name: UIApplication.willTerminateNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleDidEnterBackground(_:)), name: UIApplication.didEnterBackgroundNotification, object: nil)
         recoverInterruptedRecordingIfNeeded()
+        recoverOrphanedAudioFiles()
         refreshStorage()
         refreshLibrary()
     }
@@ -217,11 +218,15 @@ final class RecorderStore: NSObject, ObservableObject, AVAudioRecorderDelegate, 
             size: fileSize(at: url),
             marks: marks
         )
-        saveMetadata(item)
-        clearInProgressCheckpoint()
+        let metadataSaved = saveMetadata(item)
+        if metadataSaved {
+            clearInProgressCheckpoint()
+            statusMessage = "Native recording saved locally · ready for LectureAI transcription"
+        } else {
+            statusMessage = "Audio is saved, but its library metadata could not be written yet · recovery checkpoint kept"
+        }
         lastSavedRecording = item
         state = .saved
-        statusMessage = "Native recording saved locally · ready for LectureAI transcription"
         recorder.delegate = nil
         self.recorder = nil
         currentURL = nil
@@ -485,19 +490,22 @@ final class RecorderStore: NSObject, ObservableObject, AVAudioRecorderDelegate, 
         let safe = cleanTitle
             .replacingOccurrences(of: "/", with: "-")
             .replacingOccurrences(of: ":", with: "-")
-        return Self.recordingsDirectory.appendingPathComponent("\(safe)_\(formatter.string(from: Date())).m4a")
+        let uniqueSuffix = UUID().uuidString.prefix(8)
+        return Self.recordingsDirectory.appendingPathComponent("\(safe)_\(formatter.string(from: Date()))_\(uniqueSuffix).m4a")
     }
 
     private func metadataURL(for audioURL: URL) -> URL {
         audioURL.deletingPathExtension().appendingPathExtension("lectureai.json")
     }
 
-    private func saveMetadata(_ recording: SavedRecording) {
+    @discardableResult
+    private func saveMetadata(_ recording: SavedRecording) -> Bool {
         do {
             let data = try JSONEncoder.lectureAI.encode(recording)
             try data.write(to: metadataURL(for: recording.audioURL), options: .atomic)
+            return true
         } catch {
-            statusMessage = "Audio saved, but its local metadata could not be written"
+            return false
         }
     }
 
@@ -553,10 +561,55 @@ final class RecorderStore: NSObject, ObservableObject, AVAudioRecorderDelegate, 
             size: size,
             marks: checkpoint.marks
         )
-        saveMetadata(recovered)
-        lastSavedRecording = recovered
-        clearInProgressCheckpoint()
-        statusMessage = "Recovered a lecture that was interrupted before Finish was tapped"
+
+        if saveMetadata(recovered) {
+            lastSavedRecording = recovered
+            clearInProgressCheckpoint()
+            statusMessage = "Recovered a lecture that was interrupted before Finish was tapped"
+        } else {
+            statusMessage = "Captured audio was found, but recovery metadata could not be written yet"
+        }
+    }
+
+    private func recoverOrphanedAudioFiles() {
+        let urls = (try? FileManager.default.contentsOfDirectory(
+            at: Self.recordingsDirectory,
+            includingPropertiesForKeys: [.creationDateKey, .contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        let supportedAudioExtensions = Set(["m4a", "mp3", "wav", "aac", "caf", "flac"])
+
+        let checkpointFileName: String? = {
+            guard let data = try? Data(contentsOf: Self.checkpointURL),
+                  let checkpoint = try? JSONDecoder.lectureAI.decode(InProgressRecordingCheckpoint.self, from: data) else {
+                return nil
+            }
+            return checkpoint.fileName
+        }()
+
+        for audioURL in urls {
+            let ext = audioURL.pathExtension.lowercased()
+            guard supportedAudioExtensions.contains(ext) else { continue }
+            guard audioURL.lastPathComponent != checkpointFileName else { continue }
+            guard !FileManager.default.fileExists(atPath: metadataURL(for: audioURL).path) else { continue }
+
+            let size = fileSize(at: audioURL)
+            guard size > 0, let duration = audioDuration(at: audioURL) else { continue }
+            let values = try? audioURL.resourceValues(forKeys: [.creationDateKey, .contentModificationDateKey])
+            let createdAt = values?.creationDate ?? values?.contentModificationDate ?? Date()
+            let baseTitle = audioURL.deletingPathExtension().lastPathComponent
+                .replacingOccurrences(of: "_", with: " ")
+            let recovered = SavedRecording(
+                id: UUID(),
+                title: baseTitle + " (Recovered)",
+                fileName: audioURL.lastPathComponent,
+                createdAt: createdAt,
+                duration: duration,
+                size: size,
+                marks: []
+            )
+            _ = saveMetadata(recovered)
+        }
     }
 
     private func refreshLibrary() {
