@@ -1,53 +1,80 @@
 import Foundation
+import NaturalLanguage
+
+struct NativeTranslationBatch: Hashable, Sendable {
+    let text: String
+    let sourceLanguageCode: String?
+}
 
 enum NativeTranslationChunker {
     static let defaultMaxCharacters = 2_800
 
-    static func chunks(
+    static func batches(
         from segments: [NativeTranscriptSegment],
         maxCharacters: Int = defaultMaxCharacters
-    ) -> [String] {
+    ) -> [NativeTranslationBatch] {
         guard maxCharacters > 0 else { return [] }
 
-        let texts = segments
-            .map(\.text)
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-
-        var result: [String] = []
-        var current = ""
+        var result: [NativeTranslationBatch] = []
+        var currentText = ""
+        var currentLanguage: String?
 
         func flushCurrent() {
-            let cleaned = current.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !cleaned.isEmpty { result.append(cleaned) }
-            current = ""
+            let cleaned = currentText.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !cleaned.isEmpty {
+                result.append(
+                    NativeTranslationBatch(
+                        text: cleaned,
+                        sourceLanguageCode: currentLanguage
+                    )
+                )
+            }
+            currentText = ""
+            currentLanguage = nil
         }
 
-        func appendPiece(_ piece: String) {
-            guard !piece.isEmpty else { return }
-            if current.isEmpty {
-                current = piece
-            } else if current.count + 1 + piece.count <= maxCharacters {
-                current += " " + piece
-            } else {
+        func appendPiece(_ piece: String, languageCode: String?) {
+            let cleaned = piece.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !cleaned.isEmpty else { return }
+
+            let sameLanguage = currentText.isEmpty || currentLanguage == languageCode
+            let fits = currentText.isEmpty || currentText.count + 1 + cleaned.count <= maxCharacters
+
+            if !sameLanguage || !fits {
                 flushCurrent()
-                current = piece
+            }
+
+            if currentText.isEmpty {
+                currentText = cleaned
+                currentLanguage = languageCode
+            } else {
+                currentText += " " + cleaned
             }
         }
 
-        for text in texts {
+        for segment in segments {
+            let text = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { continue }
+
+            let languageCode = dominantLanguageCode(for: text)
             if text.count <= maxCharacters {
-                appendPiece(text)
+                appendPiece(text, languageCode: languageCode)
                 continue
             }
 
             for piece in splitOversizedText(text, maxCharacters: maxCharacters) {
-                appendPiece(piece)
+                appendPiece(piece, languageCode: dominantLanguageCode(for: piece) ?? languageCode)
             }
         }
 
         flushCurrent()
         return result
+    }
+
+    private static func dominantLanguageCode(for text: String) -> String? {
+        let recognizer = NLLanguageRecognizer()
+        recognizer.processString(text)
+        return recognizer.dominantLanguage?.rawValue.lowercased()
     }
 
     private static func splitOversizedText(_ text: String, maxCharacters: Int) -> [String] {
