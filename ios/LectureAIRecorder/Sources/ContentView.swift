@@ -10,6 +10,10 @@ struct ContentView: View {
         recorder.state == .recording || recorder.state == .paused || recorder.state == .interrupted
     }
 
+    private var transcriptionActive: Bool {
+        lectureStore.activeRecordingID != nil
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -62,7 +66,7 @@ struct ContentView: View {
                 Label("Import recording", systemImage: "square.and.arrow.down")
             }
             .buttonStyle(.bordered)
-            .disabled(sessionActive)
+            .disabled(sessionActive || transcriptionActive)
         }
         .cardStyle()
     }
@@ -111,6 +115,12 @@ struct ContentView: View {
 
             controlButtons
 
+            if transcriptionActive && !sessionActive {
+                Label("Finish the active local transcription before starting or importing another recording. This keeps recording and the Core ML speech model from competing for device resources.", systemImage: "cpu")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             if sessionActive {
                 Label("LectureAI keeps the screen awake during this recording session. Quiet or distant audio never stops the recorder.", systemImage: "sun.max")
                     .font(.caption)
@@ -132,6 +142,7 @@ struct ContentView: View {
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
+            .disabled(transcriptionActive)
 
         case .recording:
             HStack {
@@ -280,6 +291,7 @@ struct ContentView: View {
                                 recorder.delete(item)
                             }
                             .buttonStyle(.borderless)
+                            .disabled(lectureStore.activeRecordingID == item.id)
                         }
                         .font(.caption)
                     }
