@@ -60,7 +60,7 @@ assert.match(phone, /arabicTranslation/);
 assert.match(transcription, /englishTranslation/);
 assert.match(transcription, /arabicTranslation/);
 
-// The new PWA generation must replace the old cached shell on installed iPhones.
-assert.match(serviceWorker, /lectureai-shell-v9/);
+// The current PWA generation must replace the previous cached shell on installed iPhones.
+assert.match(serviceWorker, /lectureai-shell-v10/);
 
 console.log('✓ multilingual transcription, far-field stereo audio preparation, local translation, and PWA refresh safeguards are present');
