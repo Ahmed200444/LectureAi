@@ -117,7 +117,13 @@ struct LectureDetailView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Text("WhisperKit v1.1.0 runs after the recording is saved. LectureAI does not use live streaming transcription, Safari, or a cloud speech API on iPhone/iPad.")
+            if lectureStore.activeRecordingID == recording.id {
+                Text("Keep LectureAI open while Core ML is transcribing. If iOS suspends or terminates heavy inference, the original audio and any previous completed transcript remain safe and can be retried.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            Text("WhisperKit v1.1.0 runs after the recording is saved. The first transcription may need internet access to download the Core ML model, but the lecture audio itself is not sent to a cloud speech service.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
