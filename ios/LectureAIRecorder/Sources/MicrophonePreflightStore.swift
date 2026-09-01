@@ -6,6 +6,7 @@ final class MicrophonePreflightStore: NSObject, ObservableObject, AVAudioPlayerD
     @Published private(set) var isTesting = false
     @Published private(set) var isPlaying = false
     @Published private(set) var sampleReady = false
+    @Published private(set) var samplePlaybackCompleted = false
     @Published private(set) var verified = false
     @Published private(set) var statusMessage = "Test the microphone before starting a lecture"
 
@@ -94,6 +95,7 @@ final class MicrophonePreflightStore: NSObject, ObservableObject, AVAudioPlayerD
             }
 
             sampleReady = true
+            samplePlaybackCompleted = false
             statusMessage = "Encoded audio verified · listen to the sample, then confirm you can hear it clearly"
             try? session.setActive(false, options: .notifyOthersOnDeactivation)
         } catch is CancellationError {
@@ -113,6 +115,7 @@ final class MicrophonePreflightStore: NSObject, ObservableObject, AVAudioPlayerD
 
     func playSample() {
         guard sampleReady, let sampleURL else { return }
+        samplePlaybackCompleted = false
         do {
             player?.stop()
             let session = AVAudioSession.sharedInstance()
@@ -127,14 +130,15 @@ final class MicrophonePreflightStore: NSObject, ObservableObject, AVAudioPlayerD
             isPlaying = true
             statusMessage = "Playing the exact encoded microphone sample"
         } catch {
-            isPlaying = false
-            player = nil
-            statusMessage = "Could not play the microphone sample: \(error.localizedDescription)"
+            resetSample(keepStatus: true)
+            verified = false
+            statusMessage = "Could not play the microphone sample: \(error.localizedDescription) · run the test again"
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         }
     }
 
     func confirmAudibleSample() {
-        guard sampleReady else { return }
+        guard sampleReady, samplePlaybackCompleted else { return }
         player?.stop()
         player = nil
         isPlaying = false
@@ -160,12 +164,13 @@ final class MicrophonePreflightStore: NSObject, ObservableObject, AVAudioPlayerD
         Task { @MainActor in
             self.isPlaying = false
             self.player = nil
-            self.statusMessage = flag
-                ? "Sample finished · confirm only if you clearly heard your voice"
-                : "Sample playback ended unexpectedly · run the microphone test again"
-            if !flag {
+            if flag {
+                self.samplePlaybackCompleted = true
+                self.statusMessage = "Sample finished · confirm only if you clearly heard your voice"
+            } else {
                 self.verified = false
-                self.sampleReady = false
+                self.resetSample(keepStatus: true)
+                self.statusMessage = "Sample playback ended unexpectedly · run the microphone test again"
             }
             try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         }
@@ -237,6 +242,7 @@ final class MicrophonePreflightStore: NSObject, ObservableObject, AVAudioPlayerD
         player = nil
         isPlaying = false
         sampleReady = false
+        samplePlaybackCompleted = false
         if let sampleURL {
             try? FileManager.default.removeItem(at: sampleURL)
         }
