@@ -190,5 +190,43 @@ final class NativeLectureTests: XCTestCase {
 
         let convertedDuration = Double(converted.length) / converted.processingFormat.sampleRate
         XCTAssertEqual(convertedDuration, 1.0, accuracy: 0.05)
+
+        let framesToInspect = AVAudioFrameCount(min(converted.length, 16_000))
+        guard framesToInspect > 0,
+              let convertedBuffer = AVAudioPCMBuffer(
+                pcmFormat: converted.processingFormat,
+                frameCapacity: framesToInspect
+              ) else {
+            XCTFail("Could not allocate converted-audio verification buffer")
+            return
+        }
+        try converted.read(into: convertedBuffer, frameCount: framesToInspect)
+        guard convertedBuffer.frameLength > 0,
+              let convertedChannels = convertedBuffer.floatChannelData else {
+            XCTFail("Converted transcription audio could not be decoded for verification")
+            return
+        }
+
+        let samples = convertedChannels[0]
+        let inspectedFrames = Int(convertedBuffer.frameLength)
+        var squareSum = 0.0
+        var positiveZeroCrossings = 0
+        var previousSample = samples[0]
+
+        for frame in 0..<inspectedFrames {
+            let sample = samples[frame]
+            squareSum += Double(sample * sample)
+            if frame > 0, previousSample <= 0, sample > 0 {
+                positiveZeroCrossings += 1
+            }
+            previousSample = sample
+        }
+
+        let rms = sqrt(squareSum / Double(inspectedFrames))
+        XCTAssertGreaterThan(rms, 0.02, "Converted transcription audio must retain a clearly non-silent signal")
+
+        let inspectedDuration = Double(inspectedFrames) / converted.processingFormat.sampleRate
+        let estimatedFrequency = Double(positiveZeroCrossings) / inspectedDuration
+        XCTAssertEqual(estimatedFrequency, 440, accuracy: 10, "Sample-rate conversion must preserve the source audio pitch")
     }
 }
