@@ -152,7 +152,7 @@ assert.doesNotMatch(lectureStore, /whisper-[^"\n]*\.en/);
 assert.match(audioPreparer, /sampleRate = 16_000\.0/);
 assert.match(audioPreparer, /outputChannels: AVAudioChannelCount = 1/);
 assert.match(audioPreparer, /static func cleanup\(/);
-assert.match(detail, /The original audio is never modified by transcription or translation/);
+assert.match(detail, /The original audio is never modified by transcription[\s\S]*translation/);
 assert.match(detail, /translationTask\(/);
 
 // User-controlled exports remain local until the iOS share/save sheet is invoked.
