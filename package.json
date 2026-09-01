@@ -11,7 +11,7 @@
     "start": "vite preview",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types tests/run.ts && node --experimental-strip-types tests/ios-safeguards.ts && node --experimental-strip-types tests/multilingual-safeguards.ts && node --experimental-strip-types tests/recording-interruption-safeguards.ts && node --experimental-strip-types tests/native-ios-safeguards.ts && node --experimental-strip-types tests/public-seo-safeguards.ts",
+    "test": "node --experimental-strip-types tests/run.ts && node --experimental-strip-types tests/ios-safeguards.ts && node --experimental-strip-types tests/multilingual-safeguards.ts && node --experimental-strip-types tests/recording-interruption-safeguards.ts && node --experimental-strip-types tests/export-safeguards.ts && node --experimental-strip-types tests/native-ios-safeguards.ts && node --experimental-strip-types tests/public-seo-safeguards.ts",
     "check": "npm run typecheck && npm run lint && npm run test && npm run build"
   },
   "dependencies": {
@@ -28,8 +28,6 @@
     "@types/node": "22.19.19",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
-    "@vitejs/plugin-react": "6.0.2",
-    "eslint": "9.39.4",
     "fake-indexeddb": "^6.2.5",
     "tailwindcss": "4.2.1",
     "typescript": "5.9.3",
