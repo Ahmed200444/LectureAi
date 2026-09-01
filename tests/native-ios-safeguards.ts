@@ -34,8 +34,13 @@ assert.doesNotMatch(recorder, /maximumDuration|maxDuration|minuteQuota|monthlyQu
 
 // Permission alone can never unlock a lecture. A temporary AAC sample is encoded,
 // decoded from the saved file, checked for non-silent PCM, played back, and confirmed.
+// The preflight busy state is set before the permission await so double taps cannot
+// create competing microphone tests.
 assert.match(preflight, /AVAudioRecorder/);
 assert.match(preflight, /kAudioFormatMPEG4AAC/);
+assert.match(preflight, /guard !isTesting else \{ return \}/);
+assert.match(preflight, /isTesting = true/);
+assert.match(preflight, /defer \{ isTesting = false \}/);
 assert.match(preflight, /validateEncodedSample/);
 assert.match(preflight, /AVAudioFile\(forReading:/);
 assert.match(preflight, /peakAmplitude >= 0\.0001/);
@@ -43,9 +48,12 @@ assert.match(preflight, /sampleReady = true/);
 assert.match(preflight, /func playSample\(\)/);
 assert.match(preflight, /func confirmAudibleSample\(\)/);
 assert.match(preflight, /Microphone verified with real encoded, audible audio/);
+assert.match(preflight, /reason == \.categoryChange/);
 assert.match(preflight, /Audio route changed · test the microphone again before recording/);
-assert.match(view, /guard preflight\.verified else \{ return \}/);
-assert.match(view, /disabled\(transcriptionActive \|\| !preflight\.verified/);
+assert.match(view, /guard preflight\.verified, !startingNativeRecording else \{ return \}/);
+assert.match(view, /startingNativeRecording = true/);
+assert.match(view, /Task \{ @MainActor in/);
+assert.match(view, /disabled\(transcriptionActive \|\| !preflight\.verified[\s\S]*startingNativeRecording\)/);
 assert.match(view, /I can hear it clearly/);
 assert.match(view, /real encoded sample/);
 
@@ -77,6 +85,16 @@ assert.match(audioPreparer, /outputChannels: AVAudioChannelCount = 1/);
 assert.match(audioPreparer, /static func cleanup\(/);
 assert.match(detail, /The original audio is never modified by transcription or translation/);
 assert.match(detail, /translationTask\(/);
+
+// User-controlled exports remain local until the iOS share/save sheet is invoked.
+assert.match(detail, /LectureTextExport: Transferable/);
+assert.match(detail, /FileRepresentation\(exportedContentType: \.plainText\)/);
+assert.match(detail, /Export recording/);
+assert.match(detail, /Export transcript/);
+assert.match(detail, /Export notes/);
+assert.match(detail, /LectureAI transcript/);
+assert.match(detail, /NativeNotesGenerator\.timestamp\(segment\.startTime\)/);
+assert.match(detail, /LectureAI notes/);
 
 // Project-level iPhone/iPad and background-audio configuration.
 assert.match(project, /NSMicrophoneUsageDescription/);
