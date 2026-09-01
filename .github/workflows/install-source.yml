@@ -28,6 +28,9 @@ jobs:
             sleep 5
           done
 
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
+
       - run: npm run typecheck
       - run: npm run lint
       - run: npm run test
