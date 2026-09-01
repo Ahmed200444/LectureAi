@@ -34,6 +34,18 @@ assert.match(recorder, /UIApplication\.shared\.isIdleTimerDisabled/);
 assert.doesNotMatch(recorder, /record\(forDuration:/);
 assert.doesNotMatch(recorder, /maximumDuration|maxDuration|minuteQuota|monthlyQuota/i);
 
+// Locking the iPhone/iPad sends the app to background. The background handler may persist
+// its recovery checkpoint, but it must never pause/stop the recorder, deactivate the audio
+// session, or mutate the recording state. Together with UIBackgroundModes=audio, this is
+// the code/configuration gate that allows an active native recording to continue with the
+// screen locked, subject only to normal iOS interruptions or the app/device being terminated.
+const backgroundStart = recorder.indexOf('@objc private func handleDidEnterBackground');
+const terminateStart = recorder.indexOf('@objc private func handleWillTerminate', backgroundStart);
+assert.ok(backgroundStart >= 0 && terminateStart > backgroundStart, 'Background lifecycle handlers must remain present');
+const backgroundHandler = recorder.slice(backgroundStart, terminateStart);
+assert.match(backgroundHandler, /persistInProgressCheckpoint\(\)/);
+assert.doesNotMatch(backgroundHandler, /\.stop\(\)|\.pause\(\)|deactivateAudioSession\(\)|setActive\(false|state\s*=/);
+
 // RecorderStore itself owns a MainActor startup gate before the first await. The UI also
 // flips its immediate guard before creating the Task, so both data and presentation layers
 // reject duplicate Start taps during permission/session setup.
