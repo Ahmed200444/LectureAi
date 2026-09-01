@@ -13,6 +13,7 @@ final class MicrophonePreflightStore: NSObject, ObservableObject, AVAudioPlayerD
     private var testRecorder: AVAudioRecorder?
     private var player: AVAudioPlayer?
     private var sampleURL: URL?
+    private var activeTestID: UUID?
 
     override init() {
         super.init()
@@ -32,19 +33,27 @@ final class MicrophonePreflightStore: NSObject, ObservableObject, AVAudioPlayerD
     func runTest() async {
         guard !isTesting else { return }
         isTesting = true
-        defer { isTesting = false }
+        let testID = UUID()
+        activeTestID = testID
+        defer {
+            if activeTestID == testID {
+                activeTestID = nil
+            }
+            isTesting = false
+        }
 
         resetSample(keepStatus: true)
         verified = false
         statusMessage = "Preparing microphone test…"
 
-        let allowed = await requestMicrophonePermission()
-        guard allowed else {
-            statusMessage = "Microphone permission is required for the preflight test"
-            return
-        }
-
         do {
+            let allowed = await requestMicrophonePermission()
+            try ensureActiveTest(testID)
+            guard allowed else {
+                statusMessage = "Microphone permission is required for the preflight test"
+                return
+            }
+
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(.record, mode: .default)
             try session.setPreferredSampleRate(48_000)
@@ -53,6 +62,7 @@ final class MicrophonePreflightStore: NSObject, ObservableObject, AVAudioPlayerD
             if let builtIn = session.availableInputs?.first(where: { $0.portType == .builtInMic }) {
                 try session.setPreferredInput(builtIn)
             }
+            try ensureActiveTest(testID)
 
             let url = FileManager.default.temporaryDirectory
                 .appendingPathComponent("LectureAI-mic-test-\(UUID().uuidString)")
@@ -78,10 +88,12 @@ final class MicrophonePreflightStore: NSObject, ObservableObject, AVAudioPlayerD
             for _ in 0..<20 {
                 try Task.checkCancellation()
                 try await Task.sleep(nanoseconds: 100_000_000)
+                try ensureActiveTest(testID)
             }
 
             recorder.stop()
             testRecorder = nil
+            try ensureActiveTest(testID)
 
             let proof = try validateEncodedSample(at: url)
             guard proof.duration >= 1.5 else {
@@ -93,6 +105,7 @@ final class MicrophonePreflightStore: NSObject, ObservableObject, AVAudioPlayerD
             guard proof.peakAmplitude >= 0.0001 else {
                 throw MicrophonePreflightError.digitalSilence
             }
+            try ensureActiveTest(testID)
 
             sampleReady = true
             samplePlaybackCompleted = false
@@ -103,6 +116,13 @@ final class MicrophonePreflightStore: NSObject, ObservableObject, AVAudioPlayerD
             testRecorder = nil
             resetSample(keepStatus: false)
             statusMessage = "Microphone test cancelled"
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        } catch MicrophonePreflightError.routeChangedDuringTest {
+            testRecorder?.stop()
+            testRecorder = nil
+            resetSample(keepStatus: true)
+            verified = false
+            statusMessage = "Audio route changed during the microphone test · run the test again before recording"
             try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         } catch {
             testRecorder?.stop()
@@ -154,10 +174,16 @@ final class MicrophonePreflightStore: NSObject, ObservableObject, AVAudioPlayerD
     }
 
     func resetForRouteChange() {
-        guard !isTesting else { return }
         verified = false
-        resetSample(keepStatus: false)
-        statusMessage = "Audio route changed · test the microphone again before recording"
+        if isTesting {
+            activeTestID = nil
+            testRecorder?.stop()
+            testRecorder = nil
+        }
+        resetSample(keepStatus: true)
+        statusMessage = isTesting
+            ? "Audio route changed during the microphone test · run the test again before recording"
+            : "Audio route changed · test the microphone again before recording"
     }
 
     nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
@@ -184,13 +210,19 @@ final class MicrophonePreflightStore: NSObject, ObservableObject, AVAudioPlayerD
         // and `.playback` so the user can listen to the exact encoded preflight sample.
         // iOS may emit a route-change notification for that category transition even
         // though the physical microphone route did not change. Keep the verified sample
-        // in that case, but still invalidate it for real route/device changes.
+        // in that case, but invalidate/cancel an active test for real route changes.
         if reason == .categoryChange {
             return
         }
 
         Task { @MainActor in
             self.resetForRouteChange()
+        }
+    }
+
+    private func ensureActiveTest(_ testID: UUID) throws {
+        guard activeTestID == testID else {
+            throw MicrophonePreflightError.routeChangedDuringTest
         }
     }
 
@@ -260,6 +292,7 @@ private enum MicrophonePreflightError: LocalizedError {
     case digitalSilence
     case couldNotDecode
     case couldNotPlay
+    case routeChangedDuringTest
 
     var errorDescription: String? {
         switch self {
@@ -275,6 +308,8 @@ private enum MicrophonePreflightError: LocalizedError {
             return "LectureAI could not decode the encoded microphone sample. Run the test again."
         case .couldNotPlay:
             return "LectureAI could not play the encoded microphone sample. Run the test again."
+        case .routeChangedDuringTest:
+            return "The audio route changed during the microphone test. Run the test again."
         }
     }
 }
