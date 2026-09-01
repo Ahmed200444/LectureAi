@@ -32,8 +32,30 @@ assert.match(recorder, /UIApplication\.shared\.isIdleTimerDisabled/);
 assert.doesNotMatch(recorder, /record\(forDuration:/);
 assert.doesNotMatch(recorder, /maximumDuration|maxDuration|minuteQuota|monthlyQuota/i);
 
+// RecorderStore itself owns a MainActor startup gate before the first await. The UI also
+// flips its immediate guard before creating the Task, so both data and presentation layers
+// reject duplicate Start taps during permission/session setup.
+assert.match(recorder, /@Published private\(set\) var isStartingRecording = false/);
+assert.match(recorder, /@MainActor\s+func startRecording\(\) async/);
+assert.match(recorder, /guard !isStartingRecording,[\s\S]*state != \.interrupted else \{ return \}/);
+assert.match(recorder, /isStartingRecording = true/);
+assert.match(recorder, /defer \{ isStartingRecording = false \}/);
+assert.match(view, /guard preflight\.verified,[\s\S]*!recorder\.isStartingRecording,[\s\S]*!recorder\.hasUnresolvedRecovery else \{ return \}/);
+assert.match(view, /startingNativeRecording = true/);
+assert.match(view, /Task \{ @MainActor in/);
+
+// Interrupted-file recovery is truthful: a nonzero but undecodable AAC is never promoted
+// to a normal recovered lecture and its checkpoint cannot be overwritten by a new lecture.
+assert.match(recorder, /@Published private\(set\) var hasUnresolvedRecovery = false/);
+assert.match(recorder, /guard let recoveredDuration = audioDuration\(at: audioURL\) else/);
+assert.doesNotMatch(recorder, /audioDuration\(at: audioURL\) \?\? checkpoint\.lastKnownDuration/);
+assert.match(recorder, /hasUnresolvedRecovery = true/);
+assert.match(recorder, /recovery checkpoint kept and new recording is blocked/);
+assert.match(view, /recorder\.hasUnresolvedRecovery/);
+assert.match(view, /recovery checkpoint is still intact/);
+
 // Permission alone can never unlock a lecture. A temporary AAC sample is encoded,
-// decoded from the saved file, checked for non-silent PCM, played back, and confirmed.
+// decoded from the saved file, checked for non-silent PCM, played fully, and confirmed.
 // The preflight busy state is set before the permission await so double taps cannot
 // create competing microphone tests.
 assert.match(preflight, /AVAudioRecorder/);
@@ -45,17 +67,18 @@ assert.match(preflight, /validateEncodedSample/);
 assert.match(preflight, /AVAudioFile\(forReading:/);
 assert.match(preflight, /peakAmplitude >= 0\.0001/);
 assert.match(preflight, /sampleReady = true/);
+assert.match(preflight, /@Published private\(set\) var samplePlaybackCompleted = false/);
 assert.match(preflight, /func playSample\(\)/);
-assert.match(preflight, /func confirmAudibleSample\(\)/);
+assert.match(preflight, /samplePlaybackCompleted = false/);
+assert.match(preflight, /audioPlayerDidFinishPlaying/);
+assert.match(preflight, /samplePlaybackCompleted = true/);
+assert.match(preflight, /guard sampleReady, samplePlaybackCompleted else \{ return \}/);
 assert.match(preflight, /Microphone verified with real encoded, audible audio/);
 assert.match(preflight, /reason == \.categoryChange/);
 assert.match(preflight, /Audio route changed · test the microphone again before recording/);
-assert.match(view, /guard preflight\.verified, !startingNativeRecording else \{ return \}/);
-assert.match(view, /startingNativeRecording = true/);
-assert.match(view, /Task \{ @MainActor in/);
-assert.match(view, /disabled\(transcriptionActive \|\| !preflight\.verified[\s\S]*startingNativeRecording\)/);
-assert.match(view, /I can hear it clearly/);
-assert.match(view, /real encoded sample/);
+assert.match(view, /!preflight\.samplePlaybackCompleted/);
+assert.match(view, /Listen fully first/);
+assert.match(view, /successfully plays that saved sample to completion/);
 
 // The unified app owns import, background capture, playback, deletion confirmation, and lecture opening.
 assert.match(view, /Import recording/);
