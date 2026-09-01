@@ -303,6 +303,46 @@ final class NativeLectureStore: ObservableObject {
         persist(record)
     }
 
+    func updateTranscriptSegment(recordingID: UUID, segmentID: UUID, text: String) {
+        var record = transcript(for: recordingID)
+        guard record.state == .done,
+              let index = record.segments.firstIndex(where: { $0.id == segmentID }) else { return }
+
+        let oldSegment = record.segments[index]
+        let replacement = NativeTranscriptSegment(
+            id: oldSegment.id,
+            startTime: oldSegment.startTime,
+            endTime: oldSegment.endTime,
+            text: text
+        )
+        guard replacement.text != oldSegment.text else { return }
+
+        record.segments[index] = replacement
+        record.updatedAt = Date()
+        record.statusMessage = "Transcript edit saved locally"
+
+        // Any prior translation may no longer match the corrected source text. Preserve
+        // only the same-language view, which is simply the current edited transcript.
+        let joinedText = record.segments.map(\.text).filter { !$0.isEmpty }.joined(separator: " ")
+        let normalizedLanguage = record.detectedLanguage?.lowercased() ?? ""
+        record.englishText = normalizedLanguage.hasPrefix("en") ? joinedText : nil
+        record.arabicText = normalizedLanguage.hasPrefix("ar") ? joinedText : nil
+
+        transcripts[recordingID] = record
+        persist(record)
+    }
+
+    func updateNotes(recordingID: UUID, notes: String) {
+        var record = transcript(for: recordingID)
+        guard record.state == .done else { return }
+        guard notes != record.notes else { return }
+        record.notes = notes
+        record.updatedAt = Date()
+        record.statusMessage = "Notes edit saved locally"
+        transcripts[recordingID] = record
+        persist(record)
+    }
+
     func deleteTranscript(for recordingID: UUID) {
         transcripts.removeValue(forKey: recordingID)
         try? FileManager.default.removeItem(at: transcriptURL(for: recordingID))
