@@ -32,7 +32,17 @@ assert.match(recorder, /recoverOrphanedAudioFiles\(\)/);
 assert.match(recorder, /guard recorder\.record\(\)/);
 assert.match(recorder, /UIApplication\.shared\.isIdleTimerDisabled/);
 assert.doesNotMatch(recorder, /record\(forDuration:/);
-assert.doesNotMatch(recorder, /maximumDuration|maxDuration|minuteQuota|monthlyQuota/i);
+assert.doesNotMatch(recorder, /maximumDuration|maxDuration|minimumDuration|minDuration|minuteQuota|monthlyQuota/i);
+
+// There is no fixed native-library count limit. Each recording gets a UUID-backed unique
+// filename, the store enumerates every saved metadata file, and the UI renders the full array.
+// Practical limits are device storage/resources, not a LectureAI recording-count policy.
+assert.match(recorder, /let uniqueSuffix = UUID\(\)\.uuidString\.prefix\(8\)/);
+assert.match(recorder, /contentsOfDirectory\([\s\S]*Self\.recordingsDirectory/);
+assert.match(recorder, /recordings = urls[\s\S]*\.filter \{ \$0\.pathExtension == "json"/);
+assert.match(view, /ForEach\(recorder\.recordings\)/);
+assert.doesNotMatch(recorder, /maxRecordings|recordingLimit|libraryLimit/i);
+assert.doesNotMatch(view, /prefix\(\d+\)|suffix\(\d+\)/);
 
 // Locking the iPhone/iPad sends the app to background. The background handler may persist
 // its recovery checkpoint, but it must never pause/stop the recorder, deactivate the audio
