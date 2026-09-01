@@ -55,6 +55,7 @@ final class RecorderStore: NSObject, ObservableObject, AVAudioRecorderDelegate, 
     @Published var keepScreenAwake = true
     @Published private(set) var isStartingRecording = false
     @Published private(set) var hasUnresolvedRecovery = false
+    @Published private(set) var unresolvedRecoveryURL: URL?
 
     private var recorder: AVAudioRecorder?
     private var player: AVAudioPlayer?
@@ -211,28 +212,65 @@ final class RecorderStore: NSObject, ObservableObject, AVAudioRecorderDelegate, 
         guard let recorder, let url = currentURL else { return }
         finishing = true
         let lastKnownDuration = max(duration, recorder.currentTime)
+
+        // Persist the freshest checkpoint before stopping. If final AAC decoding or
+        // metadata writing fails, the exact file/title/marks remain recoverable.
+        duration = lastKnownDuration
+        persistInProgressCheckpoint()
         recorder.stop()
-        duration = audioDuration(at: url) ?? lastKnownDuration
         level = 0
         meterTimer?.invalidate()
         meterTimer = nil
 
+        guard let decodedDuration = audioDuration(at: url) else {
+            // Never label a nonzero but undecodable live capture as a normal saved lecture.
+            // Keep the raw file + checkpoint and require an explicit recovery decision.
+            recorder.delegate = nil
+            self.recorder = nil
+            currentURL = nil
+            recorderCanResume = true
+            hasUnresolvedRecovery = true
+            unresolvedRecoveryURL = url
+            state = .failed("Captured audio needs recovery")
+            statusMessage = "Captured audio was preserved but could not be decoded · export, retry recovery, or explicitly discard it before starting another lecture"
+            deactivateAudioSession()
+            applyIdleTimerPolicy()
+            refreshLibrary()
+            refreshStorage()
+            return
+        }
+
+        duration = decodedDuration
         let item = SavedRecording(
             id: currentID,
             title: cleanTitle,
             fileName: url.lastPathComponent,
             createdAt: currentCreatedAt,
-            duration: duration,
+            duration: decodedDuration,
             size: fileSize(at: url),
             marks: marks
         )
-        let metadataSaved = saveMetadata(item)
-        if metadataSaved {
-            clearInProgressCheckpoint()
-            statusMessage = "Native recording saved locally · ready for LectureAI transcription"
-        } else {
-            statusMessage = "Audio is saved, but its library metadata could not be written yet · recovery checkpoint kept"
+
+        guard saveMetadata(item) else {
+            // The audio is decodable, but losing this checkpoint could lose title/marks.
+            // Treat metadata failure as unresolved recovery until a retry succeeds.
+            recorder.delegate = nil
+            self.recorder = nil
+            currentURL = nil
+            recorderCanResume = true
+            hasUnresolvedRecovery = true
+            unresolvedRecoveryURL = url
+            state = .failed("Recording metadata needs recovery")
+            statusMessage = "Audio is intact, but its library metadata could not be written · recovery checkpoint kept"
+            deactivateAudioSession()
+            applyIdleTimerPolicy()
+            refreshLibrary()
+            refreshStorage()
+            return
         }
+
+        clearInProgressCheckpoint()
+        statusMessage = "Native recording saved locally · ready for LectureAI transcription"
         lastSavedRecording = item
         state = .saved
         recorder.delegate = nil
@@ -252,6 +290,37 @@ final class RecorderStore: NSObject, ObservableObject, AVAudioRecorderDelegate, 
         clearInProgressCheckpoint()
         resetSessionState()
         statusMessage = "Recording discarded"
+    }
+
+    func retryUnresolvedRecovery() {
+        guard hasUnresolvedRecovery else { return }
+        hasUnresolvedRecovery = false
+        unresolvedRecoveryURL = nil
+        state = .idle
+        statusMessage = "Retrying preserved recording recovery…"
+        recoverInterruptedRecordingIfNeeded()
+        refreshLibrary()
+        refreshStorage()
+    }
+
+    func discardUnresolvedRecovery() {
+        guard hasUnresolvedRecovery else { return }
+
+        var audioURL = unresolvedRecoveryURL
+        if audioURL == nil,
+           let data = try? Data(contentsOf: Self.checkpointURL),
+           let checkpoint = try? JSONDecoder.lectureAI.decode(InProgressRecordingCheckpoint.self, from: data) {
+            audioURL = Self.recordingsDirectory.appendingPathComponent(checkpoint.fileName)
+        }
+
+        if let audioURL {
+            try? FileManager.default.removeItem(at: audioURL)
+            try? FileManager.default.removeItem(at: metadataURL(for: audioURL))
+        }
+        clearInProgressCheckpoint()
+        resetSessionState()
+        statusMessage = "Preserved recovery audio discarded by your explicit confirmation"
+        refreshLibrary()
     }
 
     func play(_ recording: SavedRecording, from startTime: TimeInterval = 0) {
@@ -529,6 +598,7 @@ final class RecorderStore: NSObject, ObservableObject, AVAudioRecorderDelegate, 
     private func clearInProgressCheckpoint() {
         try? FileManager.default.removeItem(at: Self.checkpointURL)
         hasUnresolvedRecovery = false
+        unresolvedRecoveryURL = nil
     }
 
     private func recoverInterruptedRecordingIfNeeded() {
@@ -552,15 +622,16 @@ final class RecorderStore: NSObject, ObservableObject, AVAudioRecorderDelegate, 
 
         guard let recoveredDuration = audioDuration(at: audioURL) else {
             // Never convert a nonzero-but-undecodable AAC into a normal library item.
-            // Preserve both the raw file and checkpoint, and block a new recording from
-            // overwriting that checkpoint until the recovery condition is resolved.
+            // Preserve both the raw file and checkpoint. The recovery gate lets the user
+            // export the raw capture, retry, or explicitly discard it; nothing is deleted
+            // automatically merely because iOS cannot decode it.
             hasUnresolvedRecovery = true
+            unresolvedRecoveryURL = audioURL
             state = .failed("Interrupted recording needs recovery")
-            statusMessage = "Interrupted audio was preserved but could not be decoded yet · recovery checkpoint kept and new recording is blocked"
+            statusMessage = "Interrupted audio was preserved but could not be decoded · export, retry recovery, or explicitly discard it"
             return
         }
 
-        hasUnresolvedRecovery = false
         let recovered = SavedRecording(
             id: checkpoint.id,
             title: checkpoint.title + " (Recovered)",
@@ -574,9 +645,13 @@ final class RecorderStore: NSObject, ObservableObject, AVAudioRecorderDelegate, 
         if saveMetadata(recovered) {
             lastSavedRecording = recovered
             clearInProgressCheckpoint()
+            state = .saved
             statusMessage = "Recovered a lecture that was interrupted before Finish was tapped"
         } else {
-            statusMessage = "Captured audio was found, but recovery metadata could not be written yet"
+            hasUnresolvedRecovery = true
+            unresolvedRecoveryURL = audioURL
+            state = .failed("Recording metadata needs recovery")
+            statusMessage = "Captured audio is decodable, but recovery metadata could not be written yet · checkpoint kept"
         }
     }
 
