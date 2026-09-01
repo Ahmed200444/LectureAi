@@ -32,6 +32,9 @@ struct LectureDetailView: View {
     @EnvironmentObject private var recorder: RecorderStore
     @EnvironmentObject private var lectureStore: NativeLectureStore
     @State private var mode: TranscriptViewMode = .original
+    @State private var editingTranscript = false
+    @State private var editingNotes = false
+    @State private var notesDraft = ""
 
     private var transcript: NativeLectureTranscript {
         lectureStore.transcript(for: recording.id)
@@ -60,7 +63,8 @@ struct LectureDetailView: View {
 
     private var notesExport: LectureTextExport {
         let header = "\(recording.title)\nLectureAI notes\n\n"
-        return LectureTextExport(fileName: "\(safeExportBaseName)-notes", text: header + transcript.notes)
+        let currentNotes = editingNotes ? notesDraft : transcript.notes
+        return LectureTextExport(fileName: "\(safeExportBaseName)-notes", text: header + currentNotes)
     }
 
     var body: some View {
@@ -78,6 +82,21 @@ struct LectureDetailView: View {
         .navigationTitle(recording.title)
         .navigationBarTitleDisplayMode(.inline)
         .background(Color(.systemGroupedBackground))
+        .onAppear {
+            if notesDraft.isEmpty {
+                notesDraft = transcript.notes
+            }
+        }
+        .onChange(of: transcript.notes) { _, value in
+            if !editingNotes {
+                notesDraft = value
+            }
+        }
+        .onDisappear {
+            if editingNotes {
+                lectureStore.updateNotes(recordingID: recording.id, notes: notesDraft)
+            }
+        }
     }
 
     private var audioCard: some View {
@@ -87,7 +106,7 @@ struct LectureDetailView: View {
             Text("\(NativeNotesGenerator.timestamp(recording.duration)) · \(formatBytesForDetail(recording.size))")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            Text("The original audio is never modified by transcription or translation.")
+            Text("The original audio is never modified by transcription, transcript edits, notes edits, or translation.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -175,10 +194,29 @@ struct LectureDetailView: View {
                 Text("Transcript")
                     .font(.headline)
                 Spacer()
+                if mode == .original {
+                    Button {
+                        editingTranscript.toggle()
+                    } label: {
+                        Label(editingTranscript ? "Done editing" : "Edit transcript", systemImage: editingTranscript ? "checkmark" : "pencil")
+                    }
+                    .buttonStyle(.bordered)
+                }
                 ShareLink(item: transcriptExport, preview: SharePreview("\(recording.title) transcript")) {
                     Label("Export transcript", systemImage: "square.and.arrow.up")
                 }
                 .buttonStyle(.bordered)
+                .disabled(editingTranscript)
+            }
+
+            if editingTranscript {
+                Text("Edit any transcript part below. Leaving a field or tapping Done editing saves the correction locally. Export is re-enabled after edits are saved.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("Tap any timestamp to play that exact part of the original recording.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
 
             Picker("Transcript view", selection: $mode) {
@@ -187,6 +225,7 @@ struct LectureDetailView: View {
                 }
             }
             .pickerStyle(.segmented)
+            .disabled(editingTranscript)
 
             switch mode {
             case .original:
@@ -203,7 +242,7 @@ struct LectureDetailView: View {
     private var originalTranscript: some View {
         VStack(alignment: .leading, spacing: 12) {
             ForEach(transcript.segments) { segment in
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 6) {
                     Button {
                         recorder.play(recording, from: segment.startTime)
                     } label: {
@@ -214,9 +253,19 @@ struct LectureDetailView: View {
                     .foregroundStyle(.secondary)
                     .accessibilityLabel("Play recording from \(NativeNotesGenerator.timestamp(segment.startTime))")
 
-                    Text(segment.text)
-                        .font(.body)
-                        .textSelection(.enabled)
+                    if editingTranscript {
+                        NativeTranscriptSegmentEditor(segment: segment) { correctedText in
+                            lectureStore.updateTranscriptSegment(
+                                recordingID: recording.id,
+                                segmentID: segment.id,
+                                text: correctedText
+                            )
+                        }
+                    } else {
+                        Text(segment.text)
+                            .font(.body)
+                            .textSelection(.enabled)
+                    }
                 }
                 if segment.id != transcript.segments.last?.id {
                     Divider()
@@ -258,17 +307,81 @@ struct LectureDetailView: View {
                 Text("Lecture notes")
                     .font(.headline)
                 Spacer()
+                Button {
+                    if editingNotes {
+                        lectureStore.updateNotes(recordingID: recording.id, notes: notesDraft)
+                        editingNotes = false
+                    } else {
+                        notesDraft = transcript.notes
+                        editingNotes = true
+                    }
+                } label: {
+                    Label(editingNotes ? "Save notes" : "Edit notes", systemImage: editingNotes ? "checkmark" : "pencil")
+                }
+                .buttonStyle(.bordered)
+
                 ShareLink(item: notesExport, preview: SharePreview("\(recording.title) notes")) {
                     Label("Export notes", systemImage: "square.and.arrow.up")
                 }
                 .buttonStyle(.bordered)
             }
-            Text(transcript.notes)
-                .font(.body)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .textSelection(.enabled)
+
+            if editingNotes {
+                TextEditor(text: $notesDraft)
+                    .font(.body)
+                    .frame(minHeight: 300)
+                    .padding(8)
+                    .background(Color(.tertiarySystemGroupedBackground))
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .accessibilityLabel("Editable lecture notes")
+
+                Text("Notes stay local and are saved when you tap Save notes or leave this lecture.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text(transcript.notes)
+                    .font(.body)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+            }
         }
         .nativeCard()
+    }
+}
+
+private struct NativeTranscriptSegmentEditor: View {
+    let segment: NativeTranscriptSegment
+    let onSave: (String) -> Void
+
+    @State private var draft: String
+    @FocusState private var focused: Bool
+
+    init(segment: NativeTranscriptSegment, onSave: @escaping (String) -> Void) {
+        self.segment = segment
+        self.onSave = onSave
+        _draft = State(initialValue: segment.text)
+    }
+
+    var body: some View {
+        TextField("Transcript segment", text: $draft, axis: .vertical)
+            .lineLimit(2...10)
+            .textFieldStyle(.roundedBorder)
+            .focused($focused)
+            .onChange(of: focused) { _, isFocused in
+                if !isFocused {
+                    saveIfNeeded()
+                }
+            }
+            .onDisappear {
+                saveIfNeeded()
+            }
+            .accessibilityLabel("Edit transcript at \(NativeNotesGenerator.timestamp(segment.startTime))")
+    }
+
+    private func saveIfNeeded() {
+        if draft != segment.text {
+            onSave(draft)
+        }
     }
 }
 
