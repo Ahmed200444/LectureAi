@@ -5,6 +5,8 @@ const recorder = readFileSync(new URL('../ios/LectureAIRecorder/Sources/Recorder
 const recorderDelete = readFileSync(new URL('../ios/LectureAIRecorder/Sources/RecorderStore+Delete.swift', import.meta.url), 'utf8');
 const preflight = readFileSync(new URL('../ios/LectureAIRecorder/Sources/MicrophonePreflightStore.swift', import.meta.url), 'utf8');
 const view = readFileSync(new URL('../ios/LectureAIRecorder/Sources/ContentView.swift', import.meta.url), 'utf8');
+const app = readFileSync(new URL('../ios/LectureAIRecorder/Sources/LectureAIRecorderApp.swift', import.meta.url), 'utf8');
+const recoveryView = readFileSync(new URL('../ios/LectureAIRecorder/Sources/RecoveryResolutionView.swift', import.meta.url), 'utf8');
 const detail = readFileSync(new URL('../ios/LectureAIRecorder/Sources/LectureDetailView.swift', import.meta.url), 'utf8');
 const lectureStore = readFileSync(new URL('../ios/LectureAIRecorder/Sources/NativeLectureStore.swift', import.meta.url), 'utf8');
 const audioPreparer = readFileSync(new URL('../ios/LectureAIRecorder/Sources/TranscriptionAudioPreparer.swift', import.meta.url), 'utf8');
@@ -44,15 +46,33 @@ assert.match(view, /guard preflight\.verified,[\s\S]*!recorder\.isStartingRecord
 assert.match(view, /startingNativeRecording = true/);
 assert.match(view, /Task \{ @MainActor in/);
 
-// Interrupted-file recovery is truthful: a nonzero but undecodable AAC is never promoted
-// to a normal recovered lecture and its checkpoint cannot be overwritten by a new lecture.
+// Interrupted-file recovery is truthful in both launch and live-save paths. A nonzero but
+// undecodable AAC is never promoted to a normal lecture, and metadata failure cannot erase
+// the only checkpoint carrying its title/marks.
 assert.match(recorder, /@Published private\(set\) var hasUnresolvedRecovery = false/);
+assert.match(recorder, /@Published private\(set\) var unresolvedRecoveryURL: URL\?/);
+assert.match(recorder, /guard let decodedDuration = audioDuration\(at: url\) else/);
+assert.doesNotMatch(recorder, /audioDuration\(at: url\) \?\? lastKnownDuration/);
 assert.match(recorder, /guard let recoveredDuration = audioDuration\(at: audioURL\) else/);
 assert.doesNotMatch(recorder, /audioDuration\(at: audioURL\) \?\? checkpoint\.lastKnownDuration/);
+assert.match(recorder, /guard saveMetadata\(item\) else/);
 assert.match(recorder, /hasUnresolvedRecovery = true/);
-assert.match(recorder, /recovery checkpoint kept and new recording is blocked/);
+assert.match(recorder, /unresolvedRecoveryURL = url/);
+assert.match(recorder, /unresolvedRecoveryURL = audioURL/);
 assert.match(view, /recorder\.hasUnresolvedRecovery/);
-assert.match(view, /recovery checkpoint is still intact/);
+
+// A preserved undecodable capture can never permanently trap the user. It is exposed only
+// through an explicit recovery gate with export, retry, and confirmed discard controls.
+assert.match(recorder, /func retryUnresolvedRecovery\(\)/);
+assert.match(recorder, /func discardUnresolvedRecovery\(\)/);
+assert.match(app, /if recorder\.hasUnresolvedRecovery/);
+assert.match(app, /RecoveryResolutionView\(\)/);
+assert.match(recoveryView, /ShareLink\(item: url\)/);
+assert.match(recoveryView, /Export preserved audio/);
+assert.match(recoveryView, /Retry recovery/);
+assert.match(recoveryView, /Discard preserved recovery/);
+assert.match(recoveryView, /confirmationDialog\(/);
+assert.match(recoveryView, /Nothing is deleted automatically/);
 
 // Permission alone can never unlock a lecture. A temporary AAC sample is encoded,
 // decoded from the saved file, checked for non-silent PCM, played fully, and confirmed.
@@ -62,7 +82,9 @@ assert.match(preflight, /AVAudioRecorder/);
 assert.match(preflight, /kAudioFormatMPEG4AAC/);
 assert.match(preflight, /guard !isTesting else \{ return \}/);
 assert.match(preflight, /isTesting = true/);
-assert.match(preflight, /defer \{ isTesting = false \}/);
+assert.match(preflight, /private var activeTestID: UUID\?/);
+assert.match(preflight, /activeTestID = testID/);
+assert.match(preflight, /ensureActiveTest\(testID\)/);
 assert.match(preflight, /validateEncodedSample/);
 assert.match(preflight, /AVAudioFile\(forReading:/);
 assert.match(preflight, /peakAmplitude >= 0\.0001/);
@@ -75,7 +97,9 @@ assert.match(preflight, /samplePlaybackCompleted = true/);
 assert.match(preflight, /guard sampleReady, samplePlaybackCompleted else \{ return \}/);
 assert.match(preflight, /Microphone verified with real encoded, audible audio/);
 assert.match(preflight, /reason == \.categoryChange/);
-assert.match(preflight, /Audio route changed · test the microphone again before recording/);
+assert.match(preflight, /if isTesting \{[\s\S]*activeTestID = nil[\s\S]*testRecorder\?\.stop\(\)/);
+assert.match(preflight, /Audio route changed during the microphone test/);
+assert.doesNotMatch(preflight, /func resetForRouteChange\(\) \{\s*guard !isTesting else \{ return \}/);
 assert.match(view, /!preflight\.samplePlaybackCompleted/);
 assert.match(view, /Listen fully first/);
 assert.match(view, /successfully plays that saved sample to completion/);
