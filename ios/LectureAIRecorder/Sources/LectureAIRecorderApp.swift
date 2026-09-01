@@ -7,9 +7,18 @@ struct LectureAIRecorderApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
-                .environmentObject(recorder)
-                .environmentObject(lectureStore)
+            ZStack {
+                ContentView()
+                    .environmentObject(recorder)
+                    .environmentObject(lectureStore)
+
+                if recorder.hasUnresolvedRecovery {
+                    RecoveryResolutionView()
+                        .environmentObject(recorder)
+                        .transition(.opacity)
+                        .zIndex(10)
+                }
+            }
         }
     }
 }
