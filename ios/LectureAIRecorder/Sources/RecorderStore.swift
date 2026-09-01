@@ -53,6 +53,8 @@ final class RecorderStore: NSObject, ObservableObject, AVAudioRecorderDelegate, 
     @Published var lastSavedRecording: SavedRecording?
     @Published var isPlaying = false
     @Published var keepScreenAwake = true
+    @Published private(set) var isStartingRecording = false
+    @Published private(set) var hasUnresolvedRecovery = false
 
     private var recorder: AVAudioRecorder?
     private var player: AVAudioPlayer?
@@ -98,14 +100,24 @@ final class RecorderStore: NSObject, ObservableObject, AVAudioRecorderDelegate, 
         meterTimer?.invalidate()
     }
 
+    @MainActor
     func startRecording() async {
-        guard state != .recording && state != .paused && state != .interrupted else { return }
+        guard !isStartingRecording,
+              !hasUnresolvedRecovery,
+              state != .recording,
+              state != .paused,
+              state != .interrupted else { return }
+
+        // This guard is owned by RecorderStore, not only the SwiftUI button. It flips
+        // synchronously on the MainActor before the first await, so multiple callers
+        // cannot create competing AVAudioRecorder instances during permission/session setup.
+        isStartingRecording = true
+        defer { isStartingRecording = false }
+
         let allowed = await requestMicrophonePermission()
         guard allowed else {
-            await MainActor.run {
-                self.state = .failed("Microphone permission is required to record a lecture.")
-                self.statusMessage = "Microphone permission denied"
-            }
+            state = .failed("Microphone permission is required to record a lecture.")
+            statusMessage = "Microphone permission denied"
             return
         }
 
@@ -127,36 +139,32 @@ final class RecorderStore: NSObject, ObservableObject, AVAudioRecorderDelegate, 
                 throw RecorderError.couldNotStart
             }
 
-            await MainActor.run {
-                self.player?.stop()
-                self.player = nil
-                self.isPlaying = false
-                self.recorder = newRecorder
-                self.currentURL = url
-                self.currentID = UUID()
-                self.currentCreatedAt = Date()
-                self.duration = 0
-                self.level = 0
-                self.marks = []
-                self.finishing = false
-                self.recorderCanResume = true
-                self.meterTicks = 0
-                self.lastObservedFileSize = 0
-                self.stagnantFileChecks = 0
-                self.silentMeterChecks = 0
-                self.state = .recording
-                self.statusMessage = "Recording with Apple native audio · background recording enabled"
-                self.persistInProgressCheckpoint()
-                self.applyIdleTimerPolicy()
-                self.startMeterTimer()
-                self.refreshStorage()
-            }
+            player?.stop()
+            player = nil
+            isPlaying = false
+            recorder = newRecorder
+            currentURL = url
+            currentID = UUID()
+            currentCreatedAt = Date()
+            duration = 0
+            level = 0
+            marks = []
+            finishing = false
+            recorderCanResume = true
+            meterTicks = 0
+            lastObservedFileSize = 0
+            stagnantFileChecks = 0
+            silentMeterChecks = 0
+            state = .recording
+            statusMessage = "Recording with Apple native audio · background recording enabled"
+            persistInProgressCheckpoint()
+            applyIdleTimerPolicy()
+            startMeterTimer()
+            refreshStorage()
         } catch {
-            await MainActor.run {
-                self.state = .failed(error.localizedDescription)
-                self.statusMessage = "Could not start native recording"
-                self.applyIdleTimerPolicy()
-            }
+            state = .failed(error.localizedDescription)
+            statusMessage = "Could not start native recording"
+            applyIdleTimerPolicy()
         }
     }
 
@@ -520,6 +528,7 @@ final class RecorderStore: NSObject, ObservableObject, AVAudioRecorderDelegate, 
 
     private func clearInProgressCheckpoint() {
         try? FileManager.default.removeItem(at: Self.checkpointURL)
+        hasUnresolvedRecovery = false
     }
 
     private func recoverInterruptedRecordingIfNeeded() {
@@ -541,7 +550,17 @@ final class RecorderStore: NSObject, ObservableObject, AVAudioRecorderDelegate, 
             return
         }
 
-        let recoveredDuration = audioDuration(at: audioURL) ?? checkpoint.lastKnownDuration
+        guard let recoveredDuration = audioDuration(at: audioURL) else {
+            // Never convert a nonzero-but-undecodable AAC into a normal library item.
+            // Preserve both the raw file and checkpoint, and block a new recording from
+            // overwriting that checkpoint until the recovery condition is resolved.
+            hasUnresolvedRecovery = true
+            state = .failed("Interrupted recording needs recovery")
+            statusMessage = "Interrupted audio was preserved but could not be decoded yet · recovery checkpoint kept and new recording is blocked"
+            return
+        }
+
+        hasUnresolvedRecovery = false
         let recovered = SavedRecording(
             id: checkpoint.id,
             title: checkpoint.title + " (Recovered)",
