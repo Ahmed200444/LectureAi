@@ -126,21 +126,24 @@ export function useRecorder() {
       throw new Error('This browser does not support reliable microphone recording.');
     }
 
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: lectureAudioConstraints(),
-      video: false,
-    });
+    let stream: MediaStream | null = null;
 
     try {
-      const track = assertLiveMicrophoneStream(stream);
+      const acquiredStream = await navigator.mediaDevices.getUserMedia({
+        audio: lectureAudioConstraints(),
+        video: false,
+      });
+      stream = acquiredStream;
+
+      const track = assertLiveMicrophoneStream(acquiredStream);
       await applyLectureAudioPreferences(track);
 
       // Prove that this exact newly granted stream can produce real encoded,
       // non-silent microphone audio before the lecture MediaRecorder begins.
       // This is intentionally independent of Safari's transient track.muted flag.
-      await verifyMicrophoneCapture(stream, 1800);
+      await verifyMicrophoneCapture(acquiredStream, 1800);
 
-      streamRef.current = stream;
+      streamRef.current = acquiredStream;
       lectureIdRef.current = lectureId;
       chunkIndexRef.current = 0;
       pendingWritesRef.current = new Set();
@@ -151,10 +154,10 @@ export function useRecorder() {
       let recorder: MediaRecorder;
       try {
         recorder = requestedMimeType
-          ? new MediaRecorder(stream, { mimeType: requestedMimeType, audioBitsPerSecond: 192_000 })
-          : new MediaRecorder(stream, { audioBitsPerSecond: 192_000 });
+          ? new MediaRecorder(acquiredStream, { mimeType: requestedMimeType, audioBitsPerSecond: 192_000 })
+          : new MediaRecorder(acquiredStream, { audioBitsPerSecond: 192_000 });
       } catch {
-        recorder = new MediaRecorder(stream);
+        recorder = new MediaRecorder(acquiredStream);
       }
 
       recorderRef.current = recorder;
@@ -235,7 +238,7 @@ export function useRecorder() {
       setIsRecording(true);
       setIsPaused(false);
       startDurationTimer();
-      startMeters(stream);
+      startMeters(acquiredStream);
 
       // While LectureAI stays visible, independently verify that iOS has not silently
       // killed the mic/recorder and that 5-second checkpoint delivery is still moving.
@@ -277,7 +280,7 @@ export function useRecorder() {
       setRecordingSessionActive(false);
       if (healthIntervalRef.current) clearInterval(healthIntervalRef.current);
       healthIntervalRef.current = null;
-      stream.getTracks().forEach((track) => track.stop());
+      stream?.getTracks().forEach((track) => track.stop());
       throw startError;
     }
   }, [requestWakeLock, startDurationTimer, startMeters]);
