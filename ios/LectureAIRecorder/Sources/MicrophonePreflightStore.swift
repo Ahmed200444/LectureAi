@@ -30,8 +30,12 @@ final class MicrophonePreflightStore: NSObject, ObservableObject, AVAudioPlayerD
 
     func runTest() async {
         guard !isTesting else { return }
+        isTesting = true
+        defer { isTesting = false }
+
         resetSample(keepStatus: true)
         verified = false
+        statusMessage = "Preparing microphone test…"
 
         let allowed = await requestMicrophonePermission()
         guard allowed else {
@@ -68,7 +72,6 @@ final class MicrophonePreflightStore: NSObject, ObservableObject, AVAudioPlayerD
 
             testRecorder = recorder
             sampleURL = url
-            isTesting = true
             statusMessage = "Recording a short encoded microphone sample… speak normally"
 
             for _ in 0..<20 {
@@ -78,7 +81,6 @@ final class MicrophonePreflightStore: NSObject, ObservableObject, AVAudioPlayerD
 
             recorder.stop()
             testRecorder = nil
-            isTesting = false
 
             let proof = try validateEncodedSample(at: url)
             guard proof.duration >= 1.5 else {
@@ -97,14 +99,12 @@ final class MicrophonePreflightStore: NSObject, ObservableObject, AVAudioPlayerD
         } catch is CancellationError {
             testRecorder?.stop()
             testRecorder = nil
-            isTesting = false
             resetSample(keepStatus: false)
             statusMessage = "Microphone test cancelled"
             try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         } catch {
             testRecorder?.stop()
             testRecorder = nil
-            isTesting = false
             resetSample(keepStatus: false)
             statusMessage = error.localizedDescription
             try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
