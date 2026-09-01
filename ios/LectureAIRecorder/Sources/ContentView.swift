@@ -88,7 +88,7 @@ struct ContentView: View {
                 Label("Import recording", systemImage: "square.and.arrow.down")
             }
             .buttonStyle(.bordered)
-            .disabled(sessionActive || transcriptionActive || startingNativeRecording)
+            .disabled(sessionActive || transcriptionActive || startingNativeRecording || recorder.isStartingRecording || recorder.hasUnresolvedRecovery)
         }
         .cardStyle()
     }
@@ -111,7 +111,7 @@ struct ContentView: View {
 
             TextField("Lecture title", text: $recorder.title)
                 .textFieldStyle(.roundedBorder)
-                .disabled(sessionActive || startingNativeRecording)
+                .disabled(sessionActive || startingNativeRecording || recorder.isStartingRecording || recorder.hasUnresolvedRecovery)
 
             Text(formatDuration(recorder.duration))
                 .font(.system(size: 44, weight: .semibold, design: .rounded))
@@ -135,7 +135,11 @@ struct ContentView: View {
             .font(.caption)
             .foregroundStyle(.secondary)
 
-            if !sessionActive {
+            if recorder.hasUnresolvedRecovery {
+                Label("LectureAI preserved an interrupted audio file that iOS could not decode. Its recovery checkpoint is still intact, and starting or importing another lecture is blocked so that checkpoint cannot be overwritten.", systemImage: "exclamationmark.shield")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            } else if !sessionActive {
                 microphonePreflightControls
             }
 
@@ -178,7 +182,7 @@ struct ContentView: View {
                     Task { await preflight.runTest() }
                 }
                 .buttonStyle(.bordered)
-                .disabled(transcriptionActive || preflight.isTesting || startingNativeRecording)
+                .disabled(transcriptionActive || preflight.isTesting || startingNativeRecording || recorder.isStartingRecording)
             } else if preflight.sampleReady {
                 HStack {
                     Button {
@@ -187,22 +191,22 @@ struct ContentView: View {
                         Label(preflight.isPlaying ? "Playing…" : "Listen to sample", systemImage: "play.fill")
                     }
                     .buttonStyle(.bordered)
-                    .disabled(preflight.isPlaying || startingNativeRecording)
+                    .disabled(preflight.isPlaying || startingNativeRecording || recorder.isStartingRecording)
 
                     Button {
                         preflight.confirmAudibleSample()
                     } label: {
-                        Label("I can hear it clearly", systemImage: "checkmark")
+                        Label(preflight.samplePlaybackCompleted ? "I can hear it clearly" : "Listen fully first", systemImage: "checkmark")
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(preflight.isPlaying || startingNativeRecording)
+                    .disabled(!preflight.samplePlaybackCompleted || preflight.isPlaying || startingNativeRecording || recorder.isStartingRecording)
                 }
 
                 Button("Record a new sample") {
                     Task { await preflight.runTest() }
                 }
                 .buttonStyle(.borderless)
-                .disabled(preflight.isTesting || preflight.isPlaying || startingNativeRecording)
+                .disabled(preflight.isTesting || preflight.isPlaying || startingNativeRecording || recorder.isStartingRecording)
             } else {
                 Button {
                     Task { await preflight.runTest() }
@@ -211,11 +215,11 @@ struct ContentView: View {
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.bordered)
-                .disabled(transcriptionActive || preflight.isTesting || startingNativeRecording)
+                .disabled(transcriptionActive || preflight.isTesting || startingNativeRecording || recorder.isStartingRecording)
             }
 
             if !preflight.verified {
-                Text("Lecture recording stays locked until LectureAI creates a real encoded sample, confirms it is not digitally silent, and you verify the playback is audible.")
+                Text("Lecture recording stays locked until LectureAI creates a real encoded sample, confirms it is not digitally silent, successfully plays that saved sample to completion, and you confirm you heard it clearly.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -229,26 +233,36 @@ struct ContentView: View {
     private var controlButtons: some View {
         switch recorder.state {
         case .idle, .saved, .failed:
-            Button {
-                guard preflight.verified, !startingNativeRecording else { return }
-                // Flip this synchronously before creating the async Task. A second tap
-                // therefore cannot launch a competing AVAudioRecorder while permission
-                // or audio-session setup is still awaiting completion.
-                startingNativeRecording = true
-                Task { @MainActor in
-                    await recorder.startRecording()
-                    if recorder.state == .recording {
-                        preflight.consumeVerification()
+            if recorder.hasUnresolvedRecovery {
+                Label("New recording is intentionally locked until the preserved interrupted-audio recovery checkpoint can be handled safely.", systemImage: "lock.shield")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Button {
+                    guard preflight.verified,
+                          !startingNativeRecording,
+                          !recorder.isStartingRecording,
+                          !recorder.hasUnresolvedRecovery else { return }
+                    // Flip this synchronously before creating the async Task for immediate
+                    // UI protection. RecorderStore also owns an independent MainActor
+                    // startup guard before its first await, so the data layer is safe even
+                    // if a future UI entry point forgets this local guard.
+                    startingNativeRecording = true
+                    Task { @MainActor in
+                        await recorder.startRecording()
+                        if recorder.state == .recording {
+                            preflight.consumeVerification()
+                        }
+                        startingNativeRecording = false
                     }
-                    startingNativeRecording = false
+                } label: {
+                    Label(startingNativeRecording || recorder.isStartingRecording ? "Starting recorder…" : "Start native recording", systemImage: "record.circle")
+                        .frame(maxWidth: .infinity)
                 }
-            } label: {
-                Label(startingNativeRecording ? "Starting recorder…" : "Start native recording", systemImage: "record.circle")
-                    .frame(maxWidth: .infinity)
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .disabled(transcriptionActive || !preflight.verified || preflight.isTesting || preflight.isPlaying || startingNativeRecording || recorder.isStartingRecording || recorder.hasUnresolvedRecovery)
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .disabled(transcriptionActive || !preflight.verified || preflight.isTesting || preflight.isPlaying || startingNativeRecording)
 
         case .recording:
             HStack {
