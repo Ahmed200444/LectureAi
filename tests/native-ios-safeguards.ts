@@ -44,7 +44,7 @@ const terminateStart = recorder.indexOf('@objc private func handleWillTerminate'
 assert.ok(backgroundStart >= 0 && terminateStart > backgroundStart, 'Background lifecycle handlers must remain present');
 const backgroundHandler = recorder.slice(backgroundStart, terminateStart);
 assert.match(backgroundHandler, /persistInProgressCheckpoint\(\)/);
-assert.doesNotMatch(backgroundHandler, /\.stop\(\)|\.pause\(\)|deactivateAudioSession\(\)|setActive\(false|state\s*=/);
+assert.doesNotMatch(backgroundHandler, /\.stop\(\)|\.pause\(\)|deactivateAudioSession\(\)|setActive\(false|state\s*=(?!=)/);
 
 // RecorderStore itself owns a MainActor startup gate before the first await. The UI also
 // flips its immediate guard before creating the Task, so both data and presentation layers
