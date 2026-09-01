@@ -8,6 +8,7 @@ struct ContentView: View {
     @State private var showingImporter = false
     @State private var showingDeleteConfirmation = false
     @State private var pendingDeletion: SavedRecording?
+    @State private var startingNativeRecording = false
 
     private var sessionActive: Bool {
         recorder.state == .recording || recorder.state == .paused || recorder.state == .interrupted
@@ -87,7 +88,7 @@ struct ContentView: View {
                 Label("Import recording", systemImage: "square.and.arrow.down")
             }
             .buttonStyle(.bordered)
-            .disabled(sessionActive || transcriptionActive)
+            .disabled(sessionActive || transcriptionActive || startingNativeRecording)
         }
         .cardStyle()
     }
@@ -110,7 +111,7 @@ struct ContentView: View {
 
             TextField("Lecture title", text: $recorder.title)
                 .textFieldStyle(.roundedBorder)
-                .disabled(sessionActive)
+                .disabled(sessionActive || startingNativeRecording)
 
             Text(formatDuration(recorder.duration))
                 .font(.system(size: 44, weight: .semibold, design: .rounded))
@@ -177,7 +178,7 @@ struct ContentView: View {
                     Task { await preflight.runTest() }
                 }
                 .buttonStyle(.bordered)
-                .disabled(transcriptionActive || preflight.isTesting)
+                .disabled(transcriptionActive || preflight.isTesting || startingNativeRecording)
             } else if preflight.sampleReady {
                 HStack {
                     Button {
@@ -186,7 +187,7 @@ struct ContentView: View {
                         Label(preflight.isPlaying ? "Playing…" : "Listen to sample", systemImage: "play.fill")
                     }
                     .buttonStyle(.bordered)
-                    .disabled(preflight.isPlaying)
+                    .disabled(preflight.isPlaying || startingNativeRecording)
 
                     Button {
                         preflight.confirmAudibleSample()
@@ -194,14 +195,14 @@ struct ContentView: View {
                         Label("I can hear it clearly", systemImage: "checkmark")
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(preflight.isPlaying)
+                    .disabled(preflight.isPlaying || startingNativeRecording)
                 }
 
                 Button("Record a new sample") {
                     Task { await preflight.runTest() }
                 }
                 .buttonStyle(.borderless)
-                .disabled(preflight.isTesting || preflight.isPlaying)
+                .disabled(preflight.isTesting || preflight.isPlaying || startingNativeRecording)
             } else {
                 Button {
                     Task { await preflight.runTest() }
@@ -210,7 +211,7 @@ struct ContentView: View {
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.bordered)
-                .disabled(transcriptionActive || preflight.isTesting)
+                .disabled(transcriptionActive || preflight.isTesting || startingNativeRecording)
             }
 
             if !preflight.verified {
@@ -229,20 +230,25 @@ struct ContentView: View {
         switch recorder.state {
         case .idle, .saved, .failed:
             Button {
-                guard preflight.verified else { return }
-                Task {
+                guard preflight.verified, !startingNativeRecording else { return }
+                // Flip this synchronously before creating the async Task. A second tap
+                // therefore cannot launch a competing AVAudioRecorder while permission
+                // or audio-session setup is still awaiting completion.
+                startingNativeRecording = true
+                Task { @MainActor in
                     await recorder.startRecording()
                     if recorder.state == .recording {
                         preflight.consumeVerification()
                     }
+                    startingNativeRecording = false
                 }
             } label: {
-                Label("Start native recording", systemImage: "record.circle")
+                Label(startingNativeRecording ? "Starting recorder…" : "Start native recording", systemImage: "record.circle")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
-            .disabled(transcriptionActive || !preflight.verified || preflight.isTesting || preflight.isPlaying)
+            .disabled(transcriptionActive || !preflight.verified || preflight.isTesting || preflight.isPlaying || startingNativeRecording)
 
         case .recording:
             HStack {
