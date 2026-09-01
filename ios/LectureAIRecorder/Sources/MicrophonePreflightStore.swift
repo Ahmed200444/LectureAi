@@ -172,6 +172,18 @@ final class MicrophonePreflightStore: NSObject, ObservableObject, AVAudioPlayerD
     }
 
     @objc nonisolated private func handleRouteChange(_ notification: Notification) {
+        let reasonValue = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt
+        let reason = reasonValue.flatMap(AVAudioSession.RouteChangeReason.init(rawValue:))
+
+        // LectureAI deliberately changes the shared session category between `.record`
+        // and `.playback` so the user can listen to the exact encoded preflight sample.
+        // iOS may emit a route-change notification for that category transition even
+        // though the physical microphone route did not change. Keep the verified sample
+        // in that case, but still invalidate it for real route/device changes.
+        if reason == .categoryChange {
+            return
+        }
+
         Task { @MainActor in
             self.resetForRouteChange()
         }
