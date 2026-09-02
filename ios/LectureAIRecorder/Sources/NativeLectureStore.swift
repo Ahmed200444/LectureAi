@@ -52,15 +52,45 @@ struct NativeTranscriptionOutput: Sendable {
 }
 
 actor NativeTranscriptionEngine {
+    // Argmax recommends this compressed Large-v3 family model for maximum multilingual
+    // accuracy on iOS/macOS. LectureAI tries it first, then falls back to WhisperKit's
+    // device recommendation only if the stronger model cannot be downloaded/loaded/run.
+    static let maximumAccuracyModel = "large-v3-v20240930_626MB"
+
     func transcribe(audioURL: URL) async throws -> NativeTranscriptionOutput {
         try Task.checkCancellation()
 
         let prepared = try TranscriptionAudioPreparer.prepare(sourceURL: audioURL)
         defer { TranscriptionAudioPreparer.cleanup(prepared) }
 
-        // Keep model selection device-safe and reproducible. WhisperKit's bundled
-        // support table chooses a multilingual model appropriate for the current chip.
-        let selectedModel = WhisperKit.recommendedModels().default
+        let recommended = WhisperKit.recommendedModels().default
+        var modelCandidates = [Self.maximumAccuracyModel]
+        if recommended.caseInsensitiveCompare(Self.maximumAccuracyModel) != .orderedSame {
+            modelCandidates.append(recommended)
+        }
+
+        var lastError: Error?
+        for selectedModel in modelCandidates {
+            try Task.checkCancellation()
+            do {
+                return try await transcribePreparedAudio(
+                    prepared.url,
+                    selectedModel: selectedModel
+                )
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                lastError = error
+            }
+        }
+
+        throw lastError ?? NativeTranscriptionError.emptyTranscript
+    }
+
+    private func transcribePreparedAudio(
+        _ preparedURL: URL,
+        selectedModel: String
+    ) async throws -> NativeTranscriptionOutput {
         let config = WhisperKitConfig(
             model: selectedModel,
             verbose: false,
@@ -75,20 +105,29 @@ actor NativeTranscriptionEngine {
             try Task.checkCancellation()
 
             // Accuracy/completeness priorities for saved university lectures:
-            // - detect the spoken language automatically with the multilingual model;
-            // - strip Whisper control tokens before they can reach UI/notes/translation;
-            // - suppress blank output;
-            // - avoid VAD chunking so quiet/distant speech is not silently omitted.
-            // The incremental audio-loading mode below still bounds memory for long files.
+            // - multilingual Large-v3-family recognition when the device can run it;
+            // - automatic spoken-language detection rather than forcing English;
+            // - deterministic first-pass decoding with Whisper's built-in fallback logic;
+            // - strip all control/special tokens before UI/notes/translation;
+            // - preserve quiet/distant speech instead of filtering transcript segments here;
+            // - bounded-memory incremental file loading for long lectures.
             let decodeOptions = DecodingOptions(
                 task: .transcribe,
                 language: nil,
+                temperature: 0,
+                temperatureIncrementOnFallback: 0.2,
+                temperatureFallbackCount: 5,
+                topK: 5,
                 usePrefillPrompt: true,
                 detectLanguage: true,
                 skipSpecialTokens: true,
                 wordTimestamps: false,
                 suppressBlank: true,
                 suppressTokens: [],
+                compressionRatioThreshold: 2.4,
+                logProbThreshold: -1.0,
+                firstTokenLogProbThreshold: -1.5,
+                noSpeechThreshold: 0.6,
                 concurrentWorkerCount: 1,
                 chunkingStrategy: .none
             )
@@ -99,7 +138,7 @@ actor NativeTranscriptionEngine {
             )
 
             let results = try await pipe.transcribe(
-                audioPath: prepared.url.path,
+                audioPath: preparedURL.path,
                 audioInputOptions: audioOptions,
                 decodeOptions: decodeOptions
             )
@@ -213,7 +252,7 @@ final class NativeLectureStore: ObservableObject {
         var record = previousRecord
         record.updatedAt = Date()
         record.state = .preparing
-        record.statusMessage = "Preparing a safe 16 kHz transcription copy and the multilingual Whisper model…"
+        record.statusMessage = "Preparing a safe 16 kHz transcription copy and the highest-accuracy multilingual Whisper model this device can run…"
         record.progress = 0.12
         record.lastError = nil
         transcripts[recording.id] = record
@@ -223,7 +262,7 @@ final class NativeLectureStore: ObservableObject {
 
         do {
             record.state = .transcribing
-            record.statusMessage = "Transcribing saved audio locally with automatic language detection…"
+            record.statusMessage = "Transcribing saved audio locally with automatic language detection and accuracy-first decoding…"
             record.progress = 0.42
             transcripts[recording.id] = record
             if previousCompleted == nil {
