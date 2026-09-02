@@ -104,32 +104,13 @@ actor NativeTranscriptionEngine {
         do {
             try Task.checkCancellation()
 
-            // Accuracy/completeness priorities for saved university lectures:
-            // - multilingual Large-v3-family recognition when the device can run it;
-            // - automatic spoken-language detection rather than forcing English;
-            // - deterministic first-pass decoding with Whisper's built-in fallback logic;
-            // - strip all control/special tokens before UI/notes/translation;
-            // - preserve quiet/distant speech instead of filtering transcript segments here;
-            // - bounded-memory incremental file loading for long lectures.
-            let decodeOptions = DecodingOptions(
-                task: .transcribe,
+            // First pass stays multilingual so LectureAI never assumes the lecture is English.
+            // When that pass identifies English consistently, a second pass locks the decoder
+            // to English. This removes language-guessing ambiguity for the user's highest-
+            // priority language while preserving automatic multilingual behavior elsewhere.
+            let automaticDecodeOptions = accuracyDecodeOptions(
                 language: nil,
-                temperature: 0,
-                temperatureIncrementOnFallback: 0.2,
-                temperatureFallbackCount: 5,
-                topK: 5,
-                usePrefillPrompt: true,
-                detectLanguage: true,
-                skipSpecialTokens: true,
-                wordTimestamps: false,
-                suppressBlank: true,
-                suppressTokens: [],
-                compressionRatioThreshold: 2.4,
-                logProbThreshold: -1.0,
-                firstTokenLogProbThreshold: -1.5,
-                noSpeechThreshold: 0.6,
-                concurrentWorkerCount: 1,
-                chunkingStrategy: .none
+                detectLanguage: true
             )
 
             let audioOptions = AudioInputOptions(
@@ -137,11 +118,40 @@ actor NativeTranscriptionEngine {
                 audioLoadingMode: .incremental
             )
 
-            let results = try await pipe.transcribe(
+            var results = try await pipe.transcribe(
                 audioPath: preparedURL.path,
                 audioInputOptions: audioOptions,
-                decodeOptions: decodeOptions
+                decodeOptions: automaticDecodeOptions
             )
+
+            try Task.checkCancellation()
+
+            let automaticLanguages = Set(
+                results
+                    .map { $0.language.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+                    .filter { !$0.isEmpty && $0 != "unknown" }
+            )
+
+            if automaticLanguages == ["en"] {
+                let englishDecodeOptions = accuracyDecodeOptions(
+                    language: "en",
+                    detectLanguage: false
+                )
+
+                // English accuracy is more important than speed. Reuse the already-loaded
+                // model for an English-locked pass. If that pass cannot return usable text,
+                // keep the successful multilingual pass rather than failing the lecture.
+                if let englishResults = try? await pipe.transcribe(
+                    audioPath: preparedURL.path,
+                    audioInputOptions: audioOptions,
+                    decodeOptions: englishDecodeOptions
+                ),
+                   englishResults.contains(where: {
+                       !WhisperTextSanitizer.cleanInline($0.text).isEmpty
+                   }) {
+                    results = englishResults
+                }
+            }
 
             try Task.checkCancellation()
 
@@ -209,6 +219,32 @@ actor NativeTranscriptionEngine {
             throw error
         }
     }
+
+    private func accuracyDecodeOptions(
+        language: String?,
+        detectLanguage: Bool
+    ) -> DecodingOptions {
+        DecodingOptions(
+            task: .transcribe,
+            language: language,
+            temperature: 0,
+            temperatureIncrementOnFallback: 0.2,
+            temperatureFallbackCount: 5,
+            topK: 5,
+            usePrefillPrompt: true,
+            detectLanguage: detectLanguage,
+            skipSpecialTokens: true,
+            wordTimestamps: false,
+            suppressBlank: true,
+            suppressTokens: [],
+            compressionRatioThreshold: 2.4,
+            logProbThreshold: -1.0,
+            firstTokenLogProbThreshold: -1.5,
+            noSpeechThreshold: 0.6,
+            concurrentWorkerCount: 1,
+            chunkingStrategy: .none
+        )
+    }
 }
 
 @MainActor
@@ -262,7 +298,7 @@ final class NativeLectureStore: ObservableObject {
 
         do {
             record.state = .transcribing
-            record.statusMessage = "Transcribing saved audio locally with automatic language detection and accuracy-first decoding…"
+            record.statusMessage = "Transcribing locally with maximum English priority and automatic multilingual fallback…"
             record.progress = 0.42
             transcripts[recording.id] = record
             if previousCompleted == nil {
