@@ -134,15 +134,23 @@ assert.match(view, /deleteSafely\(item\)/);
 assert.doesNotMatch(view, /lecture-ai-blush\.vercel\.app/);
 assert.match(recorderDelete, /Could not delete the original recording\. Nothing else was removed/);
 
-// Native transcription uses pinned WhisperKit, file-based incremental loading, multilingual
-// detection, no forced language, and completeness-oriented long-form decoding. Special tokens
-// are removed twice: by WhisperKit decoding and by a sanitizer before UI/notes/translation.
+// Native transcription is accuracy-first: try the strongest Large-v3 multilingual model,
+// keep a multilingual auto-detect first pass, and only lock to English when that pass says
+// the lecture is consistently English. Other languages must remain on the multilingual path.
 assert.match(lectureStore, /import WhisperKit/);
+assert.match(lectureStore, /large-v3-v20240930_626MB/);
 assert.match(lectureStore, /WhisperKit\.recommendedModels\(\)\.default/);
+assert.match(lectureStore, /modelCandidates = \[Self\.maximumAccuracyModel\]/);
 assert.match(lectureStore, /task: \.transcribe/);
-assert.match(lectureStore, /language: nil/);
+assert.match(lectureStore, /accuracyDecodeOptions\([\s\S]*language: nil,[\s\S]*detectLanguage: true/);
+assert.match(lectureStore, /automaticLanguages == \["en"\]/);
+assert.match(lectureStore, /accuracyDecodeOptions\([\s\S]*language: "en",[\s\S]*detectLanguage: false/);
+assert.match(lectureStore, /if let englishResults = try\? await pipe\.transcribe/);
+assert.match(lectureStore, /temperature: 0/);
+assert.match(lectureStore, /temperatureIncrementOnFallback: 0\.2/);
+assert.match(lectureStore, /temperatureFallbackCount: 5/);
+assert.match(lectureStore, /topK: 5/);
 assert.match(lectureStore, /usePrefillPrompt: true/);
-assert.match(lectureStore, /detectLanguage: true/);
 assert.match(lectureStore, /skipSpecialTokens: true/);
 assert.match(lectureStore, /suppressBlank: true/);
 assert.match(lectureStore, /chunkingStrategy: \.none/);
