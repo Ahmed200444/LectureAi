@@ -135,8 +135,9 @@ assert.doesNotMatch(view, /lecture-ai-blush\.vercel\.app/);
 assert.match(recorderDelete, /Could not delete the original recording\. Nothing else was removed/);
 
 // Native transcription is accuracy-first: try the strongest Large-v3 multilingual model,
-// keep a multilingual auto-detect first pass, and only lock to English when that pass says
-// the lecture is consistently English. Other languages must remain on the multilingual path.
+// keep a multilingual auto-detect first pass, then prioritize a locked English pass for
+// clearly English lectures and a locked Arabic pass for clearly Arabic lectures. Mixed and
+// other languages stay on the multilingual path instead of being forced into either language.
 assert.match(lectureStore, /import WhisperKit/);
 assert.match(lectureStore, /large-v3-v20240930_626MB/);
 assert.match(lectureStore, /WhisperKit\.recommendedModels\(\)\.default/);
@@ -146,6 +147,9 @@ assert.match(lectureStore, /accuracyDecodeOptions\([\s\S]*language: nil,[\s\S]*d
 assert.match(lectureStore, /automaticLanguages == \["en"\]/);
 assert.match(lectureStore, /accuracyDecodeOptions\([\s\S]*language: "en",[\s\S]*detectLanguage: false/);
 assert.match(lectureStore, /if let englishResults = try\? await pipe\.transcribe/);
+assert.match(lectureStore, /automaticLanguages == \["ar"\]/);
+assert.match(lectureStore, /accuracyDecodeOptions\([\s\S]*language: "ar",[\s\S]*detectLanguage: false/);
+assert.match(lectureStore, /if let arabicResults = try\? await pipe\.transcribe/);
 assert.match(lectureStore, /temperature: 0/);
 assert.match(lectureStore, /temperatureIncrementOnFallback: 0\.2/);
 assert.match(lectureStore, /temperatureFallbackCount: 5/);
@@ -165,6 +169,15 @@ assert.doesNotMatch(lectureStore, /whisper-[^"\n]*\.en/);
 assert.match(sanitizer, /<\\\|\[\^<>\|\]\*\\\|>/);
 assert.match(sanitizer, /static func cleanInline/);
 assert.match(sanitizer, /static func cleanMultiline/);
+
+// English is the default student-facing transcript, Arabic is the second reading option,
+// and Original remains available as the source-of-truth transcript with timestamp editing.
+assert.match(detail, /case english = "English"[\s\S]*case arabic = "Arabic"[\s\S]*case original = "Original"/);
+assert.match(detail, /@State private var mode: TranscriptViewMode = \.english/);
+assert.match(detail, /English is the main study transcript/);
+assert.match(detail, /case \.english:[\s\S]*translatedTranscript\(languageCode: "en"/);
+assert.match(detail, /case \.arabic:[\s\S]*translatedTranscript\(languageCode: "ar"/);
+assert.match(detail, /case \.original:[\s\S]*originalTranscript/);
 
 // Apple Translation requires one source language per TranslationSession. LectureAI first
 // sanitizes and language-groups the transcript. A failed/unsupported fragment must be kept
