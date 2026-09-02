@@ -391,12 +391,19 @@ private struct OnDeviceTranslationView: View {
     let targetLanguageCode: String
     let onTranslated: (String) -> Void
 
+    @State private var batches: [NativeTranslationBatch] = []
+    @State private var translatedChunks: [String] = []
+    @State private var currentIndex = 0
+    @State private var configuration: TranslationSession.Configuration?
+    @State private var started = false
     @State private var status = "Preparing Apple on-device translation…"
     @State private var errorMessage: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            ProgressView()
+            if errorMessage == nil {
+                ProgressView()
+            }
             Text(status)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -404,54 +411,148 @@ private struct OnDeviceTranslationView: View {
                 Text(errorMessage)
                     .font(.caption)
                     .foregroundStyle(.red)
+                Button("Retry translation") {
+                    resetAndStart()
+                }
+                .buttonStyle(.bordered)
             }
         }
-        .translationTask(
-            source: nil,
-            target: Locale.Language(identifier: targetLanguageCode)
-        ) { session in
-            do {
-                let batches = NativeTranslationChunker.batches(from: sourceSegments)
-                guard !batches.isEmpty else {
-                    status = "No transcript is available to translate"
-                    return
-                }
+        .onAppear {
+            startIfNeeded()
+        }
+        .translationTask(configuration) { session in
+            await translateCurrentLanguageGroup(using: session)
+        }
+    }
 
-                // The session intentionally keeps source=nil. Apple can identify the
-                // source from each actual request and request a language download when
-                // needed. Calling prepareTranslation() with a nil source would fail
-                // before any text is available for language identification.
-                var translatedChunks: [String] = []
-                translatedChunks.reserveCapacity(batches.count)
+    @MainActor
+    private func startIfNeeded() {
+        guard !started else { return }
+        started = true
+        batches = NativeTranslationChunker.batches(from: sourceSegments)
+        guard !batches.isEmpty else {
+            status = "No transcript is available to translate"
+            return
+        }
+        translatedChunks = Array(repeating: "", count: batches.count)
+        currentIndex = 0
+        errorMessage = nil
+        configureNextSession()
+    }
 
-                for (index, batch) in batches.enumerated() {
-                    try Task.checkCancellation()
-                    status = batches.count == 1
-                        ? "Translating locally on this device…"
-                        : "Translating part \(index + 1) of \(batches.count) locally…"
+    @MainActor
+    private func resetAndStart() {
+        configuration = nil
+        batches = []
+        translatedChunks = []
+        currentIndex = 0
+        started = false
+        errorMessage = nil
+        status = "Preparing Apple on-device translation…"
+        startIfNeeded()
+    }
 
-                    if batch.sourceLanguageCode == targetLanguageCode.lowercased() {
-                        translatedChunks.append(batch.text)
-                        continue
-                    }
+    @MainActor
+    private func configureNextSession() {
+        let targetCode = targetLanguageCode.lowercased()
 
-                    let response = try await session.translate(batch.text)
-                    let cleaned = response.targetText.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !cleaned.isEmpty { translatedChunks.append(cleaned) }
-                }
-
-                let translated = translatedChunks.joined(separator: "\n\n")
-                guard !translated.isEmpty else {
-                    status = "Translation completed without usable text"
-                    return
-                }
-                onTranslated(translated)
-            } catch is CancellationError {
-                return
-            } catch {
-                errorMessage = error.localizedDescription
-                status = "Translation is not available yet"
+        while currentIndex < batches.count {
+            let batch = batches[currentIndex]
+            if batch.sourceLanguageCode?.lowercased() == targetCode {
+                translatedChunks[currentIndex] = batch.text
+                currentIndex += 1
+                continue
             }
+
+            let sourceLanguage = batch.sourceLanguageCode.map { Locale.Language(identifier: $0) }
+            configuration = TranslationSession.Configuration(
+                source: sourceLanguage,
+                target: Locale.Language(identifier: targetLanguageCode)
+            )
+            let sourceLabel = batch.sourceLanguageCode?.uppercased() ?? "auto-detected language"
+            status = "Translating \(sourceLabel) to \(targetLanguageCode.uppercased()) locally…"
+            return
+        }
+
+        finishTranslation()
+    }
+
+    private func translateCurrentLanguageGroup(using session: TranslationSession) async {
+        let snapshot = await MainActor.run { () -> (Int, String?)? in
+            guard currentIndex < batches.count else { return nil }
+            return (currentIndex, batches[currentIndex].sourceLanguageCode)
+        }
+        guard let (startIndex, sourceCode) = snapshot else { return }
+
+        var index = startIndex
+        do {
+            while true {
+                let batch = await MainActor.run { () -> NativeTranslationBatch? in
+                    guard index < batches.count else { return nil }
+                    let candidate = batches[index]
+                    if index > startIndex {
+                        if sourceCode == nil { return nil }
+                        if candidate.sourceLanguageCode != sourceCode { return nil }
+                    }
+                    return candidate
+                }
+                guard let batch else { break }
+
+                try Task.checkCancellation()
+                let response = try await session.translate(batch.text)
+                let cleaned = WhisperTextSanitizer.cleanMultiline(response.targetText)
+                guard !cleaned.isEmpty else {
+                    throw TranslationCoordinatorError.emptyResponse
+                }
+
+                await MainActor.run {
+                    translatedChunks[index] = cleaned
+                    currentIndex = index + 1
+                    status = "Translated part \(currentIndex) of \(batches.count) locally…"
+                }
+                index += 1
+            }
+
+            await MainActor.run {
+                configuration = nil
+                configureNextSession()
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            await MainActor.run {
+                configuration = nil
+                let sourceLabel = sourceCode?.uppercased() ?? "the detected source language"
+                status = "Translation from \(sourceLabel) to \(targetLanguageCode.uppercased()) is not available yet"
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    @MainActor
+    private func finishTranslation() {
+        let translated = translatedChunks
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !translated.isEmpty else {
+            status = "Translation completed without usable text"
+            return
+        }
+        status = "Translation complete"
+        onTranslated(translated)
+    }
+}
+
+@available(iOS 18.0, *)
+private enum TranslationCoordinatorError: LocalizedError {
+    case emptyResponse
+
+    var errorDescription: String? {
+        switch self {
+        case .emptyResponse:
+            return "The on-device translator returned no usable text for this part of the lecture."
         }
     }
 }
