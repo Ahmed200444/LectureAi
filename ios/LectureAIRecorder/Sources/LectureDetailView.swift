@@ -396,18 +396,38 @@ private struct OnDeviceTranslationView: View {
     @State private var currentIndex = 0
     @State private var configuration: TranslationSession.Configuration?
     @State private var started = false
+    @State private var finished = false
+    @State private var fallbackCount = 0
     @State private var status = "Preparing Apple on-device translation…"
+    @State private var warningMessage: String?
     @State private var errorMessage: String?
+    @State private var partialText: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if errorMessage == nil {
+            if !finished && errorMessage == nil {
                 ProgressView()
             }
+
             Text(status)
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            if let errorMessage {
+
+            if let partialText, !partialText.isEmpty {
+                Text(partialText)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+            }
+
+            if let warningMessage {
+                Text(warningMessage)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                Button("Retry full translation") {
+                    resetAndStart()
+                }
+                .buttonStyle(.bordered)
+            } else if let errorMessage {
                 Text(errorMessage)
                     .font(.caption)
                     .foregroundStyle(.red)
@@ -431,12 +451,17 @@ private struct OnDeviceTranslationView: View {
         started = true
         batches = NativeTranslationChunker.batches(from: sourceSegments)
         guard !batches.isEmpty else {
+            finished = true
             status = "No transcript is available to translate"
             return
         }
         translatedChunks = Array(repeating: "", count: batches.count)
         currentIndex = 0
+        fallbackCount = 0
+        finished = false
+        warningMessage = nil
         errorMessage = nil
+        partialText = nil
         configureNextSession()
     }
 
@@ -446,8 +471,12 @@ private struct OnDeviceTranslationView: View {
         batches = []
         translatedChunks = []
         currentIndex = 0
+        fallbackCount = 0
         started = false
+        finished = false
+        warningMessage = nil
         errorMessage = nil
+        partialText = nil
         status = "Preparing Apple on-device translation…"
         startIfNeeded()
     }
@@ -514,18 +543,40 @@ private struct OnDeviceTranslationView: View {
             }
 
             await MainActor.run {
-                configuration = nil
-                configureNextSession()
+                scheduleNextSession()
             }
         } catch is CancellationError {
             return
         } catch {
             await MainActor.run {
-                configuration = nil
-                let sourceLabel = sourceCode?.uppercased() ?? "the detected source language"
-                status = "Translation from \(sourceLabel) to \(targetLanguageCode.uppercased()) is not available yet"
-                errorMessage = error.localizedDescription
+                guard index < batches.count else {
+                    configuration = nil
+                    finished = true
+                    status = "Translation stopped before the remaining text could be processed"
+                    errorMessage = error.localizedDescription
+                    return
+                }
+
+                // Do not let one unsupported/misdetected language fragment destroy the
+                // useful translation of the rest of the lecture. Keep that exact source
+                // text visibly in place, continue with the next language group, and do
+                // not persist a partial translation so the user can retry later.
+                translatedChunks[index] = batches[index].text
+                fallbackCount += 1
+                currentIndex = index + 1
+                let sourceLabel = sourceCode?.uppercased() ?? "auto-detected language"
+                status = "Could not translate part \(index + 1) from \(sourceLabel) · kept the original text and continuing…"
+                scheduleNextSession()
             }
+        }
+    }
+
+    @MainActor
+    private func scheduleNextSession() {
+        configuration = nil
+        Task { @MainActor in
+            await Task.yield()
+            configureNextSession()
         }
     }
 
@@ -536,11 +587,22 @@ private struct OnDeviceTranslationView: View {
             .joined(separator: "\n\n")
             .trimmingCharacters(in: .whitespacesAndNewlines)
 
+        finished = true
         guard !translated.isEmpty else {
             status = "Translation completed without usable text"
+            errorMessage = "Apple on-device translation did not return usable text."
             return
         }
+
+        partialText = translated
+        if fallbackCount > 0 {
+            status = "Translation finished with \(fallbackCount) part\(fallbackCount == 1 ? "" : "s") kept in the original language"
+            warningMessage = "Apple Translation could not translate every fragment on this device. Supported parts were translated; unsupported or uncertain parts are shown in their original language. Nothing partial was saved, so you can retry the full translation."
+            return
+        }
+
         status = "Translation complete"
+        partialText = nil
         onTranslated(translated)
     }
 }
