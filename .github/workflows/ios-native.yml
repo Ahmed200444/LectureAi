@@ -193,12 +193,22 @@ jobs:
 
           assert info.get('CFBundleIdentifier') == 'com.lectureai.recorder', info.get('CFBundleIdentifier')
           assert info.get('CFBundleDisplayName') == 'LectureAI', info.get('CFBundleDisplayName')
+          assert str(info.get('CFBundleShortVersionString')) == '1.0.1', info.get('CFBundleShortVersionString')
+          assert str(info.get('CFBundleVersion')) == '2', info.get('CFBundleVersion')
           families = set(info.get('UIDeviceFamily', []))
           assert {1, 2}.issubset(families), families
           assert 'audio' in info.get('UIBackgroundModes', []), info.get('UIBackgroundModes')
           minimum = str(info.get('MinimumOSVersion', ''))
           assert minimum.startswith('17.'), minimum
-          print('Packaged LectureAI metadata verified for iPhone + iPad:', info.get('CFBundleIdentifier'), sorted(families), info.get('UIBackgroundModes'), minimum)
+          print(
+              'Packaged LectureAI metadata verified for iPhone + iPad:',
+              info.get('CFBundleIdentifier'),
+              info.get('CFBundleShortVersionString'),
+              info.get('CFBundleVersion'),
+              sorted(families),
+              info.get('UIBackgroundModes'),
+              minimum,
+          )
           PY
 
       - name: Upload unsigned IPA
