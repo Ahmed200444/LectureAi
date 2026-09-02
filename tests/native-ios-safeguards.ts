@@ -9,6 +9,8 @@ const app = readFileSync(new URL('../ios/LectureAIRecorder/Sources/LectureAIReco
 const recoveryView = readFileSync(new URL('../ios/LectureAIRecorder/Sources/RecoveryResolutionView.swift', import.meta.url), 'utf8');
 const detail = readFileSync(new URL('../ios/LectureAIRecorder/Sources/LectureDetailView.swift', import.meta.url), 'utf8');
 const lectureStore = readFileSync(new URL('../ios/LectureAIRecorder/Sources/NativeLectureStore.swift', import.meta.url), 'utf8');
+const translation = readFileSync(new URL('../ios/LectureAIRecorder/Sources/NativeTranslation.swift', import.meta.url), 'utf8');
+const sanitizer = readFileSync(new URL('../ios/LectureAIRecorder/Sources/WhisperTextSanitizer.swift', import.meta.url), 'utf8');
 const audioPreparer = readFileSync(new URL('../ios/LectureAIRecorder/Sources/TranscriptionAudioPreparer.swift', import.meta.url), 'utf8');
 const project = readFileSync(new URL('../ios/LectureAIRecorder/project.yml', import.meta.url), 'utf8');
 
@@ -36,7 +38,6 @@ assert.doesNotMatch(recorder, /maximumDuration|maxDuration|minimumDuration|minDu
 
 // There is no fixed native-library count limit. Each recording gets a UUID-backed unique
 // filename, the store enumerates every saved metadata file, and the UI renders the full array.
-// Practical limits are device storage/resources, not a LectureAI recording-count policy.
 assert.match(recorder, /let uniqueSuffix = UUID\(\)\.uuidString\.prefix\(8\)/);
 assert.match(recorder, /contentsOfDirectory\([\s\S]*Self\.recordingsDirectory/);
 assert.match(recorder, /recordings = urls[\s\S]*\.filter \{ \$0\.pathExtension == "json"/);
@@ -98,8 +99,6 @@ assert.match(recoveryView, /Nothing is deleted automatically/);
 
 // Permission alone can never unlock a lecture. A temporary AAC sample is encoded,
 // decoded from the saved file, checked for non-silent PCM, played fully, and confirmed.
-// The preflight busy state is set before the permission await so double taps cannot
-// create competing microphone tests.
 assert.match(preflight, /AVAudioRecorder/);
 assert.match(preflight, /kAudioFormatMPEG4AAC/);
 assert.match(preflight, /guard !isTesting else \{ return \}/);
@@ -135,25 +134,46 @@ assert.match(view, /deleteSafely\(item\)/);
 assert.doesNotMatch(view, /lecture-ai-blush\.vercel\.app/);
 assert.match(recorderDelete, /Could not delete the original recording\. Nothing else was removed/);
 
-// Native transcription uses pinned WhisperKit, file-based incremental loading, multilingual detection,
-// no forced language, and never the live streaming transcriber or an English-only hard-coded model.
+// Native transcription uses pinned WhisperKit, file-based incremental loading, multilingual
+// detection, no forced language, and completeness-oriented long-form decoding. Special tokens
+// are removed twice: by WhisperKit decoding and by a sanitizer before UI/notes/translation.
 assert.match(lectureStore, /import WhisperKit/);
 assert.match(lectureStore, /WhisperKit\.recommendedModels\(\)\.default/);
 assert.match(lectureStore, /task: \.transcribe/);
 assert.match(lectureStore, /language: nil/);
+assert.match(lectureStore, /usePrefillPrompt: true/);
 assert.match(lectureStore, /detectLanguage: true/);
+assert.match(lectureStore, /skipSpecialTokens: true/);
+assert.match(lectureStore, /suppressBlank: true/);
+assert.match(lectureStore, /chunkingStrategy: \.none/);
 assert.match(lectureStore, /audioLoadingMode: \.incremental/);
 assert.match(lectureStore, /suppressTokens: \[\]/);
 assert.match(lectureStore, /concurrentWorkerCount: 1/);
+assert.match(lectureStore, /WhisperTextSanitizer\.cleanInline\(segment\.text\)/);
+assert.match(lectureStore, /WhisperTextSanitizer\.cleanMultiline\(transcript\.notes\)/);
+assert.match(lectureStore, /if migrated \{ persist\(transcript\) \}/);
 assert.doesNotMatch(lectureStore, /AudioStreamTranscriber/);
 assert.doesNotMatch(lectureStore, /whisper-[^"\n]*\.en/);
+assert.match(sanitizer, /<\\\|\[\^<>\|\]\*\\\|>/);
+assert.match(sanitizer, /static func cleanInline/);
+assert.match(sanitizer, /static func cleanMultiline/);
+
+// Apple Translation requires one source language per TranslationSession. LectureAI first
+// sanitizes and language-groups the transcript, then creates a separate configuration for
+// each source-language group (or one isolated auto-detect batch when the source is unknown).
+assert.match(translation, /WhisperTextSanitizer\.cleanInline/);
+assert.match(translation, /guard let languageCode else/);
+assert.match(detail, /TranslationSession\.Configuration\(/);
+assert.match(detail, /\.translationTask\(configuration\)/);
+assert.match(detail, /if candidate\.sourceLanguageCode != sourceCode \{ return nil \}/);
+assert.match(detail, /if sourceCode == nil \{ return nil \}/);
+assert.match(detail, /Retry translation/);
 
 // Compressed originals are preserved; transcription works from a temporary 16 kHz mono copy.
 assert.match(audioPreparer, /sampleRate = 16_000\.0/);
 assert.match(audioPreparer, /outputChannels: AVAudioChannelCount = 1/);
 assert.match(audioPreparer, /static func cleanup\(/);
 assert.match(detail, /The original audio is never modified by transcription[\s\S]*translation/);
-assert.match(detail, /translationTask\(/);
 
 // User-controlled exports remain local until the iOS share/save sheet is invoked.
 assert.match(detail, /LectureTextExport: Transferable/);
