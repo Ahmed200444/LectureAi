@@ -143,25 +143,45 @@ actor NativeTranscriptionEngine {
                     .filter { !$0.isEmpty && $0 != "unknown" }
             )
 
-            if let priorityLanguage = Self.priorityLockedLanguage(for: automaticLanguages) {
-                let priorityDecodeOptions = accuracyDecodeOptions(
-                    language: priorityLanguage,
+            let priorityLanguage = Self.priorityLockedLanguage(for: automaticLanguages)
+
+            if priorityLanguage == "en" {
+                let englishDecodeOptions = accuracyDecodeOptions(
+                    language: "en",
                     detectLanguage: false
                 )
 
-                // Accuracy is more important than speed for English first and Arabic second.
-                // Reuse the already-loaded model for one language-locked pass. If that pass
-                // cannot return usable text, keep the successful multilingual result rather
-                // than failing or replacing it with an empty transcript.
-                if let priorityResults = try? await pipe.transcribe(
+                // English accuracy is the highest priority. Reuse the already-loaded model
+                // for an English-locked pass. If it cannot return usable text, keep the
+                // successful multilingual result rather than failing the lecture.
+                if let englishResults = try? await pipe.transcribe(
                     audioPath: preparedURL.path,
                     audioInputOptions: audioOptions,
-                    decodeOptions: priorityDecodeOptions
+                    decodeOptions: englishDecodeOptions
                 ),
-                   priorityResults.contains(where: {
+                   englishResults.contains(where: {
                        !WhisperTextSanitizer.cleanInline($0.text).isEmpty
                    }) {
-                    results = priorityResults
+                    results = englishResults
+                }
+            } else if priorityLanguage == "ar" {
+                let arabicDecodeOptions = accuracyDecodeOptions(
+                    language: "ar",
+                    detectLanguage: false
+                )
+
+                // Arabic is the second priority. A clearly Arabic automatic pass receives
+                // one Arabic-locked retry for accuracy. If it cannot return usable text,
+                // preserve the successful multilingual result instead of replacing it.
+                if let arabicResults = try? await pipe.transcribe(
+                    audioPath: preparedURL.path,
+                    audioInputOptions: audioOptions,
+                    decodeOptions: arabicDecodeOptions
+                ),
+                   arabicResults.contains(where: {
+                       !WhisperTextSanitizer.cleanInline($0.text).isEmpty
+                   }) {
+                    results = arabicResults
                 }
             }
 
