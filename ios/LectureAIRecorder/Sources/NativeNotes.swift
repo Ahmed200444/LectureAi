@@ -84,7 +84,9 @@ enum NativeNotesGenerator {
 
     private static func extractKeywords(from segments: [NativeTranscriptSegment]) -> [String] {
         var counts: [String: Int] = [:]
-        let expression = try? NSRegularExpression(pattern: "[A-Za-z][A-Za-z-]{3,}|[\\u0600-\\u06FF]{4,}")
+        // ICU Unicode properties keep key-concept extraction useful for scripts beyond
+        // Latin and Arabic (Greek, Cyrillic, accented European text, Indic scripts, etc.).
+        let expression = try? NSRegularExpression(pattern: "[\\p{L}][\\p{L}\\p{M}\\p{N}-]{2,}")
 
         for segment in segments {
             let text = segment.text as NSString
