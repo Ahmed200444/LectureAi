@@ -167,15 +167,21 @@ assert.match(sanitizer, /static func cleanInline/);
 assert.match(sanitizer, /static func cleanMultiline/);
 
 // Apple Translation requires one source language per TranslationSession. LectureAI first
-// sanitizes and language-groups the transcript, then creates a separate configuration for
-// each source-language group (or one isolated auto-detect batch when the source is unknown).
+// sanitizes and language-groups the transcript. A failed/unsupported fragment must be kept
+// visibly in its original language while the remaining groups continue. Partial results are
+// deliberately not persisted so a full retry remains possible.
 assert.match(translation, /WhisperTextSanitizer\.cleanInline/);
 assert.match(translation, /guard let languageCode else/);
 assert.match(detail, /TranslationSession\.Configuration\(/);
 assert.match(detail, /\.translationTask\(configuration\)/);
 assert.match(detail, /if candidate\.sourceLanguageCode != sourceCode \{ return nil \}/);
 assert.match(detail, /if sourceCode == nil \{ return nil \}/);
-assert.match(detail, /Retry translation/);
+assert.match(detail, /translatedChunks\[index\] = batches\[index\]\.text/);
+assert.match(detail, /fallbackCount \+= 1/);
+assert.match(detail, /kept the original text and continuing/);
+assert.match(detail, /Nothing partial was saved, so you can retry the full translation/);
+assert.match(detail, /Retry full translation/);
+assert.match(detail, /scheduleNextSession\(\)/);
 
 // Compressed originals are preserved; transcription works from a temporary 16 kHz mono copy.
 assert.match(audioPreparer, /sampleRate = 16_000\.0/);
@@ -193,12 +199,15 @@ assert.match(detail, /LectureAI transcript/);
 assert.match(detail, /NativeNotesGenerator\.timestamp\(segment\.startTime\)/);
 assert.match(detail, /LectureAI notes/);
 
-// Project-level iPhone/iPad and background-audio configuration.
+// Project-level iPhone/iPad and background-audio configuration. Version/build are explicit
+// so AltStore updates are distinguishable from the earlier 1.0/build-1 package.
 assert.match(project, /NSMicrophoneUsageDescription/);
 assert.match(project, /UIBackgroundModes:/);
 assert.match(project, /- audio/);
 assert.match(project, /iOS: "17\.0"/);
 assert.match(project, /TARGETED_DEVICE_FAMILY: "1,2"/);
+assert.match(project, /MARKETING_VERSION: 1\.0\.1/);
+assert.match(project, /CURRENT_PROJECT_VERSION: 2/);
 assert.match(project, /exactVersion: 1\.1\.0/);
 assert.match(project, /product: WhisperKit/);
 
