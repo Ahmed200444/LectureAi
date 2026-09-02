@@ -58,9 +58,8 @@ actor NativeTranscriptionEngine {
         let prepared = try TranscriptionAudioPreparer.prepare(sourceURL: audioURL)
         defer { TranscriptionAudioPreparer.cleanup(prepared) }
 
-        // Keep model selection reproducible for this pinned WhisperKit release. The
-        // package's bundled device table is deterministic; leaving model nil would ask
-        // a remote support file for today's default and could silently change behavior.
+        // Keep model selection device-safe and reproducible. WhisperKit's bundled
+        // support table chooses a multilingual model appropriate for the current chip.
         let selectedModel = WhisperKit.recommendedModels().default
         let config = WhisperKitConfig(
             model: selectedModel,
@@ -75,23 +74,25 @@ actor NativeTranscriptionEngine {
         do {
             try Task.checkCancellation()
 
-            // iOS 26 safety: v1.1.0 contains the upstream bounds-check fix for the
-            // negative suppression-token sentinel. Keep the suppression list explicitly
-            // empty as an additional defense and to avoid mutating logits for this app.
+            // Accuracy/completeness priorities for saved university lectures:
+            // - detect the spoken language automatically with the multilingual model;
+            // - strip Whisper control tokens before they can reach UI/notes/translation;
+            // - suppress blank output;
+            // - avoid VAD chunking so quiet/distant speech is not silently omitted.
+            // The incremental audio-loading mode below still bounds memory for long files.
             let decodeOptions = DecodingOptions(
                 task: .transcribe,
                 language: nil,
                 usePrefillPrompt: true,
                 detectLanguage: true,
+                skipSpecialTokens: true,
                 wordTimestamps: false,
-                suppressBlank: false,
+                suppressBlank: true,
                 suppressTokens: [],
                 concurrentWorkerCount: 1,
-                chunkingStrategy: .vad
+                chunkingStrategy: .none
             )
 
-            // v1.1.0 incremental loading keeps long lecture audio bounded instead of
-            // decoding a multi-hour recording into one in-memory Float array.
             let audioOptions = AudioInputOptions(
                 channelMode: .sumChannels(nil),
                 audioLoadingMode: .incremental
@@ -109,20 +110,18 @@ actor NativeTranscriptionEngine {
                 result.segments
             }
 
-            let nonEmptySegments = whisperSegments.filter { segment in
-                let cleaned = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                return !cleaned.isEmpty
-            }
-
             var segments: [NativeTranscriptSegment] = []
-            segments.reserveCapacity(nonEmptySegments.count)
-            for segment in nonEmptySegments {
-                let mapped = NativeTranscriptSegment(
-                    startTime: Double(segment.start),
-                    endTime: Double(segment.end),
-                    text: segment.text
+            segments.reserveCapacity(whisperSegments.count)
+            for segment in whisperSegments {
+                let cleaned = WhisperTextSanitizer.cleanInline(segment.text)
+                guard !cleaned.isEmpty else { continue }
+                segments.append(
+                    NativeTranscriptSegment(
+                        startTime: Double(segment.start),
+                        endTime: Double(segment.end),
+                        text: cleaned
+                    )
                 )
-                segments.append(mapped)
             }
             segments.sort { lhs, rhs in
                 if lhs.startTime == rhs.startTime {
@@ -131,9 +130,9 @@ actor NativeTranscriptionEngine {
                 return lhs.startTime < rhs.startTime
             }
 
-            let resultTexts = results.map { $0.text }
-            let joinedResultText = resultTexts.joined(separator: " ")
-            let fallbackText = joinedResultText.trimmingCharacters(in: .whitespacesAndNewlines)
+            let fallbackText = WhisperTextSanitizer.cleanInline(
+                results.map(\.text).joined(separator: " ")
+            )
 
             let finalSegments: [NativeTranscriptSegment]
             if segments.isEmpty, !fallbackText.isEmpty {
@@ -218,9 +217,6 @@ final class NativeLectureStore: ObservableObject {
         record.progress = 0.12
         record.lastError = nil
         transcripts[recording.id] = record
-        // For a retranscription, keep the last completed transcript on disk until the
-        // replacement succeeds. A crash or termination therefore cannot destroy the
-        // last known-good result.
         if previousCompleted == nil {
             persist(record)
         }
@@ -291,7 +287,7 @@ final class NativeLectureStore: ObservableObject {
 
     func saveTranslation(recordingID: UUID, languageCode: String, text: String) {
         var record = transcript(for: recordingID)
-        let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleaned = WhisperTextSanitizer.cleanMultiline(text)
         guard !cleaned.isEmpty else { return }
         if languageCode == "en" {
             record.englishText = cleaned
@@ -321,8 +317,6 @@ final class NativeLectureStore: ObservableObject {
         record.updatedAt = Date()
         record.statusMessage = "Transcript edit saved locally"
 
-        // Any prior translation may no longer match the corrected source text. Preserve
-        // only the same-language view, which is simply the current edited transcript.
         let joinedText = record.segments.map(\.text).filter { !$0.isEmpty }.joined(separator: " ")
         let normalizedLanguage = record.detectedLanguage?.lowercased() ?? ""
         record.englishText = normalizedLanguage.hasPrefix("en") ? joinedText : nil
@@ -383,12 +377,47 @@ final class NativeLectureStore: ObservableObject {
         for url in urls where url.lastPathComponent.hasSuffix(".lectureai-transcript.json") {
             guard let data = try? Data(contentsOf: url),
                   var transcript = try? decoder.decode(NativeLectureTranscript.self, from: data) else { continue }
+
+            var migrated = false
             if transcript.state == .preparing || transcript.state == .transcribing {
                 transcript.state = .idle
                 transcript.progress = 0
                 transcript.statusMessage = "Interrupted transcription recovered · original audio is ready to retry"
+                migrated = true
             }
+
+            let cleanedSegments = transcript.segments.compactMap { segment -> NativeTranscriptSegment? in
+                let cleaned = WhisperTextSanitizer.cleanInline(segment.text)
+                guard !cleaned.isEmpty else { return nil }
+                if cleaned != segment.text { migrated = true }
+                return NativeTranscriptSegment(
+                    id: segment.id,
+                    startTime: segment.startTime,
+                    endTime: segment.endTime,
+                    text: cleaned
+                )
+            }
+            if cleanedSegments.count != transcript.segments.count { migrated = true }
+            transcript.segments = cleanedSegments
+
+            if let englishText = transcript.englishText {
+                let cleaned = WhisperTextSanitizer.cleanMultiline(englishText)
+                if cleaned != englishText { migrated = true }
+                transcript.englishText = cleaned.isEmpty ? nil : cleaned
+            }
+            if let arabicText = transcript.arabicText {
+                let cleaned = WhisperTextSanitizer.cleanMultiline(arabicText)
+                if cleaned != arabicText { migrated = true }
+                transcript.arabicText = cleaned.isEmpty ? nil : cleaned
+            }
+            let cleanedNotes = WhisperTextSanitizer.cleanMultiline(transcript.notes)
+            if cleanedNotes != transcript.notes {
+                transcript.notes = cleanedNotes
+                migrated = true
+            }
+
             transcripts[transcript.recordingID] = transcript
+            if migrated { persist(transcript) }
         }
     }
 
