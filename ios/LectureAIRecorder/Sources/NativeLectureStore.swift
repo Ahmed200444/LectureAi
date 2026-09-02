@@ -57,6 +57,20 @@ actor NativeTranscriptionEngine {
     // device recommendation only if the stronger model cannot be downloaded/loaded/run.
     static let maximumAccuracyModel = "large-v3-v20240930_626MB"
 
+    // Keep the first pass multilingual so mixed and other-language lectures are not forced
+    // into the wrong language. When the whole automatic pass is consistently English or
+    // Arabic, run one extra language-locked pass. English is checked first because it is the
+    // primary language target; Arabic is the explicit second priority.
+    static func priorityLockedLanguage(for automaticLanguages: Set<String>) -> String? {
+        if automaticLanguages == ["en"] {
+            return "en"
+        }
+        if automaticLanguages == ["ar"] {
+            return "ar"
+        }
+        return nil
+    }
+
     func transcribe(audioURL: URL) async throws -> NativeTranscriptionOutput {
         try Task.checkCancellation()
 
@@ -104,10 +118,7 @@ actor NativeTranscriptionEngine {
         do {
             try Task.checkCancellation()
 
-            // First pass stays multilingual so LectureAI never assumes the lecture is English.
-            // When that pass identifies English consistently, a second pass locks the decoder
-            // to English. This removes language-guessing ambiguity for the user's highest-
-            // priority language while preserving automatic multilingual behavior elsewhere.
+            // First pass stays multilingual so LectureAI never assumes a language up front.
             let automaticDecodeOptions = accuracyDecodeOptions(
                 language: nil,
                 detectLanguage: true
@@ -132,24 +143,25 @@ actor NativeTranscriptionEngine {
                     .filter { !$0.isEmpty && $0 != "unknown" }
             )
 
-            if automaticLanguages == ["en"] {
-                let englishDecodeOptions = accuracyDecodeOptions(
-                    language: "en",
+            if let priorityLanguage = Self.priorityLockedLanguage(for: automaticLanguages) {
+                let priorityDecodeOptions = accuracyDecodeOptions(
+                    language: priorityLanguage,
                     detectLanguage: false
                 )
 
-                // English accuracy is more important than speed. Reuse the already-loaded
-                // model for an English-locked pass. If that pass cannot return usable text,
-                // keep the successful multilingual pass rather than failing the lecture.
-                if let englishResults = try? await pipe.transcribe(
+                // Accuracy is more important than speed for English first and Arabic second.
+                // Reuse the already-loaded model for one language-locked pass. If that pass
+                // cannot return usable text, keep the successful multilingual result rather
+                // than failing or replacing it with an empty transcript.
+                if let priorityResults = try? await pipe.transcribe(
                     audioPath: preparedURL.path,
                     audioInputOptions: audioOptions,
-                    decodeOptions: englishDecodeOptions
+                    decodeOptions: priorityDecodeOptions
                 ),
-                   englishResults.contains(where: {
+                   priorityResults.contains(where: {
                        !WhisperTextSanitizer.cleanInline($0.text).isEmpty
                    }) {
-                    results = englishResults
+                    results = priorityResults
                 }
             }
 
@@ -298,7 +310,7 @@ final class NativeLectureStore: ObservableObject {
 
         do {
             record.state = .transcribing
-            record.statusMessage = "Transcribing locally with maximum English priority and automatic multilingual fallback…"
+            record.statusMessage = "Transcribing locally with English first, Arabic second, and automatic multilingual fallback…"
             record.progress = 0.42
             transcripts[recording.id] = record
             if previousCompleted == nil {
