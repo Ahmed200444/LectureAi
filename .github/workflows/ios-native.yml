@@ -6,18 +6,35 @@ on:
     branches:
       - native-ios-*
       - ios-cloud-ipa-*
-    paths:
-      - 'ios/**'
-      - '.github/workflows/ios-native.yml'
   pull_request:
-    paths:
-      - 'ios/**'
-      - '.github/workflows/ios-native.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
 
 jobs:
+  repo-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck, lint, safeguards, and production build
+        run: npm run check
+
   build-ios-recorder:
+    needs: repo-check
     runs-on: macos-latest
-    timeout-minutes: 25
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v4
 
@@ -28,7 +45,15 @@ jobs:
         working-directory: ios/LectureAIRecorder
         run: xcodegen generate
 
-      - name: Build iPhone Simulator app
+      - name: Resolve pinned Swift packages
+        working-directory: ios/LectureAIRecorder
+        run: |
+          xcodebuild \
+            -resolvePackageDependencies \
+            -project LectureAIRecorder.xcodeproj \
+            -scheme LectureAIRecorder
+
+      - name: Build universal iPhone/iPad Simulator app
         working-directory: ios/LectureAIRecorder
         run: |
           set -o pipefail
@@ -39,9 +64,96 @@ jobs:
             -sdk iphonesimulator \
             -destination 'generic/platform=iOS Simulator' \
             CODE_SIGNING_ALLOWED=NO \
-            build
+            build 2>&1 | tee simulator-build.log
 
-      - name: Build unsigned iPhone device app
+      - name: Extract simulator compiler errors
+        if: always()
+        working-directory: ios/LectureAIRecorder
+        run: |
+          if [ -f simulator-build.log ]; then
+            grep -E '(^|[[:space:]])(error:|fatal error:)|:[0-9]+:[0-9]+: error:' simulator-build.log > simulator-compiler-errors.txt || true
+          else
+            echo 'simulator-build.log was not created' > simulator-compiler-errors.txt
+          fi
+
+      - name: Upload simulator build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: LectureAI-simulator-build-diagnostics
+          path: |
+            ios/LectureAIRecorder/simulator-compiler-errors.txt
+            ios/LectureAIRecorder/simulator-build.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Run native unit tests on iPhone and iPad
+        working-directory: ios/LectureAIRecorder
+        run: |
+          set -euo pipefail
+          DEVICE_IDS="$(xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          data = json.load(sys.stdin)
+          devices = [d for runtime in data["devices"].values() for d in runtime if d.get("isAvailable")]
+          iphone = next((d for d in devices if d.get("name", "").startswith("iPhone")), None)
+          ipad = next((d for d in devices if d.get("name", "").startswith("iPad")), None)
+          if not iphone or not ipad:
+              raise SystemExit("Both an available iPhone and iPad simulator are required")
+          print(iphone["udid"])
+          print(ipad["udid"])
+          ')"
+
+          IPHONE_ID="$(printf '%s\n' "$DEVICE_IDS" | sed -n '1p')"
+          IPAD_ID="$(printf '%s\n' "$DEVICE_IDS" | sed -n '2p')"
+          test -n "$IPHONE_ID"
+          test -n "$IPAD_ID"
+          test "$IPHONE_ID" != "$IPAD_ID"
+
+          echo "Testing LectureAI on iPhone simulator: $IPHONE_ID"
+          xcodebuild \
+            -project LectureAIRecorder.xcodeproj \
+            -scheme LectureAIRecorder \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,id=$IPHONE_ID" \
+            CODE_SIGNING_ALLOWED=NO \
+            test 2>&1 | tee simulator-test-iphone.log
+
+          echo "Testing LectureAI on iPad simulator: $IPAD_ID"
+          xcodebuild \
+            -project LectureAIRecorder.xcodeproj \
+            -scheme LectureAIRecorder \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,id=$IPAD_ID" \
+            CODE_SIGNING_ALLOWED=NO \
+            test 2>&1 | tee simulator-test-ipad.log
+
+      - name: Extract native unit test failures
+        if: always()
+        working-directory: ios/LectureAIRecorder
+        run: |
+          : > simulator-test-failures.txt
+          for log in simulator-test-iphone.log simulator-test-ipad.log; do
+            if [ -f "$log" ]; then
+              echo "===== $log =====" >> simulator-test-failures.txt
+              grep -E 'Test Case|Test Suite|XCTAssert|failed|failure|error:|Testing failed|NativeLectureTests' "$log" >> simulator-test-failures.txt || true
+            else
+              echo "$log was not created; the test step may have failed before xcodebuild started" >> simulator-test-failures.txt
+            fi
+          done
+
+      - name: Upload native unit test diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: LectureAI-native-test-diagnostics
+          path: |
+            ios/LectureAIRecorder/simulator-test-failures.txt
+            ios/LectureAIRecorder/simulator-test-iphone.log
+            ios/LectureAIRecorder/simulator-test-ipad.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Build unsigned iPhone/iPad device app
         working-directory: ios/LectureAIRecorder
         run: |
           set -euo pipefail
@@ -65,6 +177,39 @@ jobs:
           cp -R "$APP_PATH" Payload/
           ditto -c -k --sequesterRsrc --keepParent Payload LectureAIRecorder-unsigned.ipa
           test -s LectureAIRecorder-unsigned.ipa
+
+      - name: Verify packaged app metadata
+        working-directory: ios/LectureAIRecorder
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import plistlib
+          from pathlib import Path
+
+          plist_path = Path('Payload/LectureAIRecorder.app/Info.plist')
+          assert plist_path.exists(), f'Missing packaged Info.plist: {plist_path}'
+          with plist_path.open('rb') as handle:
+              info = plistlib.load(handle)
+
+          assert info.get('CFBundleIdentifier') == 'com.lectureai.recorder', info.get('CFBundleIdentifier')
+          assert info.get('CFBundleDisplayName') == 'LectureAI', info.get('CFBundleDisplayName')
+          assert str(info.get('CFBundleShortVersionString')) == '1.0.1', info.get('CFBundleShortVersionString')
+          assert str(info.get('CFBundleVersion')) == '2', info.get('CFBundleVersion')
+          families = set(info.get('UIDeviceFamily', []))
+          assert {1, 2}.issubset(families), families
+          assert 'audio' in info.get('UIBackgroundModes', []), info.get('UIBackgroundModes')
+          minimum = str(info.get('MinimumOSVersion', ''))
+          assert minimum.startswith('17.'), minimum
+          print(
+              'Packaged LectureAI metadata verified for iPhone + iPad:',
+              info.get('CFBundleIdentifier'),
+              info.get('CFBundleShortVersionString'),
+              info.get('CFBundleVersion'),
+              sorted(families),
+              info.get('UIBackgroundModes'),
+              minimum,
+          )
+          PY
 
       - name: Upload unsigned IPA
         uses: actions/upload-artifact@v4

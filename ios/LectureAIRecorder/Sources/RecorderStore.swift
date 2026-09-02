@@ -22,6 +22,16 @@ struct SavedRecording: Identifiable, Codable, Hashable {
     }
 }
 
+private struct InProgressRecordingCheckpoint: Codable {
+    let id: UUID
+    let title: String
+    let fileName: String
+    let createdAt: Date
+    let marks: [RecordingMark]
+    let lastKnownDuration: TimeInterval
+    let updatedAt: Date
+}
+
 enum RecorderState: Equatable {
     case idle
     case recording
@@ -43,6 +53,9 @@ final class RecorderStore: NSObject, ObservableObject, AVAudioRecorderDelegate, 
     @Published var lastSavedRecording: SavedRecording?
     @Published var isPlaying = false
     @Published var keepScreenAwake = true
+    @Published private(set) var isStartingRecording = false
+    @Published private(set) var hasUnresolvedRecovery = false
+    @Published private(set) var unresolvedRecoveryURL: URL?
 
     private var recorder: AVAudioRecorder?
     private var player: AVAudioPlayer?
@@ -51,6 +64,15 @@ final class RecorderStore: NSObject, ObservableObject, AVAudioRecorderDelegate, 
     private var currentID = UUID()
     private var currentCreatedAt = Date()
     private var finishing = false
+    private var recorderCanResume = true
+    private var meterTicks = 0
+    private var lastObservedFileSize: Int64 = 0
+    private var stagnantFileChecks = 0
+    private var silentMeterChecks = 0
+
+    var canContinueRecording: Bool {
+        (state == .paused || state == .interrupted) && recorderCanResume && recorder != nil
+    }
 
     static let recordingsDirectory: URL = {
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -59,11 +81,17 @@ final class RecorderStore: NSObject, ObservableObject, AVAudioRecorderDelegate, 
         return directory
     }()
 
+    private static let checkpointURL = recordingsDirectory.appendingPathComponent(".lectureai-in-progress.json")
+
     override init() {
         super.init()
         NotificationCenter.default.addObserver(self, selector: #selector(handleInterruption(_:)), name: AVAudioSession.interruptionNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleRouteChange(_:)), name: AVAudioSession.routeChangeNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(handleMediaServicesReset(_:)), name: AVAudioSession.mediaServicesWereResetNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(handleWillTerminate(_:)), name: UIApplication.willTerminateNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(handleDidEnterBackground(_:)), name: UIApplication.didEnterBackgroundNotification, object: nil)
+        recoverInterruptedRecordingIfNeeded()
+        recoverOrphanedAudioFiles()
         refreshStorage()
         refreshLibrary()
     }
@@ -73,14 +101,24 @@ final class RecorderStore: NSObject, ObservableObject, AVAudioRecorderDelegate, 
         meterTimer?.invalidate()
     }
 
+    @MainActor
     func startRecording() async {
-        guard state != .recording else { return }
+        guard !isStartingRecording,
+              !hasUnresolvedRecovery,
+              state != .recording,
+              state != .paused,
+              state != .interrupted else { return }
+
+        // This guard is owned by RecorderStore, not only the SwiftUI button. It flips
+        // synchronously on the MainActor before the first await, so multiple callers
+        // cannot create competing AVAudioRecorder instances during permission/session setup.
+        isStartingRecording = true
+        defer { isStartingRecording = false }
+
         let allowed = await requestMicrophonePermission()
         guard allowed else {
-            await MainActor.run {
-                self.state = .failed("Microphone permission is required to record a lecture.")
-                self.statusMessage = "Microphone permission denied"
-            }
+            state = .failed("Microphone permission is required to record a lecture.")
+            statusMessage = "Microphone permission denied"
             return
         }
 
@@ -102,27 +140,32 @@ final class RecorderStore: NSObject, ObservableObject, AVAudioRecorderDelegate, 
                 throw RecorderError.couldNotStart
             }
 
-            await MainActor.run {
-                self.recorder = newRecorder
-                self.currentURL = url
-                self.currentID = UUID()
-                self.currentCreatedAt = Date()
-                self.duration = 0
-                self.level = 0
-                self.marks = []
-                self.finishing = false
-                self.state = .recording
-                self.statusMessage = "Recording with Apple native audio · 48 kHz AAC mono"
-                self.applyIdleTimerPolicy()
-                self.startMeterTimer()
-                self.refreshStorage()
-            }
+            player?.stop()
+            player = nil
+            isPlaying = false
+            recorder = newRecorder
+            currentURL = url
+            currentID = UUID()
+            currentCreatedAt = Date()
+            duration = 0
+            level = 0
+            marks = []
+            finishing = false
+            recorderCanResume = true
+            meterTicks = 0
+            lastObservedFileSize = 0
+            stagnantFileChecks = 0
+            silentMeterChecks = 0
+            state = .recording
+            statusMessage = "Recording with Apple native audio · background recording enabled"
+            persistInProgressCheckpoint()
+            applyIdleTimerPolicy()
+            startMeterTimer()
+            refreshStorage()
         } catch {
-            await MainActor.run {
-                self.state = .failed(error.localizedDescription)
-                self.statusMessage = "Could not start native recording"
-                self.applyIdleTimerPolicy()
-            }
+            state = .failed(error.localizedDescription)
+            statusMessage = "Could not start native recording"
+            applyIdleTimerPolicy()
         }
     }
 
@@ -133,20 +176,28 @@ final class RecorderStore: NSObject, ObservableObject, AVAudioRecorderDelegate, 
         level = 0
         state = .paused
         statusMessage = "Paused · same microphone session and same audio file are preserved"
+        persistInProgressCheckpoint()
         applyIdleTimerPolicy()
     }
 
     func continueRecording() {
         guard state == .paused || state == .interrupted, let recorder else { return }
+        guard recorderCanResume else {
+            statusMessage = "This microphone encoder ended and cannot safely resume the same file · save the captured audio, then start a new recording"
+            return
+        }
+
         do {
             try configureAudioSession()
             guard recorder.record() else { throw RecorderError.couldNotResume }
             state = .recording
             statusMessage = "Recording continued in the same lecture file"
+            persistInProgressCheckpoint()
             applyIdleTimerPolicy()
         } catch {
             state = .interrupted
             statusMessage = "Could not resume the microphone yet · the recording already captured remains preserved"
+            persistInProgressCheckpoint()
         }
     }
 
@@ -154,30 +205,78 @@ final class RecorderStore: NSObject, ObservableObject, AVAudioRecorderDelegate, 
         guard state == .recording || state == .paused else { return }
         let time = recorder?.currentTime ?? duration
         marks.append(RecordingMark(id: UUID(), time: time))
+        persistInProgressCheckpoint()
     }
 
     func finishAndSave() {
         guard let recorder, let url = currentURL else { return }
         finishing = true
+        let lastKnownDuration = max(duration, recorder.currentTime)
+
+        // Persist the freshest checkpoint before stopping. If final AAC decoding or
+        // metadata writing fails, the exact file/title/marks remain recoverable.
+        duration = lastKnownDuration
+        persistInProgressCheckpoint()
         recorder.stop()
-        duration = recorder.currentTime
         level = 0
         meterTimer?.invalidate()
         meterTimer = nil
 
+        guard let decodedDuration = audioDuration(at: url) else {
+            // Never label a nonzero but undecodable live capture as a normal saved lecture.
+            // Keep the raw file + checkpoint and require an explicit recovery decision.
+            recorder.delegate = nil
+            self.recorder = nil
+            currentURL = nil
+            recorderCanResume = true
+            hasUnresolvedRecovery = true
+            unresolvedRecoveryURL = url
+            state = .failed("Captured audio needs recovery")
+            statusMessage = "Captured audio was preserved but could not be decoded · export, retry recovery, or explicitly discard it before starting another lecture"
+            deactivateAudioSession()
+            applyIdleTimerPolicy()
+            refreshLibrary()
+            refreshStorage()
+            return
+        }
+
+        duration = decodedDuration
         let item = SavedRecording(
             id: currentID,
             title: cleanTitle,
             fileName: url.lastPathComponent,
             createdAt: currentCreatedAt,
-            duration: duration,
+            duration: decodedDuration,
             size: fileSize(at: url),
             marks: marks
         )
-        saveMetadata(item)
+
+        guard saveMetadata(item) else {
+            // The audio is decodable, but losing this checkpoint could lose title/marks.
+            // Treat metadata failure as unresolved recovery until a retry succeeds.
+            recorder.delegate = nil
+            self.recorder = nil
+            currentURL = nil
+            recorderCanResume = true
+            hasUnresolvedRecovery = true
+            unresolvedRecoveryURL = url
+            state = .failed("Recording metadata needs recovery")
+            statusMessage = "Audio is intact, but its library metadata could not be written · recovery checkpoint kept"
+            deactivateAudioSession()
+            applyIdleTimerPolicy()
+            refreshLibrary()
+            refreshStorage()
+            return
+        }
+
+        clearInProgressCheckpoint()
+        statusMessage = "Native recording saved locally · ready for LectureAI transcription"
         lastSavedRecording = item
         state = .saved
-        statusMessage = "Native recording saved locally · ready to listen or send to LectureAI"
+        recorder.delegate = nil
+        self.recorder = nil
+        currentURL = nil
+        recorderCanResume = true
         deactivateAudioSession()
         applyIdleTimerPolicy()
         refreshLibrary()
@@ -188,23 +287,59 @@ final class RecorderStore: NSObject, ObservableObject, AVAudioRecorderDelegate, 
         finishing = true
         recorder?.stop()
         if let currentURL { try? FileManager.default.removeItem(at: currentURL) }
+        clearInProgressCheckpoint()
         resetSessionState()
         statusMessage = "Recording discarded"
     }
 
-    func play(_ recording: SavedRecording) {
+    func retryUnresolvedRecovery() {
+        guard hasUnresolvedRecovery else { return }
+        hasUnresolvedRecovery = false
+        unresolvedRecoveryURL = nil
+        state = .idle
+        statusMessage = "Retrying preserved recording recovery…"
+        recoverInterruptedRecordingIfNeeded()
+        refreshLibrary()
+        refreshStorage()
+    }
+
+    func discardUnresolvedRecovery() {
+        guard hasUnresolvedRecovery else { return }
+
+        var audioURL = unresolvedRecoveryURL
+        if audioURL == nil,
+           let data = try? Data(contentsOf: Self.checkpointURL),
+           let checkpoint = try? JSONDecoder.lectureAI.decode(InProgressRecordingCheckpoint.self, from: data) {
+            audioURL = Self.recordingsDirectory.appendingPathComponent(checkpoint.fileName)
+        }
+
+        if let audioURL {
+            try? FileManager.default.removeItem(at: audioURL)
+            try? FileManager.default.removeItem(at: metadataURL(for: audioURL))
+        }
+        clearInProgressCheckpoint()
+        resetSessionState()
+        statusMessage = "Preserved recovery audio discarded by your explicit confirmation"
+        refreshLibrary()
+    }
+
+    func play(_ recording: SavedRecording, from startTime: TimeInterval = 0) {
         guard state != .recording && state != .paused && state != .interrupted else { return }
         do {
+            player?.stop()
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(.playback, mode: .spokenAudio)
             try session.setActive(true)
             let newPlayer = try AVAudioPlayer(contentsOf: recording.audioURL)
             newPlayer.delegate = self
             newPlayer.prepareToPlay()
+            if newPlayer.duration > 0 {
+                newPlayer.currentTime = min(max(0, startTime), newPlayer.duration)
+            }
             newPlayer.play()
             player = newPlayer
             isPlaying = true
-            statusMessage = "Playing saved original audio"
+            statusMessage = startTime > 0 ? "Playing saved original audio from \(formatRecorderTimestamp(startTime))" : "Playing saved original audio"
         } catch {
             statusMessage = "Could not play the saved recording: \(error.localizedDescription)"
         }
@@ -218,35 +353,33 @@ final class RecorderStore: NSObject, ObservableObject, AVAudioRecorderDelegate, 
         deactivateAudioSession()
     }
 
-    func delete(_ recording: SavedRecording) {
-        if player?.url == recording.audioURL { stopPlayback() }
-        try? FileManager.default.removeItem(at: recording.audioURL)
-        try? FileManager.default.removeItem(at: metadataURL(for: recording.audioURL))
-        if lastSavedRecording?.id == recording.id { lastSavedRecording = nil }
-        refreshLibrary()
-        refreshStorage()
-    }
-
     func audioRecorderDidFinishRecording(_ recorder: AVAudioRecorder, successfully flag: Bool) {
         guard !finishing else { return }
         DispatchQueue.main.async {
-            self.duration = recorder.currentTime
+            self.recorderCanResume = false
+            self.duration = self.audioDuration(at: recorder.url) ?? recorder.currentTime
             self.level = 0
             self.meterTimer?.invalidate()
             self.meterTimer = nil
             self.state = .interrupted
+            self.persistInProgressCheckpoint()
             self.statusMessage = flag
-                ? "Recording stopped unexpectedly · captured audio remains on this device"
-                : "The audio encoder stopped unexpectedly · captured audio remains on this device"
+                ? "Recording stopped unexpectedly · captured audio remains recoverable; save it before starting another recording"
+                : "The audio encoder stopped unexpectedly · captured audio remains recoverable; save it before starting another recording"
             self.applyIdleTimerPolicy()
         }
     }
 
     func audioRecorderEncodeErrorDidOccur(_ recorder: AVAudioRecorder, error: Error?) {
         DispatchQueue.main.async {
-            self.duration = recorder.currentTime
+            self.recorderCanResume = false
+            self.duration = self.audioDuration(at: recorder.url) ?? recorder.currentTime
+            self.level = 0
+            self.meterTimer?.invalidate()
+            self.meterTimer = nil
             self.state = .interrupted
-            self.statusMessage = "Encoding interruption · captured audio remains preserved\(error.map { ": \($0.localizedDescription)" } ?? "")"
+            self.persistInProgressCheckpoint()
+            self.statusMessage = "Encoding interruption · captured audio remains preserved; save it before starting another recording\(error.map { ": \($0.localizedDescription)" } ?? "")"
             self.applyIdleTimerPolicy()
         }
     }
@@ -272,14 +405,15 @@ final class RecorderStore: NSObject, ObservableObject, AVAudioRecorderDelegate, 
                     self.duration = self.recorder?.currentTime ?? self.duration
                     self.level = 0
                     self.state = .interrupted
+                    self.persistInProgressCheckpoint()
                     self.statusMessage = "iOS interrupted the microphone · captured audio remains preserved"
                 }
             case .ended:
                 let rawOptions = notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
                 let options = AVAudioSession.InterruptionOptions(rawValue: rawOptions)
-                if self.state == .interrupted && options.contains(.shouldResume) {
+                if self.state == .interrupted && self.recorderCanResume && options.contains(.shouldResume) {
                     self.continueRecording()
-                } else if self.state == .interrupted {
+                } else if self.state == .interrupted && self.recorderCanResume {
                     self.statusMessage = "Microphone interruption ended · tap Continue recording when ready"
                 }
             @unknown default:
@@ -303,14 +437,36 @@ final class RecorderStore: NSObject, ObservableObject, AVAudioRecorderDelegate, 
             self.recorder?.pause()
             self.duration = self.recorder?.currentTime ?? self.duration
             self.level = 0
+            self.meterTimer?.invalidate()
+            self.meterTimer = nil
+            self.recorderCanResume = false
             self.state = .interrupted
-            self.statusMessage = "iOS audio services restarted · captured audio remains preserved; tap Continue recording"
+            self.persistInProgressCheckpoint()
+            self.statusMessage = "iOS audio services restarted · save the captured audio, then start a new recording"
             self.applyIdleTimerPolicy()
         }
     }
 
+    @objc private func handleDidEnterBackground(_ notification: Notification) {
+        guard state == .recording || state == .paused || state == .interrupted else { return }
+        persistInProgressCheckpoint()
+        // Do not deactivate the audio session here. An active AVAudioRecorder plus the
+        // app's `audio` background mode allows recording to continue while locked or
+        // while another app is in the foreground, subject to normal iOS interruptions.
+    }
+
+    @objc private func handleWillTerminate(_ notification: Notification) {
+        guard state == .recording || state == .paused || state == .interrupted else { return }
+        duration = recorder?.currentTime ?? duration
+        persistInProgressCheckpoint()
+    }
+
     private func requestMicrophonePermission() async -> Bool {
-        await withCheckedContinuation { continuation in
+        if #available(iOS 17.0, *) {
+            return await AVAudioApplication.requestRecordPermission()
+        }
+
+        return await withCheckedContinuation { continuation in
             AVAudioSession.sharedInstance().requestRecordPermission { allowed in
                 continuation.resume(returning: allowed)
             }
@@ -319,7 +475,10 @@ final class RecorderStore: NSObject, ObservableObject, AVAudioRecorderDelegate, 
 
     private func configureAudioSession() throws {
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.record, mode: .videoRecording)
+        // Use a neutral recording mode for lectures. `.videoRecording` is camera-oriented
+        // and can choose a mic/data source optimized for a movie rather than a phone lying
+        // on a desk with speech arriving from different directions.
+        try session.setCategory(.record, mode: .default)
         try session.setPreferredSampleRate(48_000)
         try session.setPreferredIOBufferDuration(0.02)
         try session.setActive(true)
@@ -327,15 +486,11 @@ final class RecorderStore: NSObject, ObservableObject, AVAudioRecorderDelegate, 
     }
 
     private func preferBuiltInLectureMicrophone(_ session: AVAudioSession) throws {
+        // Prefer the phone/tablet's built-in microphone, but do not force a front-facing
+        // data source or cardioid polar pattern. Directional beam choices can attenuate
+        // a lecturer who is off-axis; iOS may choose the suitable built-in data source.
         guard let builtIn = session.availableInputs?.first(where: { $0.portType == .builtInMic }) else { return }
         try session.setPreferredInput(builtIn)
-
-        guard let sources = builtIn.dataSources, !sources.isEmpty else { return }
-        let source = sources.first(where: { $0.orientation == .front }) ?? sources.first!
-        if source.supportedPolarPatterns?.contains(.cardioid) == true {
-            try? source.setPreferredPolarPattern(.cardioid)
-        }
-        try? builtIn.setPreferredDataSource(source)
     }
 
     private func deactivateAudioSession() {
@@ -352,10 +507,42 @@ final class RecorderStore: NSObject, ObservableObject, AVAudioRecorderDelegate, 
                 let amplitude = pow(10.0, Double(db) / 20.0)
                 self.level = min(1, max(0, amplitude * 8))
                 self.duration = recorder.currentTime
-                self.refreshStorage()
+                self.meterTicks += 1
+
+                if db <= -120 {
+                    self.silentMeterChecks += 1
+                } else {
+                    self.silentMeterChecks = 0
+                }
+
+                // Keep the visual meter smooth, but perform filesystem/checkpoint work
+                // only every 5 seconds instead of ten times per second.
+                if self.meterTicks % 50 == 0 {
+                    self.performRecordingHealthCheck()
+                    self.persistInProgressCheckpoint()
+                    self.refreshStorage()
+                }
             } else {
                 self.level = 0
             }
+        }
+    }
+
+    private func performRecordingHealthCheck() {
+        guard let currentURL else { return }
+        let currentSize = fileSize(at: currentURL)
+        if duration > 5, currentSize <= lastObservedFileSize {
+            stagnantFileChecks += 1
+        } else {
+            stagnantFileChecks = 0
+        }
+        lastObservedFileSize = currentSize
+
+        // Warn only. Never stop a lecture because the room is quiet or the speaker is distant.
+        if stagnantFileChecks >= 2 {
+            statusMessage = "Recording is active, but the encoded audio file is not growing normally · keep the app open and check the microphone"
+        } else if silentMeterChecks >= 100 {
+            statusMessage = "Recording is active, but the microphone signal has been digitally silent for about 10 seconds · check the microphone/route"
         }
     }
 
@@ -370,19 +557,142 @@ final class RecorderStore: NSObject, ObservableObject, AVAudioRecorderDelegate, 
         let safe = cleanTitle
             .replacingOccurrences(of: "/", with: "-")
             .replacingOccurrences(of: ":", with: "-")
-        return Self.recordingsDirectory.appendingPathComponent("\(safe)_\(formatter.string(from: Date())).m4a")
+        let uniqueSuffix = UUID().uuidString.prefix(8)
+        return Self.recordingsDirectory.appendingPathComponent("\(safe)_\(formatter.string(from: Date()))_\(uniqueSuffix).m4a")
     }
 
     private func metadataURL(for audioURL: URL) -> URL {
         audioURL.deletingPathExtension().appendingPathExtension("lectureai.json")
     }
 
-    private func saveMetadata(_ recording: SavedRecording) {
+    @discardableResult
+    private func saveMetadata(_ recording: SavedRecording) -> Bool {
         do {
             let data = try JSONEncoder.lectureAI.encode(recording)
             try data.write(to: metadataURL(for: recording.audioURL), options: .atomic)
+            return true
         } catch {
-            statusMessage = "Audio saved, but its local metadata could not be written"
+            return false
+        }
+    }
+
+    private func persistInProgressCheckpoint() {
+        guard let currentURL else { return }
+        let checkpoint = InProgressRecordingCheckpoint(
+            id: currentID,
+            title: cleanTitle,
+            fileName: currentURL.lastPathComponent,
+            createdAt: currentCreatedAt,
+            marks: marks,
+            lastKnownDuration: recorder?.currentTime ?? duration,
+            updatedAt: Date()
+        )
+        do {
+            let data = try JSONEncoder.lectureAI.encode(checkpoint)
+            try data.write(to: Self.checkpointURL, options: .atomic)
+        } catch {
+            // The audio recorder continues even if a sidecar checkpoint cannot be written.
+        }
+    }
+
+    private func clearInProgressCheckpoint() {
+        try? FileManager.default.removeItem(at: Self.checkpointURL)
+        hasUnresolvedRecovery = false
+        unresolvedRecoveryURL = nil
+    }
+
+    private func recoverInterruptedRecordingIfNeeded() {
+        guard let data = try? Data(contentsOf: Self.checkpointURL),
+              let checkpoint = try? JSONDecoder.lectureAI.decode(InProgressRecordingCheckpoint.self, from: data) else {
+            return
+        }
+
+        let audioURL = Self.recordingsDirectory.appendingPathComponent(checkpoint.fileName)
+        guard FileManager.default.fileExists(atPath: audioURL.path) else {
+            clearInProgressCheckpoint()
+            return
+        }
+
+        let size = fileSize(at: audioURL)
+        guard size > 0 else {
+            try? FileManager.default.removeItem(at: audioURL)
+            clearInProgressCheckpoint()
+            return
+        }
+
+        guard let recoveredDuration = audioDuration(at: audioURL) else {
+            // Never convert a nonzero-but-undecodable AAC into a normal library item.
+            // Preserve both the raw file and checkpoint. The recovery gate lets the user
+            // export the raw capture, retry, or explicitly discard it; nothing is deleted
+            // automatically merely because iOS cannot decode it.
+            hasUnresolvedRecovery = true
+            unresolvedRecoveryURL = audioURL
+            state = .failed("Interrupted recording needs recovery")
+            statusMessage = "Interrupted audio was preserved but could not be decoded · export, retry recovery, or explicitly discard it"
+            return
+        }
+
+        let recovered = SavedRecording(
+            id: checkpoint.id,
+            title: checkpoint.title + " (Recovered)",
+            fileName: checkpoint.fileName,
+            createdAt: checkpoint.createdAt,
+            duration: recoveredDuration,
+            size: size,
+            marks: checkpoint.marks
+        )
+
+        if saveMetadata(recovered) {
+            lastSavedRecording = recovered
+            clearInProgressCheckpoint()
+            state = .saved
+            statusMessage = "Recovered a lecture that was interrupted before Finish was tapped"
+        } else {
+            hasUnresolvedRecovery = true
+            unresolvedRecoveryURL = audioURL
+            state = .failed("Recording metadata needs recovery")
+            statusMessage = "Captured audio is decodable, but recovery metadata could not be written yet · checkpoint kept"
+        }
+    }
+
+    private func recoverOrphanedAudioFiles() {
+        let urls = (try? FileManager.default.contentsOfDirectory(
+            at: Self.recordingsDirectory,
+            includingPropertiesForKeys: [.creationDateKey, .contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        let supportedAudioExtensions = Set(["m4a", "mp3", "wav", "aac", "caf", "flac"])
+
+        let checkpointFileName: String? = {
+            guard let data = try? Data(contentsOf: Self.checkpointURL),
+                  let checkpoint = try? JSONDecoder.lectureAI.decode(InProgressRecordingCheckpoint.self, from: data) else {
+                return nil
+            }
+            return checkpoint.fileName
+        }()
+
+        for audioURL in urls {
+            let ext = audioURL.pathExtension.lowercased()
+            guard supportedAudioExtensions.contains(ext) else { continue }
+            guard audioURL.lastPathComponent != checkpointFileName else { continue }
+            guard !FileManager.default.fileExists(atPath: metadataURL(for: audioURL).path) else { continue }
+
+            let size = fileSize(at: audioURL)
+            guard size > 0, let duration = audioDuration(at: audioURL) else { continue }
+            let values = try? audioURL.resourceValues(forKeys: [.creationDateKey, .contentModificationDateKey])
+            let createdAt = values?.creationDate ?? values?.contentModificationDate ?? Date()
+            let baseTitle = audioURL.deletingPathExtension().lastPathComponent
+                .replacingOccurrences(of: "_", with: " ")
+            let recovered = SavedRecording(
+                id: UUID(),
+                title: baseTitle + " (Recovered)",
+                fileName: audioURL.lastPathComponent,
+                createdAt: createdAt,
+                duration: duration,
+                size: size,
+                marks: []
+            )
+            _ = saveMetadata(recovered)
         }
     }
 
@@ -414,6 +724,13 @@ final class RecorderStore: NSObject, ObservableObject, AVAudioRecorderDelegate, 
         return (attributes?[.size] as? NSNumber)?.int64Value ?? 0
     }
 
+    private func audioDuration(at url: URL) -> TimeInterval? {
+        guard let audioPlayer = try? AVAudioPlayer(contentsOf: url),
+              audioPlayer.duration.isFinite,
+              audioPlayer.duration > 0 else { return nil }
+        return audioPlayer.duration
+    }
+
     private func applyIdleTimerPolicy() {
         let activeSession = state == .recording || state == .paused || state == .interrupted
         UIApplication.shared.isIdleTimerDisabled = keepScreenAwake && activeSession
@@ -427,6 +744,11 @@ final class RecorderStore: NSObject, ObservableObject, AVAudioRecorderDelegate, 
         duration = 0
         level = 0
         marks = []
+        recorderCanResume = true
+        meterTicks = 0
+        lastObservedFileSize = 0
+        stagnantFileChecks = 0
+        silentMeterChecks = 0
         state = .idle
         deactivateAudioSession()
         applyIdleTimerPolicy()
@@ -461,4 +783,14 @@ private extension JSONDecoder {
         decoder.dateDecodingStrategy = .iso8601
         return decoder
     }
+}
+
+private func formatRecorderTimestamp(_ seconds: TimeInterval) -> String {
+    let total = max(0, Int(seconds.rounded(.down)))
+    let hours = total / 3600
+    let minutes = (total % 3600) / 60
+    let secs = total % 60
+    return hours > 0
+        ? String(format: "%d:%02d:%02d", hours, minutes, secs)
+        : String(format: "%02d:%02d", minutes, secs)
 }

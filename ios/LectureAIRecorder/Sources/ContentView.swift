@@ -1,11 +1,21 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ContentView: View {
     @EnvironmentObject private var recorder: RecorderStore
-    @Environment(\.openURL) private var openURL
+    @EnvironmentObject private var lectureStore: NativeLectureStore
+    @StateObject private var preflight = MicrophonePreflightStore()
+    @State private var showingImporter = false
+    @State private var showingDeleteConfirmation = false
+    @State private var pendingDeletion: SavedRecording?
+    @State private var startingNativeRecording = false
 
     private var sessionActive: Bool {
         recorder.state == .recording || recorder.state == .paused || recorder.state == .interrupted
+    }
+
+    private var transcriptionActive: Bool {
+        lectureStore.activeRecordingID != nil
     }
 
     var body: some View {
@@ -21,16 +31,47 @@ struct ContentView: View {
                 }
                 .padding()
             }
-            .navigationTitle("LectureAI Recorder")
+            .navigationTitle("LectureAI")
             .background(Color(.systemGroupedBackground))
+            .fileImporter(
+                isPresented: $showingImporter,
+                allowedContentTypes: [.audio],
+                allowsMultipleSelection: false
+            ) { result in
+                switch result {
+                case .success(let urls):
+                    guard let url = urls.first else { return }
+                    Task { await recorder.importRecording(from: url) }
+                case .failure(let error):
+                    recorder.statusMessage = "Could not open the selected recording: \(error.localizedDescription)"
+                }
+            }
+            .confirmationDialog(
+                "Delete lecture?",
+                isPresented: $showingDeleteConfirmation,
+                titleVisibility: .visible,
+                presenting: pendingDeletion
+            ) { item in
+                Button("Delete from this device", role: .destructive) {
+                    if recorder.deleteSafely(item) {
+                        lectureStore.deleteTranscript(for: item.id)
+                    }
+                    pendingDeletion = nil
+                }
+                Button("Cancel", role: .cancel) {
+                    pendingDeletion = nil
+                }
+            } message: { item in
+                Text("This permanently removes the original audio and its local transcript for “\(item.title)”.")
+            }
         }
     }
 
     private var headerCard: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Label("Native iPhone/iPad lecture capture", systemImage: "waveform")
+            Label("One native LectureAI app", systemImage: "waveform.and.mic")
                 .font(.headline)
-            Text("Uses Apple’s native microphone APIs instead of Safari. The original recording stays on this device unless you explicitly share it.")
+            Text("Record, import, transcribe, translate, review notes, and play lectures without sending the original audio to a cloud speech service.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
             HStack(spacing: 14) {
@@ -40,6 +81,14 @@ struct ContentView: View {
             }
             .font(.caption)
             .foregroundStyle(.secondary)
+
+            Button {
+                showingImporter = true
+            } label: {
+                Label("Import recording", systemImage: "square.and.arrow.down")
+            }
+            .buttonStyle(.bordered)
+            .disabled(sessionActive || transcriptionActive || startingNativeRecording || recorder.isStartingRecording || recorder.hasUnresolvedRecovery)
         }
         .cardStyle()
     }
@@ -62,7 +111,7 @@ struct ContentView: View {
 
             TextField("Lecture title", text: $recorder.title)
                 .textFieldStyle(.roundedBorder)
-                .disabled(sessionActive)
+                .disabled(sessionActive || startingNativeRecording || recorder.isStartingRecording || recorder.hasUnresolvedRecovery)
 
             Text(formatDuration(recorder.duration))
                 .font(.system(size: 44, weight: .semibold, design: .rounded))
@@ -86,10 +135,24 @@ struct ContentView: View {
             .font(.caption)
             .foregroundStyle(.secondary)
 
+            if recorder.hasUnresolvedRecovery {
+                Label("LectureAI preserved an interrupted audio file that iOS could not decode. Its recovery checkpoint is still intact, and starting or importing another lecture is blocked so that checkpoint cannot be overwritten.", systemImage: "exclamationmark.shield")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            } else if !sessionActive {
+                microphonePreflightControls
+            }
+
             controlButtons
 
+            if transcriptionActive && !sessionActive {
+                Label("Finish the active local transcription before starting or importing another recording. This keeps recording and the Core ML speech model from competing for device resources.", systemImage: "cpu")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             if sessionActive {
-                Label("LectureAI keeps the screen awake during this recording session. Quiet or distant audio never stops the recorder.", systemImage: "sun.max")
+                Label("LectureAI keeps the audio session active in the background. Locking the screen or switching apps does not intentionally stop the recorder; normal iOS microphone interruptions are handled separately.", systemImage: "lock.iphone")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -98,17 +161,108 @@ struct ContentView: View {
     }
 
     @ViewBuilder
+    private var microphonePreflightControls: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("Microphone preflight", systemImage: preflight.verified ? "checkmark.shield.fill" : "waveform.badge.mic")
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                if preflight.isTesting || preflight.isPlaying {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+            }
+
+            Text(preflight.statusMessage)
+                .font(.caption)
+                .foregroundStyle(preflight.verified ? .green : .secondary)
+
+            if preflight.verified {
+                Button("Test again") {
+                    Task { await preflight.runTest() }
+                }
+                .buttonStyle(.bordered)
+                .disabled(transcriptionActive || preflight.isTesting || startingNativeRecording || recorder.isStartingRecording)
+            } else if preflight.sampleReady {
+                HStack {
+                    Button {
+                        preflight.playSample()
+                    } label: {
+                        Label(preflight.isPlaying ? "Playing…" : "Listen to sample", systemImage: "play.fill")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(preflight.isPlaying || startingNativeRecording || recorder.isStartingRecording)
+
+                    Button {
+                        preflight.confirmAudibleSample()
+                    } label: {
+                        Label(preflight.samplePlaybackCompleted ? "I can hear it clearly" : "Listen fully first", systemImage: "checkmark")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!preflight.samplePlaybackCompleted || preflight.isPlaying || startingNativeRecording || recorder.isStartingRecording)
+                }
+
+                Button("Record a new sample") {
+                    Task { await preflight.runTest() }
+                }
+                .buttonStyle(.borderless)
+                .disabled(preflight.isTesting || preflight.isPlaying || startingNativeRecording || recorder.isStartingRecording)
+            } else {
+                Button {
+                    Task { await preflight.runTest() }
+                } label: {
+                    Label(preflight.isTesting ? "Testing microphone…" : "Test microphone", systemImage: "mic.badge.plus")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .disabled(transcriptionActive || preflight.isTesting || startingNativeRecording || recorder.isStartingRecording)
+            }
+
+            if !preflight.verified {
+                Text("Lecture recording stays locked until LectureAI creates a real encoded sample, confirms it is not digitally silent, successfully plays that saved sample to completion, and you confirm you heard it clearly.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(12)
+        .background(Color(.tertiarySystemGroupedBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    @ViewBuilder
     private var controlButtons: some View {
         switch recorder.state {
         case .idle, .saved, .failed:
-            Button {
-                Task { await recorder.startRecording() }
-            } label: {
-                Label("Start native recording", systemImage: "record.circle")
-                    .frame(maxWidth: .infinity)
+            if recorder.hasUnresolvedRecovery {
+                Label("New recording is intentionally locked until the preserved interrupted-audio recovery checkpoint can be handled safely.", systemImage: "lock.shield")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Button {
+                    guard preflight.verified,
+                          !startingNativeRecording,
+                          !recorder.isStartingRecording,
+                          !recorder.hasUnresolvedRecovery else { return }
+                    // Flip this synchronously before creating the async Task for immediate
+                    // UI protection. RecorderStore also owns an independent MainActor
+                    // startup guard before its first await, so the data layer is safe even
+                    // if a future UI entry point forgets this local guard.
+                    startingNativeRecording = true
+                    Task { @MainActor in
+                        await recorder.startRecording()
+                        if recorder.state == .recording {
+                            preflight.consumeVerification()
+                        }
+                        startingNativeRecording = false
+                    }
+                } label: {
+                    Label(startingNativeRecording || recorder.isStartingRecording ? "Starting recorder…" : "Start native recording", systemImage: "record.circle")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .disabled(transcriptionActive || !preflight.verified || preflight.isTesting || preflight.isPlaying || startingNativeRecording || recorder.isStartingRecording || recorder.hasUnresolvedRecovery)
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
 
         case .recording:
             HStack {
@@ -153,13 +307,19 @@ struct ContentView: View {
             .buttonStyle(.bordered)
 
         case .interrupted:
-            Button {
-                recorder.continueRecording()
-            } label: {
-                Label("Try to continue recording", systemImage: "arrow.clockwise")
-                    .frame(maxWidth: .infinity)
+            if recorder.canContinueRecording {
+                Button {
+                    recorder.continueRecording()
+                } label: {
+                    Label("Try to continue recording", systemImage: "arrow.clockwise")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+            } else {
+                Text("The current encoder cannot safely resume the same file. Save what was captured, then start a new recording.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
-            .buttonStyle(.borderedProminent)
 
             Button(role: .destructive) {
                 recorder.finishAndSave()
@@ -173,13 +333,21 @@ struct ContentView: View {
 
     private func savedCard(_ recording: SavedRecording) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Latest recording")
+            Text("Latest lecture")
                 .font(.headline)
             Text(recording.title)
                 .font(.title3.weight(.semibold))
             Text("\(formatDuration(recording.duration)) · \(formatBytes(recording.size))")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+
+            NavigationLink {
+                LectureDetailView(recording: recording)
+            } label: {
+                Label("Open lecture", systemImage: "doc.text.magnifyingglass")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
 
             HStack {
                 Button {
@@ -190,30 +358,17 @@ struct ContentView: View {
                 .buttonStyle(.bordered)
 
                 ShareLink(item: recording.audioURL) {
-                    Label("Send to LectureAI", systemImage: "square.and.arrow.up")
+                    Label("Share original", systemImage: "square.and.arrow.up")
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.bordered)
             }
-
-            Button {
-                if let url = URL(string: "https://lecture-ai-blush.vercel.app/") {
-                    openURL(url)
-                }
-            } label: {
-                Label("Open LectureAI library", systemImage: "safari")
-            }
-            .buttonStyle(.plain)
-
-            Text("To move this native recording into the current LectureAI web library, use Send to LectureAI → Save to Files, then open LectureAI and choose Import Recording. The web app already accepts .m4a files and queues them for transcription.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
         }
         .cardStyle()
     }
 
     private var libraryCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Native recordings")
+            Text("Lecture library")
                 .font(.headline)
 
             if recorder.recordings.isEmpty {
@@ -223,17 +378,28 @@ struct ContentView: View {
             } else {
                 ForEach(recorder.recordings) { item in
                     VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            VStack(alignment: .leading) {
-                                Text(item.title)
-                                    .font(.subheadline.weight(.semibold))
-                                Text("\(item.createdAt.formatted(date: .abbreviated, time: .shortened)) · \(formatDuration(item.duration))")
+                        NavigationLink {
+                            LectureDetailView(recording: item)
+                        } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(item.title)
+                                        .font(.subheadline.weight(.semibold))
+                                        .foregroundStyle(.primary)
+                                    Text("\(item.createdAt.formatted(date: .abbreviated, time: .shortened)) · \(formatDuration(item.duration))")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    let transcript = lectureStore.transcript(for: item.id)
+                                    if transcript.state == .done {
+                                        Text("Transcribed · \(transcript.detectedLanguage ?? "language unknown")")
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                                Spacer()
+                                Image(systemName: "chevron.right")
                                     .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            ShareLink(item: item.audioURL) {
-                                Image(systemName: "square.and.arrow.up")
+                                    .foregroundStyle(.tertiary)
                             }
                         }
 
@@ -241,8 +407,17 @@ struct ContentView: View {
                             Button("Listen") { recorder.play(item) }
                                 .buttonStyle(.borderless)
                             Spacer()
-                            Button("Delete", role: .destructive) { recorder.delete(item) }
-                                .buttonStyle(.borderless)
+                            ShareLink(item: item.audioURL) {
+                                Text("Share")
+                            }
+                            .buttonStyle(.borderless)
+                            Spacer()
+                            Button("Delete", role: .destructive) {
+                                pendingDeletion = item
+                                showingDeleteConfirmation = true
+                            }
+                            .buttonStyle(.borderless)
+                            .disabled(lectureStore.activeRecordingID == item.id)
                         }
                         .font(.caption)
                     }
@@ -282,21 +457,4 @@ private extension View {
             .background(Color(.secondarySystemGroupedBackground))
             .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
-}
-
-private func formatDuration(_ seconds: TimeInterval) -> String {
-    let total = max(0, Int(seconds.rounded(.down)))
-    let hours = total / 3600
-    let minutes = (total % 3600) / 60
-    let secs = total % 60
-    return hours > 0
-        ? String(format: "%d:%02d:%02d", hours, minutes, secs)
-        : String(format: "%02d:%02d", minutes, secs)
-}
-
-private func formatBytes(_ bytes: Int64) -> String {
-    let formatter = ByteCountFormatter()
-    formatter.allowedUnits = [.useMB, .useGB]
-    formatter.countStyle = .file
-    return formatter.string(fromByteCount: max(0, bytes))
 }

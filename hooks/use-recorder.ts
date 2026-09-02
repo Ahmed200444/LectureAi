@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { deleteAudioChunks, finalizeAudio, saveAudioChunk } from '../lib/db';
 import { assertLiveMicrophoneStream, validatePlayableAudio, verifyMicrophoneCapture } from '../lib/audio-validation';
 import { applyLectureAudioPreferences, lectureAudioConstraints, preferredRecordingMimeType } from '../lib/device';
+import { setRecordingSessionActive } from '../lib/recording-session';
 
 type WakeLockSentinelLike = { release: () => Promise<void> };
 
@@ -37,6 +38,7 @@ export function useRecorder() {
   const lastChunkAtRef = useRef(0);
   const interruptedRef = useRef(false);
   const finishingRef = useRef(false);
+  const startingRef = useRef(false);
   const recorderStoppedRef = useRef<Promise<void> | null>(null);
 
   const startDurationTimer = useCallback(() => {
@@ -110,30 +112,38 @@ export function useRecorder() {
   }, []);
 
   const start = useCallback(async (lectureId: string) => {
+    if (startingRef.current || recorderRef.current) {
+      throw new Error('A recording session is already starting or active.');
+    }
+    startingRef.current = true;
     setError('');
     setIsInterrupted(false);
     interruptedRef.current = false;
     finishingRef.current = false;
     recorderStoppedRef.current = null;
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+      startingRef.current = false;
       throw new Error('This browser does not support reliable microphone recording.');
     }
 
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: lectureAudioConstraints(),
-      video: false,
-    });
+    let stream: MediaStream | null = null;
 
     try {
-      const track = assertLiveMicrophoneStream(stream);
+      const acquiredStream = await navigator.mediaDevices.getUserMedia({
+        audio: lectureAudioConstraints(),
+        video: false,
+      });
+      stream = acquiredStream;
+
+      const track = assertLiveMicrophoneStream(acquiredStream);
       await applyLectureAudioPreferences(track);
 
       // Prove that this exact newly granted stream can produce real encoded,
       // non-silent microphone audio before the lecture MediaRecorder begins.
       // This is intentionally independent of Safari's transient track.muted flag.
-      await verifyMicrophoneCapture(stream, 1800);
+      await verifyMicrophoneCapture(acquiredStream, 1800);
 
-      streamRef.current = stream;
+      streamRef.current = acquiredStream;
       lectureIdRef.current = lectureId;
       chunkIndexRef.current = 0;
       pendingWritesRef.current = new Set();
@@ -144,10 +154,10 @@ export function useRecorder() {
       let recorder: MediaRecorder;
       try {
         recorder = requestedMimeType
-          ? new MediaRecorder(stream, { mimeType: requestedMimeType, audioBitsPerSecond: 192_000 })
-          : new MediaRecorder(stream, { audioBitsPerSecond: 192_000 });
+          ? new MediaRecorder(acquiredStream, { mimeType: requestedMimeType, audioBitsPerSecond: 192_000 })
+          : new MediaRecorder(acquiredStream, { audioBitsPerSecond: 192_000 });
       } catch {
-        recorder = new MediaRecorder(stream);
+        recorder = new MediaRecorder(acquiredStream);
       }
 
       recorderRef.current = recorder;
@@ -223,10 +233,12 @@ export function useRecorder() {
       setDuration(0);
       setChunkCount(0);
       recorder.start(5_000);
+      startingRef.current = false;
+      setRecordingSessionActive(true);
       setIsRecording(true);
       setIsPaused(false);
       startDurationTimer();
-      startMeters(stream);
+      startMeters(acquiredStream);
 
       // While LectureAI stays visible, independently verify that iOS has not silently
       // killed the mic/recorder and that 5-second checkpoint delivery is still moving.
@@ -262,9 +274,13 @@ export function useRecorder() {
       await requestWakeLock();
       return recorder.mimeType;
     } catch (startError) {
+      startingRef.current = false;
+      recorderRef.current = null;
+      recorderStoppedRef.current = null;
+      setRecordingSessionActive(false);
       if (healthIntervalRef.current) clearInterval(healthIntervalRef.current);
       healthIntervalRef.current = null;
-      stream.getTracks().forEach((track) => track.stop());
+      stream?.getTracks().forEach((track) => track.stop());
       throw startError;
     }
   }, [requestWakeLock, startDurationTimer, startMeters]);
@@ -327,6 +343,7 @@ export function useRecorder() {
   const stop = useCallback(async () => {
     const recorder = recorderRef.current;
     if (!recorder) throw new Error('No recording is available to save.');
+    if (finishingRef.current) throw new Error('LectureAI is already finishing this recording.');
     const recoveredFromInterruption = interruptedRef.current;
     const wasRecording = recorder.state === 'recording' && !recoveredFromInterruption;
     if (wasRecording) elapsedRef.current += (Date.now() - activeStartedRef.current) / 1000;
@@ -339,16 +356,34 @@ export function useRecorder() {
       recorder.stop();
     }
 
-    // When iOS ends the microphone itself, MediaRecorder may already be inactive.
-    // Wait for its final dataavailable/stop delivery before assembling checkpoints.
-    if (recorderStoppedRef.current) {
-      await Promise.race([recorderStoppedRef.current, wait(1_200)]);
+    // A successful save requires the real MediaRecorder stop event, because the final
+    // dataavailable event is delivered before stop. A timeout is recoverable, never
+    // permission to assemble a potentially incomplete lecture and call it successful.
+    const stopConfirmed = recorderStoppedRef.current
+      ? await Promise.race([
+        recorderStoppedRef.current.then(() => true),
+        wait(5_000).then(() => false),
+      ])
+      : false;
+    if (!stopConfirmed) {
+      recorderRef.current = null;
+      recorderStoppedRef.current = null;
+      finishingRef.current = false;
+      setRecordingSessionActive(false);
+      setIsRecording(false);
+      setIsPaused(false);
+      stopMeters();
+      throw new Error('The browser did not confirm the recorder’s final stop event. LectureAI kept all completed checkpoints for recovery instead of marking a possibly incomplete recording as saved.');
     }
+
     await Promise.allSettled(Array.from(pendingWritesRef.current));
 
     if (checkpointFailureRef.current) {
       const message = checkpointFailureRef.current;
       recorderRef.current = null;
+      recorderStoppedRef.current = null;
+      finishingRef.current = false;
+      setRecordingSessionActive(false);
       setIsRecording(false);
       setIsPaused(false);
       stopMeters();
@@ -362,6 +397,9 @@ export function useRecorder() {
       await deleteAudioChunks(lectureIdRef.current);
     } catch (validationError) {
       recorderRef.current = null;
+      recorderStoppedRef.current = null;
+      finishingRef.current = false;
+      setRecordingSessionActive(false);
       setIsRecording(false);
       setIsPaused(false);
       stopMeters();
@@ -372,6 +410,7 @@ export function useRecorder() {
     recorderStoppedRef.current = null;
     interruptedRef.current = false;
     finishingRef.current = false;
+    setRecordingSessionActive(false);
     setIsInterrupted(false);
     setIsRecording(false);
     setIsPaused(false);
@@ -415,6 +454,8 @@ export function useRecorder() {
       }
       recorderRef.current.stop();
     }
+    startingRef.current = false;
+    setRecordingSessionActive(false);
     stopMeters();
   }, [stopMeters]);
 

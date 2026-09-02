@@ -28,6 +28,43 @@ jobs:
             sleep 5
           done
 
+      - name: Audit production dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm audit --omit=dev --json > /tmp/lectureai-npm-audit.json || true
+          node --input-type=module <<'NODE'
+          import { readFileSync } from 'node:fs';
+
+          const report = JSON.parse(readFileSync('/tmp/lectureai-npm-audit.json', 'utf8'));
+          const vulnerabilities = report.vulnerabilities ?? {};
+          const knownNodeOnly = new Set([
+            '@huggingface/transformers',
+            'onnxruntime-node',
+            'adm-zip',
+            'sharp',
+          ]);
+          const names = Object.keys(vulnerabilities);
+          const unexpected = names.filter((name) => !knownNodeOnly.has(name));
+          const critical = names.filter((name) => vulnerabilities[name]?.severity === 'critical');
+
+          if (critical.length) {
+            console.error(`Critical production dependency advisories: ${critical.join(', ')}`);
+            process.exit(1);
+          }
+          if (unexpected.length) {
+            console.error(`Unexpected production dependency advisories: ${unexpected.join(', ')}`);
+            process.exit(1);
+          }
+
+          if (names.length) {
+            console.log(`Known upstream Node-only Transformers advisories present: ${names.join(', ')}`);
+            console.log('Release continues only if the built browser bundle proves the Node-only modules are absent.');
+          } else {
+            console.log('No production dependency advisories reported by npm audit.');
+          }
+          NODE
+
       - run: npm run typecheck
       - run: npm run lint
       - run: npm run test
@@ -35,6 +72,16 @@ jobs:
 
       - name: Verify production output
         run: test -f dist/client/index.html && test -f dist/client/manifest.webmanifest && test -f dist/client/sw.js
+
+      - name: Verify Node-only vulnerable modules are not shipped to browsers
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -R -I -E 'onnxruntime-node|adm-zip|libvips' dist/client; then
+            echo 'A Node-only vulnerable dependency leaked into the browser production bundle.' >&2
+            exit 1
+          fi
+          echo 'Browser bundle excludes onnxruntime-node, adm-zip, and libvips.'
 
       - name: Check Windows helper Python syntax
         run: python -m py_compile local-ai/*.py benchmarks/evaluate.py
