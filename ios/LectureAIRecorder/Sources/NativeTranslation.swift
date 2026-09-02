@@ -8,7 +8,7 @@ struct NativeTranslationBatch: Hashable, Sendable {
 
 enum NativeTranslationChunker {
     static let defaultMaxCharacters = 2_800
-    private static let minimumLanguageConfidence = 0.80
+    private static let minimumLanguageConfidence = 0.60
 
     static func batches(
         from segments: [NativeTranscriptSegment],
@@ -21,7 +21,7 @@ enum NativeTranslationChunker {
         var currentLanguage: String?
 
         func flushCurrent() {
-            let cleaned = currentText.trimmingCharacters(in: .whitespacesAndNewlines)
+            let cleaned = WhisperTextSanitizer.cleanInline(currentText)
             if !cleaned.isEmpty {
                 result.append(
                     NativeTranslationBatch(
@@ -35,13 +35,12 @@ enum NativeTranslationChunker {
         }
 
         func appendPiece(_ piece: String, languageCode: String?) {
-            let cleaned = piece.trimmingCharacters(in: .whitespacesAndNewlines)
+            let cleaned = WhisperTextSanitizer.cleanInline(piece)
             guard !cleaned.isEmpty else { return }
 
-            // When NaturalLanguage is not confident enough, do not combine this text
-            // with another unknown-language segment. Keeping the request separate lets
-            // Apple's Translation framework identify the source from the actual text
-            // instead of creating one potentially mixed-language batch.
+            // Keep unknown-language text isolated. Apple's Translation framework allows
+            // auto-detection when source=nil, but every string in that session must still
+            // be the same source language. One unknown batch per session avoids mixing.
             guard let languageCode else {
                 flushCurrent()
                 result.append(NativeTranslationBatch(text: cleaned, sourceLanguageCode: nil))
@@ -64,7 +63,7 @@ enum NativeTranslationChunker {
         }
 
         for segment in segments {
-            let text = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let text = WhisperTextSanitizer.cleanInline(segment.text)
             guard !text.isEmpty else { continue }
 
             let languageCode = confidentLanguageCode(for: text)
