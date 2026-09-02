@@ -9,6 +9,64 @@ final class NativeLectureTests: XCTestCase {
         XCTAssertFalse(model.contains(".en"), "LectureAI must never default to an English-only Whisper model: \(model)")
     }
 
+    func testWhisperControlTokensAreRemovedFromInlineTranscriptText() {
+        let raw = "<|startoftranscript|><|en|><|transcribe|><|0.00|> [ Inaudible Remark ] <|25.00|><|endoftext|>"
+        let cleaned = WhisperTextSanitizer.cleanInline(raw)
+
+        XCTAssertEqual(cleaned, "[ Inaudible Remark ]")
+        XCTAssertFalse(WhisperTextSanitizer.containsControlTokens(cleaned))
+        XCTAssertFalse(cleaned.contains("<|"))
+    }
+
+    func testWhisperControlTokensAreRemovedWithoutDestroyingMultilineText() {
+        let raw = "<|startoftranscript|><|ar|><|transcribe|>السطر الأول\n\n<|12.00|>السطر الثاني<|endoftext|>"
+        let cleaned = WhisperTextSanitizer.cleanMultiline(raw)
+
+        XCTAssertTrue(cleaned.contains("السطر الأول"))
+        XCTAssertTrue(cleaned.contains("السطر الثاني"))
+        XCTAssertTrue(cleaned.contains("\n\n"))
+        XCTAssertFalse(cleaned.contains("<|"))
+    }
+
+    func testTranslationBatchesNeverContainWhisperControlTokens() {
+        let segments = [
+            NativeTranscriptSegment(
+                startTime: 0,
+                endTime: 5,
+                text: "<|startoftranscript|><|en|><|transcribe|><|0.00|> The derivative measures change. <|5.00|>"
+            ),
+            NativeTranscriptSegment(
+                startTime: 5,
+                endTime: 10,
+                text: "<|ar|><|5.00|> المشتقة تقيس معدل التغير <|10.00|><|endoftext|>"
+            )
+        ]
+
+        let batches = NativeTranslationChunker.batches(from: segments, maxCharacters: 500)
+
+        XCTAssertFalse(batches.isEmpty)
+        XCTAssertTrue(batches.allSatisfy { !$0.text.contains("<|") && !$0.text.contains("|>") })
+        XCTAssertTrue(batches.map(\.text).joined(separator: " ").contains("derivative"))
+        XCTAssertTrue(batches.map(\.text).joined(separator: " ").contains("المشتقة"))
+    }
+
+    func testNotesNeverReceiveWhisperControlTokensAfterSanitization() {
+        let raw = "<|startoftranscript|><|en|><|transcribe|><|0.00|> Important: remember the chain rule. <|8.00|><|endoftext|>"
+        let segments = [
+            NativeTranscriptSegment(
+                startTime: 0,
+                endTime: 8,
+                text: WhisperTextSanitizer.cleanInline(raw)
+            )
+        ]
+
+        let notes = NativeNotesGenerator.generate(segments: segments, marks: [])
+
+        XCTAssertTrue(notes.contains("chain rule"))
+        XCTAssertFalse(notes.contains("<|"))
+        XCTAssertFalse(notes.contains("startoftranscript"))
+    }
+
     func testNotesStayGroundedInTranscriptAndMarks() {
         let segments = [
             NativeTranscriptSegment(startTime: 0, endTime: 4, text: "A derivative measures the rate of change."),
