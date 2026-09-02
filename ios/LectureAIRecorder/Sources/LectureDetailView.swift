@@ -4,9 +4,9 @@ import Translation
 import UniformTypeIdentifiers
 
 private enum TranscriptViewMode: String, CaseIterable, Identifiable {
-    case original = "Original"
     case english = "English"
     case arabic = "Arabic"
+    case original = "Original"
 
     var id: String { rawValue }
 }
@@ -31,7 +31,7 @@ struct LectureDetailView: View {
 
     @EnvironmentObject private var recorder: RecorderStore
     @EnvironmentObject private var lectureStore: NativeLectureStore
-    @State private var mode: TranscriptViewMode = .original
+    @State private var mode: TranscriptViewMode = .english
     @State private var editingTranscript = false
     @State private var editingNotes = false
     @State private var notesDraft = ""
@@ -226,6 +226,12 @@ struct LectureDetailView: View {
             }
             .pickerStyle(.segmented)
             .disabled(editingTranscript)
+
+            if !editingTranscript {
+                Text("English is the main study transcript. Arabic provides an Arabic reading view. Original preserves the spoken-language transcript and timestamp editing.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
 
             switch mode {
             case .original:
