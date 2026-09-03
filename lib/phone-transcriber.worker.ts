@@ -145,8 +145,10 @@ workerScope.addEventListener('message', async (event: MessageEvent<WorkerRequest
       start: Number(chunk.timestamp[0]) || 0,
       end: Number(chunk.timestamp[1]) || Number(chunk.timestamp[0]) || 0,
       text: chunk.text.trim(),
-      speaker: 'Professor',
-    })) : output.text.trim() ? [{ id: `${id}-phone-1`, start: 0, end: audio.length / 16_000, text: output.text.trim(), speaker: 'Professor' }] : [];
+      // Whisper ASR does not diarize speakers. Never silently attribute student
+      // questions or another voice to the professor.
+      speaker: 'Speaker',
+    })) : output.text.trim() ? [{ id: `${id}-phone-1`, start: 0, end: audio.length / 16_000, text: output.text.trim(), speaker: 'Speaker' }] : [];
 
     workerScope.postMessage({ type: 'result', id, payload: { engine: 'transformers.js', model: finalConfig.id, modelIndex: activeModelIndex, precision: activePrecision(), segments } });
   } catch (error) {
