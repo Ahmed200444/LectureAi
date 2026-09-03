@@ -22,7 +22,7 @@ jobs:
         run: |
           set -euo pipefail
           for attempt in 1 2 3; do
-            if npm install --no-audit --no-fund; then exit 0; fi
+            if npm install --include=dev --no-audit --no-fund && npm install --no-save @vitejs/plugin-react@6.0.2 --no-audit --no-fund; then exit 0; fi
             if [ "$attempt" = 3 ]; then exit 1; fi
             rm -rf node_modules
             sleep 5
