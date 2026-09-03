@@ -127,38 +127,88 @@ export async function verifyMicrophoneCapture(stream: MediaStream, timeoutMs = 1
   }
 }
 
+type PlaybackProbeResult = { duration?: number; browserDecoded: boolean };
+
+async function probePlayableAudioUrl(url: string, timeoutMs: number): Promise<PlaybackProbeResult> {
+  const audio = new Audio();
+  audio.preload = 'auto';
+
+  return new Promise<PlaybackProbeResult>((resolve, reject) => {
+    let settled = false;
+    let verificationTimer: number | undefined;
+
+    const cleanUp = () => {
+      if (verificationTimer !== undefined) window.clearTimeout(verificationTimer);
+      audio.removeEventListener('loadedmetadata', onMetadata);
+      audio.removeEventListener('loadeddata', onDecodeReady);
+      audio.removeEventListener('canplay', onDecodeReady);
+      audio.removeEventListener('seeked', onDecodeReady);
+      audio.removeEventListener('error', onError);
+    };
+
+    const fail = (message: string) => {
+      if (settled) return;
+      settled = true;
+      cleanUp();
+      reject(new Error(message));
+    };
+
+    const finishIfStillPlayable = () => {
+      if (settled) return;
+      verificationTimer = window.setTimeout(() => {
+        if (settled) return;
+        if (audio.error || audio.networkState === HTMLMediaElement.NETWORK_NO_SOURCE || audio.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+          fail('The saved recording format could not be decoded reliably on this device.');
+          return;
+        }
+        settled = true;
+        cleanUp();
+        const duration = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : undefined;
+        resolve({ duration, browserDecoded: true });
+      }, 350);
+    };
+
+    const onMetadata = () => {
+      // Metadata alone is not proof that Safari can decode the media. Nudge the
+      // decoder with a tiny seek when possible, then wait for decoded media data.
+      if (Number.isFinite(audio.duration) && audio.duration > 0.08) {
+        try { audio.currentTime = Math.min(0.05, audio.duration / 4); } catch { /* canplay/loadeddata remain authoritative */ }
+      }
+    };
+    const onDecodeReady = () => finishIfStillPlayable();
+    const onError = () => fail('The saved recording format could not be decoded on this device.');
+
+    audio.addEventListener('loadedmetadata', onMetadata);
+    audio.addEventListener('loadeddata', onDecodeReady);
+    audio.addEventListener('canplay', onDecodeReady);
+    audio.addEventListener('seeked', onDecodeReady);
+    audio.addEventListener('error', onError, { once: true });
+
+    window.setTimeout(() => fail('The saved recording could not be reloaded for playback.'), timeoutMs);
+    audio.src = url;
+    audio.load();
+  });
+}
+
 export async function validatePlayableAudio(blob: Blob, timeoutMs = 9000) {
   if (blob.size < 1024) throw new Error('The recording is too small to contain usable lecture audio.');
   const url = URL.createObjectURL(blob);
   const isWindowsImportedFile = typeof File !== 'undefined' && blob instanceof File && detectDeviceKind() === 'windows';
   try {
-    const audio = new Audio();
-    audio.preload = 'metadata';
-    const result = await new Promise<{ duration?: number; browserDecoded: boolean }>((resolve, reject) => {
-      const acceptWindowsHelperFallback = () => {
-        // Chrome/Edge can reject a transferred iPhone container that FFmpeg can still
-        // decode. On Windows imports, preserve the original file and let the local
-        // helper perform the authoritative decode instead of blocking at browser level.
-        if (isWindowsImportedFile) resolve({ duration: undefined, browserDecoded: false });
-        else reject(new Error('The saved recording could not be reloaded for playback.'));
-      };
-      const timer = window.setTimeout(acceptWindowsHelperFallback, timeoutMs);
-      const finish = () => {
-        window.clearTimeout(timer);
-        const duration = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : undefined;
-        resolve({ duration, browserDecoded: true });
-      };
-      audio.addEventListener('loadedmetadata', finish, { once: true });
-      audio.addEventListener('canplay', finish, { once: true });
-      audio.addEventListener('error', () => {
-        window.clearTimeout(timer);
-        if (isWindowsImportedFile) resolve({ duration: undefined, browserDecoded: false });
-        else reject(new Error('The saved recording format could not be decoded on this device.'));
-      }, { once: true });
-      audio.src = url;
-      audio.load();
-    });
-    return result;
+    try {
+      const firstProbe = await probePlayableAudioUrl(url, timeoutMs);
+      // Safari has shown cases where metadata/canplay succeeds once but a fresh media
+      // element immediately reports a source/decode error. Verify with a second fresh
+      // element before deleting checkpoint chunks and calling the lecture safely saved.
+      if (!isWindowsImportedFile) await probePlayableAudioUrl(url, Math.min(timeoutMs, 6000));
+      return firstProbe;
+    } catch (error) {
+      // Chrome/Edge can reject a transferred iPhone container that FFmpeg can still
+      // decode. On Windows imports, preserve the original file and let the local
+      // helper perform the authoritative decode instead of blocking at browser level.
+      if (isWindowsImportedFile) return { duration: undefined, browserDecoded: false };
+      throw error;
+    }
   } finally {
     URL.revokeObjectURL(url);
   }
