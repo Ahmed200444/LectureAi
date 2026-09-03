@@ -189,8 +189,8 @@ async function writePairingToken(token) {
     else await SecureStore.deleteItemAsync(COMPUTER_TOKEN_KEY);
   } catch (error) {
     if (value) throw new Error(`LectureAI could not securely save the Windows pairing token: ${error instanceof Error ? error.message : 'SecureStore unavailable.'}`);
-    // Forgetting a pairing should continue to clear ordinary metadata even if the
-    // secure-store delete fails. The server token expires and is IP-bound anyway.
+    // A blank computerAddress remains the authoritative "forgotten" state even if
+    // this best-effort secure-store cleanup cannot complete immediately.
   }
 }
 
@@ -206,9 +206,12 @@ export async function loadSettings() {
   // Migrate any earlier branch build that stored the short-lived pairing token in
   // ordinary SQLite KV. The token is moved to iOS Keychain/Android Keystore-backed
   // SecureStore and removed from the normal settings record immediately.
+  const pairingAddress = String(parsed?.computerAddress || '').trim();
   const legacyToken = String(parsed?.computerToken || '');
-  let computerToken = await readPairingToken();
-  if (!computerToken && legacyToken) {
+  const secureToken = await readPairingToken();
+  let computerToken = pairingAddress ? secureToken : '';
+
+  if (pairingAddress && !computerToken && legacyToken) {
     try {
       await writePairingToken(legacyToken);
       computerToken = legacyToken;
@@ -217,6 +220,15 @@ export async function loadSettings() {
       computerToken = legacyToken;
     }
   }
+
+  // Clearing the computer address is an explicit forget/tombstone. Never resurrect
+  // a stale SecureStore token after the user has forgotten a computer, even if a
+  // previous Keychain/Keystore delete was interrupted or temporarily unavailable.
+  if (!pairingAddress && secureToken) {
+    computerToken = '';
+    try { await SecureStore.deleteItemAsync(COMPUTER_TOKEN_KEY); } catch { /* retry on a later load */ }
+  }
+
   if (Object.prototype.hasOwnProperty.call(parsed, 'computerToken')) {
     const { computerToken: _removed, ...withoutToken } = parsed;
     try { await Storage.setItem(SETTINGS_KEY, JSON.stringify(withoutToken)); } catch { /* next save/load retries cleanup */ }
