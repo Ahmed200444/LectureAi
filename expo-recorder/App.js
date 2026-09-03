@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Alert,
   AppState,
@@ -46,6 +46,10 @@ const RECORDING_OPTIONS = {
   numberOfChannels: 1,
   bitRate: 192_000,
   isMeteringEnabled: true,
+  // Keep the live recorder output in persistent document storage instead of the
+  // temporary cache. The finished file is still copied to LectureAI/Recordings so
+  // the library owns a stable original independent of the recorder's current URI.
+  directory: 'document',
 };
 
 function newId() {
@@ -210,7 +214,7 @@ export default function App() {
       setPaused(false);
       setRecordingActive(true);
       setLastSavedId('');
-      setStatus('Recording on-device · keep LectureAI open');
+      setStatus('Recording on-device · live file is in document storage · keep LectureAI open');
     } catch (error) {
       setStatus('Recording did not start');
       setWarning(error instanceof Error ? error.message : 'Could not start recording.');
@@ -452,7 +456,7 @@ function RecordScreen({ title, setTitle, recorderState, recordingActive, paused,
     <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
       <Text style={styles.eyebrow}>NATIVE AUDIO THROUGH EXPO GO</Text>
       <Text style={styles.hero}>Record the lecture. Keep the original.</Text>
-      <Text style={styles.lead}>The audio file is preserved in LectureAI document storage first. Transcripts, notes and study tools never replace the original.</Text>
+      <Text style={styles.lead}>The live recording is written to persistent document storage, then the finished original is preserved in LectureAI's recording library. Transcripts, notes and study tools never replace it.</Text>
 
       <View style={styles.card}>
         <TextInput style={styles.titleInput} value={title} onChangeText={setTitle} editable={!recordingActive} placeholder="Lecture title" />
@@ -478,6 +482,7 @@ function RecordScreen({ title, setTitle, recorderState, recordingActive, paused,
       <View style={styles.infoCard}>
         <Text style={styles.infoTitle}>Recording safety</Text>
         <Text style={styles.infoText}>• High-quality native Expo audio with 48 kHz / mono / 192 kbps preferences.</Text>
+        <Text style={styles.infoText}>• The active recording file is placed in document storage, not temporary cache, before the lecture ends.</Text>
         <Text style={styles.infoText}>• Keep Expo Go open during important lectures. Stock Expo Go cannot add LectureAI's own iOS background-audio capability.</Text>
         <Text style={styles.infoText}>• Free device storage: {formatBytes(freeDisk)}.</Text>
         <Text style={styles.infoText}>• A saved file is not called verified until you listen to it and confirm playback.</Text>
@@ -510,7 +515,8 @@ function Library({ lectures, onOpen, onImport }) {
         <Pressable key={lecture.id} style={styles.listCard} onPress={() => onOpen(lecture)}>
           <View style={styles.listCardTop}><Text style={styles.listTitle}>{lecture.title}</Text><Text style={styles.chevron}>›</Text></View>
           <Text style={styles.meta}>{new Date(lecture.createdAt).toLocaleString()} · {formatDuration(lecture.durationMs)} · {formatBytes(lecture.size)}</Text>
-          <View style={styles.badgeRow}><Badge text={lecture.audioVerification === 'user-playback-confirmed' ? 'Audio verified' : 'Audio needs listen check'} good={lecture.audioVerification === 'user-playback-confirmed'} /><Badge text={lecture.transcriptStatus === 'ready' ? 'Transcript ready' : 'No transcript'} good={lecture.transcriptStatus === 'ready'} /></View>
+          {lecture.recoveryNotice ? <Text style={styles.recoveryText}>Recovered original audio · open and verify playback</Text> : null}
+          <View style={styles.badgeRow}><Badge text={lecture.recoveryNotice ? 'Recovered audio — verify' : lecture.audioVerification === 'user-playback-confirmed' ? 'Audio verified' : 'Audio needs listen check'} good={!lecture.recoveryNotice && lecture.audioVerification === 'user-playback-confirmed'} /><Badge text={lecture.transcriptStatus === 'ready' ? 'Transcript ready' : 'No transcript'} good={lecture.transcriptStatus === 'ready'} /></View>
         </Pressable>
       ))}
     </ScrollView>
@@ -542,7 +548,7 @@ function SettingsScreen({ settings, onChange, freeDisk }) {
       <SettingRow title="Open share sheet after save" description="Optional. The original is already preserved locally before sharing." value={settings.autoOpenShareSheet} onToggle={() => onChange({ autoOpenShareSheet: !settings.autoOpenShareSheet })} />
       <View style={styles.infoCard}><Text style={styles.infoTitle}>Device storage</Text><Text style={styles.infoText}>{formatBytes(freeDisk)} available. LectureAI does not impose a recording-minute quota; real storage and device limits still apply.</Text></View>
       <View style={styles.infoCard}><Text style={styles.infoTitle}>Transcription status</Text><Text style={styles.infoText}>This Expo-Go build intentionally does not pretend the browser Whisper worker can run natively. Timestamped JSON import works now. A secure computer-pairing transcription path and a validated Expo-compatible on-device engine are separate milestones.</Text></View>
-      <View style={styles.infoCard}><Text style={styles.infoTitle}>Privacy</Text><Text style={styles.infoText}>Lecture metadata is stored in Expo's local SQLite-backed key/value store; original recordings live in the project's document directory. Nothing is automatically uploaded to a paid speech service.</Text></View>
+      <View style={styles.infoCard}><Text style={styles.infoTitle}>Privacy & recovery</Text><Text style={styles.infoText}>Original recordings live in the project's document directory. Lecture metadata is stored locally with a second document-directory metadata backup, and LectureAI scans for orphaned original audio on launch so a metadata failure does not silently hide a preserved recording. Nothing is automatically uploaded to a paid speech service.</Text></View>
     </ScrollView>
   );
 }
@@ -560,6 +566,7 @@ function LectureDetail({ lecture, detailTab, setDetailTab, player, playerStatus,
       <ScrollView contentContainerStyle={styles.scroll}>
         {detailTab === 'audio' && (
           <>
+            {lecture.recoveryNotice ? <View style={styles.warningCard}><Text style={styles.warningTitle}>Recovered original audio</Text><Text style={styles.warningText}>{lecture.recoveryNotice}</Text></View> : null}
             <View style={styles.card}>
               <Text style={styles.cardTitle}>Original recording</Text>
               <Text style={styles.meta}>{lecture.audioFilename} · {lecture.audioMd5 ? `MD5 ${lecture.audioMd5.slice(0, 10)}…` : 'file hash unavailable'}</Text>
@@ -601,7 +608,7 @@ function StudyPackView({ lecture, mode, fresh, onGenerate, player }) {
   if (!lecture.transcript.length) return <Empty title="A transcript is required" body="Study material should never be invented without source text. Import or generate a timestamped transcript first." />;
   if (!pack || !fresh) return <Empty title={pack ? 'Transcript changed' : 'Study pack not generated yet'} body={pack ? 'Your transcript is newer than the current notes. Update derived content so corrections propagate instead of leaving stale notes.' : 'Generate a source-grounded pack from trustworthy transcript sections across the whole lecture.'} action={<PrimaryButton label={pack ? 'Update derived content' : 'Generate study pack'} onPress={onGenerate} />} />;
 
-  const sourceList = (title, items) => items?.length ? <View style={styles.studySection}><Text style={styles.studyHeading}>{title}</Text>{items.map((item, index) => <View key={`${title}-${index}`} style={styles.studyItem}><Text style={styles.studyText}>{item.text}</Text>{item.source ? <Pressable onPress={() => { player.seekTo(item.source.startTime); player.play(); }}><Text style={styles.sourceLink}>▶ {formatTime(item.source.startTime)} source audio</Text></Pressable> : null}</View>)}</View> : null;
+  const sourceList = (sectionTitle, items) => items?.length ? <View style={styles.studySection}><Text style={styles.studyHeading}>{sectionTitle}</Text>{items.map((item, index) => <View key={`${sectionTitle}-${index}`} style={styles.studyItem}><Text style={styles.studyText}>{item.text}</Text>{item.source ? <Pressable onPress={() => { player.seekTo(item.source.startTime); player.play(); }}><Text style={styles.sourceLink}>▶ {formatTime(item.source.startTime)} source audio</Text></Pressable> : null}</View>)}</View> : null;
 
   return (
     <>
@@ -614,7 +621,7 @@ function StudyPackView({ lecture, mode, fresh, onGenerate, player }) {
           {sourceList('Definitions', pack.definitions)}
           {sourceList('Examples', pack.examples)}
           {sourceList('Formulas / technical information', pack.technicalInformation)}
-          {sourceList('Professor emphasis', pack.professorEmphasis)}
+          {sourceList('Lecture emphasis', pack.professorEmphasis)}
         </>
       ) : (
         <>
@@ -692,6 +699,7 @@ const styles = StyleSheet.create({
   warningCard: { backgroundColor: '#FFF0DB', borderRadius: 18, padding: 16, marginTop: 14 },
   warningTitle: { color: '#6E4A16', fontWeight: '900', fontSize: 14 },
   warningText: { color: '#795D32', fontSize: 13, lineHeight: 19, marginTop: 4 },
+  recoveryText: { color: '#8A5D1F', fontSize: 12, fontWeight: '800', marginTop: 7 },
   savedCard: { backgroundColor: '#FFF', borderRadius: 20, borderWidth: 1, borderColor: '#CFE1D8', padding: 17, marginTop: 16 },
   cardTitle: { color: '#173129', fontWeight: '900', fontSize: 19 },
   successBox: { backgroundColor: '#E6F2EB', borderRadius: 13, padding: 12, marginTop: 11 },
