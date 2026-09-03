@@ -64,7 +64,7 @@ assert.match(app, /Update derived content/);
 // Source-grounded notes use the whole transcript and exclude uncertain/inaudible
 // text instead of treating questionable ASR output as trusted lecture facts.
 assert.match(study, /representativeSegments\(all, 7, 2\)/);
-assert.match(study, /\[\(\?:inaudible\|uncertain\)\]/);
+assert.ok(study.includes('(?:inaudible|uncertain)'), 'Study generator must exclude uncertain and inaudible source text.');
 assert.match(study, /possibleExamTopics/);
 assert.match(study, /not a claim that the professor promised it will be on an exam/);
 assert.match(app, /source audio/);
