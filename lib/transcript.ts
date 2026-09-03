@@ -61,7 +61,10 @@ export function normalizeTranscript(input: unknown, lectureId: string): Transcri
       detectedLanguage,
       confidence,
       manuallyReviewed: segment.manuallyReviewed === true,
-      speaker: typeof segment.speaker === 'string' ? segment.speaker.slice(0, 50) : 'Professor',
+      // A timestamped ASR/import transcript is not speaker diarization. Preserve an
+      // explicit imported label, otherwise use a neutral label instead of claiming
+      // the professor spoke every segment (student questions may be present).
+      speaker: typeof segment.speaker === 'string' && segment.speaker.trim() ? segment.speaker.slice(0, 50) : 'Speaker',
     } satisfies TranscriptSegment;
   });
 
