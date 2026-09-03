@@ -8,6 +8,7 @@
     "assetBundlePatterns": ["**/*"],
     "ios": {
       "supportsTablet": true,
+      "requireFullScreen": false,
       "bundleIdentifier": "app.lectureai.recorder"
     },
     "android": {
@@ -23,6 +24,7 @@
     ],
     "extra": {
       "expoGoTarget": true,
+      "targetAppleDevices": ["iPhone", "iPad"],
       "backgroundRecording": "not-guaranteed-in-expo-go"
     }
   }
