@@ -112,8 +112,9 @@ export async function transcribeOnComputer({ address, token, lecture, glossary =
   form.append('model', 'configured');
   form.append('lectureId', String(lecture.id || 'lecture'));
   form.append('glossary', JSON.stringify(Array.isArray(glossary) ? glossary.slice(0, 250) : []));
+  if (lecture.audioMd5) form.append('audioMd5', String(lecture.audioMd5).toLowerCase());
 
-  onProgress({ progress: 3, message: 'Sending the preserved original to your paired Windows computer…' });
+  onProgress({ progress: 3, message: lecture.audioMd5 ? 'Sending the preserved original to your paired Windows computer · transfer checksum will be verified…' : 'Sending the preserved original to your paired Windows computer…' });
   const create = await fetchWithTimeout(`${baseUrl}/jobs`, {
     method: 'POST',
     headers: authHeaders(token),
@@ -122,6 +123,7 @@ export async function transcribeOnComputer({ address, token, lecture, glossary =
   if (!create.ok) throw new Error(await responseMessage(create));
   const created = await create.json();
   if (!created?.job_id) throw new Error('The Windows helper did not return a transcription job ID.');
+  if (lecture.audioMd5 && created.integrity_checked !== true) throw new Error('The Windows helper did not confirm transfer integrity. The phone original is unchanged; retry after updating/restarting the helper.');
 
   for (;;) {
     await sleep(POLL_DELAY_MS);
