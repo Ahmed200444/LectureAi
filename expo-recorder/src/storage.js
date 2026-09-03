@@ -11,6 +11,9 @@ export const defaultSettings = {
   autoOpenShareSheet: false,
   verifyBeforeTrusting: true,
   preferredTranscription: 'computer',
+  computerAddress: '',
+  computerToken: '',
+  computerTokenExpiresAt: null,
 };
 
 function nowIso() {
@@ -242,7 +245,17 @@ export async function upsertLecture(lecture) {
     ...lecture,
     updatedAt: nowIso(),
   };
-  await saveLibrary([next, ...library.filter((item) => item.id !== lecture.id)]);
+
+  // preserveAudioFile() intentionally writes the audio before metadata. During that
+  // tiny interval loadLibrary() can correctly discover the new file as an orphan.
+  // Remove that temporary recovery placeholder when the authoritative lecture row
+  // is inserted so every physical audio file appears exactly once in the library.
+  const remaining = library.filter((item) => (
+    item.id !== lecture.id
+    && (!lecture.audioUri || item.audioUri !== lecture.audioUri)
+    && (!lecture.audioFilename || item.audioFilename !== lecture.audioFilename)
+  ));
+  await saveLibrary([next, ...remaining]);
   return next;
 }
 
@@ -254,7 +267,11 @@ export async function removeLecture(lecture) {
     }
   } finally {
     const library = await loadLibrary();
-    await saveLibrary(library.filter((item) => item.id !== lecture.id));
+    await saveLibrary(library.filter((item) => (
+      item.id !== lecture.id
+      && (!lecture.audioUri || item.audioUri !== lecture.audioUri)
+      && (!lecture.audioFilename || item.audioFilename !== lecture.audioFilename)
+    )));
   }
 }
 
@@ -262,6 +279,7 @@ export function markAudioVerified(lecture) {
   return {
     ...lecture,
     audioVerification: 'user-playback-confirmed',
+    recoveryNotice: undefined,
     updatedAt: nowIso(),
   };
 }
