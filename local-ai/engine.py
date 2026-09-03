@@ -48,9 +48,10 @@ def context_prompt(glossary: Iterable[str]) -> str:
     terms = [re.sub(r"[\r\n\t]+", " ", str(term)).strip()[:120] for term in glossary]
     terms = [term for term in terms if term][:250]
     base = (
-        "University lecture. Preserve speech exactly as spoken. The professor may switch naturally "
+        "University lecture. Preserve speech exactly as spoken. The lecturer may switch naturally "
         "between English, Egyptian Arabic (Masri), and Modern Standard Arabic. Keep English technical "
-        "terms in English inside Arabic sentences. Do not translate the original transcript."
+        "terms in English inside Arabic sentences. Student questions may also be present. Do not infer "
+        "speaker identity from the audio transcript alone. Do not translate the original transcript."
     )
     return f"{base} Course terminology: {', '.join(terms)}" if terms else base
 
@@ -106,7 +107,9 @@ def transcribe_audio(
             "language": "unknown",
             "avg_logprob": round(avg_logprob, 4),
             "no_speech_probability": round(segment.no_speech_prob, 4),
-            "speaker": "Professor",
+            # faster-whisper ASR is not diarization. Label neutrally until a real
+            # speaker-separation stage can support professor/student attribution.
+            "speaker": "Speaker",
             "words": [
                 {"start": word.start, "end": word.end, "word": word.word, "probability": round(word.probability, 3)}
                 for word in (segment.words or [])
