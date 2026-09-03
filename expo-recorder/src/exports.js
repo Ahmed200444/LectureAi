@@ -138,7 +138,7 @@ export function buildLectureJson(lecture) {
     originalAudio: {
       filename: lecture.audioFilename,
       md5: lecture.audioMd5 || null,
-      note: 'The original audio is exported separately through Share / Save to Files and is never embedded or modified by this JSON export.',
+      note: 'Original audio is exported separately through Share / Save to Files and is never embedded or modified by this JSON export.',
     },
   }, null, 2);
 }
