@@ -36,8 +36,10 @@ jobs:
       - name: Verify production output
         run: test -f dist/client/index.html && test -f dist/client/manifest.webmanifest && test -f dist/client/sw.js
 
-      - name: Check Windows helper Python syntax
-        run: python -m py_compile local-ai/*.py benchmarks/evaluate.py
+      - name: Check Windows helper and benchmark Python
+        run: |
+          python -m py_compile local-ai/*.py benchmarks/evaluate.py benchmarks/test_evaluate.py
+          python benchmarks/test_evaluate.py
 
       - name: Smoke test built site
         shell: bash
