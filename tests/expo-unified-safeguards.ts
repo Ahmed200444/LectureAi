@@ -17,6 +17,7 @@ assert.match(packageJson.dependencies?.expo || '', /^~54\./);
 assert.match(packageJson.dependencies?.['expo-audio'] || '', /^~1\./);
 assert.ok(packageJson.dependencies?.['expo-file-system']);
 assert.ok(packageJson.dependencies?.['expo-sqlite']);
+assert.match(packageJson.dependencies?.['expo-secure-store'] || '', /^~15\./);
 assert.ok(packageJson.dependencies?.['expo-sharing']);
 assert.ok(packageJson.dependencies?.['expo-document-picker']);
 
@@ -92,6 +93,17 @@ assert.match(storage, /expo-sqlite\/kv-store/);
 assert.doesNotMatch(storage, /base64\(/);
 assert.doesNotMatch(storage, /bytes\(\)[\s\S]*Storage\.setItem/);
 
+// The short-lived Windows pairing bearer token is still a credential. Keep it out
+// of ordinary SQLite settings/metadata backups and put it in Expo SecureStore.
+assert.match(storage, /expo-secure-store/);
+assert.match(storage, /COMPUTER_TOKEN_KEY/);
+assert.match(storage, /SecureStore\.setItemAsync/);
+assert.match(storage, /SecureStore\.getItemAsync/);
+assert.match(storage, /SecureStore\.deleteItemAsync/);
+assert.match(storage, /computerToken: _secureOnly/);
+assert.match(storage, /legacyToken/);
+assert.match(storage, /withoutToken/);
+
 // Transcript edits must invalidate derived material instead of silently leaving
 // stale notes/translations behind.
 assert.match(storage, /transcriptVersion/);
@@ -148,4 +160,4 @@ assert.doesNotMatch(app, /@huggingface\/transformers/);
 assert.match(app, /does not pretend the browser Whisper worker is a native React Native engine/);
 assert.match(app, /Import transcript JSON/);
 
-console.log('✓ Expo Go recording, recovery, paired Windows transcription, transfer integrity, transcript freshness, and source-grounded study safeguards are present');
+console.log('✓ Expo Go recording, recovery, secure paired Windows transcription, transfer integrity, transcript freshness, and source-grounded study safeguards are present');
