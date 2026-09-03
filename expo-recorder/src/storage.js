@@ -1,8 +1,10 @@
 import Storage from 'expo-sqlite/kv-store';
+import * as SecureStore from 'expo-secure-store';
 import { Directory, File, Paths } from 'expo-file-system';
 
 const LIBRARY_KEY = 'lectureai.unified.library.v1';
 const SETTINGS_KEY = 'lectureai.unified.settings.v1';
+const COMPUTER_TOKEN_KEY = 'lectureai.windows.pairing-token.v1';
 const LIBRARY_BACKUP_FILENAME = 'library-backup.json';
 const AUDIO_EXTENSIONS = new Set(['.m4a', '.mp4', '.aac', '.wav', '.mp3', '.ogg', '.flac', '.webm']);
 
@@ -172,20 +174,65 @@ export async function saveLibrary(lectures) {
   return clean;
 }
 
+async function readPairingToken() {
+  try {
+    return await SecureStore.getItemAsync(COMPUTER_TOKEN_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
+async function writePairingToken(token) {
+  const value = String(token || '');
+  try {
+    if (value) await SecureStore.setItemAsync(COMPUTER_TOKEN_KEY, value);
+    else await SecureStore.deleteItemAsync(COMPUTER_TOKEN_KEY);
+  } catch (error) {
+    if (value) throw new Error(`LectureAI could not securely save the Windows pairing token: ${error instanceof Error ? error.message : 'SecureStore unavailable.'}`);
+    // Forgetting a pairing should continue to clear ordinary metadata even if the
+    // secure-store delete fails. The server token expires and is IP-bound anyway.
+  }
+}
+
 export async function loadSettings() {
   const raw = await Storage.getItem(SETTINGS_KEY);
-  if (!raw) return defaultSettings;
+  let parsed = {};
   try {
-    return { ...defaultSettings, ...JSON.parse(raw) };
+    parsed = raw ? JSON.parse(raw) : {};
   } catch {
-    return defaultSettings;
+    parsed = {};
   }
+
+  // Migrate any earlier branch build that stored the short-lived pairing token in
+  // ordinary SQLite KV. The token is moved to iOS Keychain/Android Keystore-backed
+  // SecureStore and removed from the normal settings record immediately.
+  const legacyToken = String(parsed?.computerToken || '');
+  let computerToken = await readPairingToken();
+  if (!computerToken && legacyToken) {
+    try {
+      await writePairingToken(legacyToken);
+      computerToken = legacyToken;
+    } catch {
+      // Keep it only in memory for this run; do not copy it back into ordinary KV.
+      computerToken = legacyToken;
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(parsed, 'computerToken')) {
+    const { computerToken: _removed, ...withoutToken } = parsed;
+    try { await Storage.setItem(SETTINGS_KEY, JSON.stringify(withoutToken)); } catch { /* next save/load retries cleanup */ }
+    parsed = withoutToken;
+  }
+
+  return { ...defaultSettings, ...parsed, computerToken };
 }
 
 export async function saveSettings(settings) {
   const next = { ...defaultSettings, ...settings };
-  await Storage.setItem(SETTINGS_KEY, JSON.stringify(next));
-  return next;
+  const computerToken = String(next.computerToken || '');
+  const { computerToken: _secureOnly, ...publicSettings } = next;
+  await writePairingToken(computerToken);
+  await Storage.setItem(SETTINGS_KEY, JSON.stringify(publicSettings));
+  return { ...publicSettings, computerToken };
 }
 
 export async function preserveAudioFile(sourceUri, lectureId, title, extension = 'm4a') {
