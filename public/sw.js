@@ -1,12 +1,22 @@
-const CACHE_NAME = 'lectureai-shell-v9';
+const CACHE_NAME = 'lectureai-shell-v10';
 const CORE = ['/', '/manifest.webmanifest', '/icon-192.png', '/icon-512.png'];
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(CORE)).then(() => self.skipWaiting()));
+  // Cache the new shell, but do not call skipWaiting here. A newly downloaded
+  // service worker must not replace the worker controlling an active lecture.
+  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(CORE)));
+});
+
+self.addEventListener('message', (event) => {
+  if (event.data?.type === 'SKIP_WAITING') {
+    void self.skipWaiting();
+  }
 });
 
 self.addEventListener('activate', (event) => {
-  event.waitUntil(caches.keys().then((keys) => Promise.all(keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key)))).then(() => self.clients.claim()));
+  // Do not call clients.claim(). Existing pages keep their current controller until
+  // the user explicitly reloads after the lecture, preventing a mid-session worker swap.
+  event.waitUntil(caches.keys().then((keys) => Promise.all(keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key)))));
 });
 
 self.addEventListener('fetch', (event) => {

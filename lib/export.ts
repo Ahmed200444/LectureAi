@@ -1,6 +1,5 @@
 import type { Course, Lecture } from './types';
 import { formatDuration, formatTime, friendlyDate, safeFilename } from './format';
-import { isIOSDevice, isStandaloneApp } from './device';
 
 function download(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
@@ -13,27 +12,41 @@ function download(blob: Blob, filename: string) {
   window.setTimeout(() => URL.revokeObjectURL(url), 2000);
 }
 
+/**
+ * Export through the platform share sheet whenever file sharing is available, then
+ * fall back to a normal browser download. For text exports, a second plain-text share
+ * fallback keeps Safari/PWA/Android/desktop share targets useful even when a target
+ * rejects .txt/.md attachments. This intentionally does not special-case iOS: any
+ * browser that implements Web Share can use the same path.
+ */
 function shareOrDownload(blob: Blob, filename: string, title: string) {
   const safe = safeFilename(filename);
-  if (typeof navigator !== 'undefined' && typeof File !== 'undefined' && (isIOSDevice() || isStandaloneApp())) {
+  if (typeof navigator !== 'undefined') {
     const nav = navigator as Navigator & {
       canShare?: (data: ShareData) => boolean;
       share?: (data: ShareData) => Promise<void>;
     };
-    const file = new File([blob], safe, { type: blob.type || 'application/octet-stream' });
-    const fileData: ShareData = { files: [file], title };
-    const canShareFiles = !nav.canShare || nav.canShare(fileData);
-    if (nav.share && canShareFiles) {
-      void nav.share(fileData).catch((error: unknown) => {
-        if (error instanceof DOMException && error.name === 'AbortError') return;
-        download(blob, safe);
-      });
-      return;
+
+    if (typeof File !== 'undefined' && nav.share) {
+      const file = new File([blob], safe, { type: blob.type || 'application/octet-stream' });
+      const fileData: ShareData = { files: [file], title };
+      const canShareFiles = !nav.canShare || nav.canShare(fileData);
+      if (canShareFiles) {
+        void nav.share(fileData).catch((error: unknown) => {
+          if (error instanceof DOMException && error.name === 'AbortError') return;
+          if (blob.type.startsWith('text/')) {
+            void blob.text().then((text) => nav.share?.({ title, text })).catch((textError: unknown) => {
+              if (textError instanceof DOMException && textError.name === 'AbortError') return;
+              download(blob, safe);
+            });
+            return;
+          }
+          download(blob, safe);
+        });
+        return;
+      }
     }
 
-    // Some iOS/iPadOS share targets accept transcript text but reject a .txt/.md
-    // attachment. Keep WhatsApp/Gmail/etc. useful by sharing the transcript body as
-    // plain text before falling back to a local download.
     if (nav.share && blob.type.startsWith('text/')) {
       void blob.text().then((text) => nav.share?.({ title, text })).catch((error: unknown) => {
         if (error instanceof DOMException && error.name === 'AbortError') return;
@@ -42,6 +55,7 @@ function shareOrDownload(blob: Blob, filename: string, title: string) {
       return;
     }
   }
+
   download(blob, safe);
 }
 
@@ -69,8 +83,7 @@ export function exportMarkdown(course: Course, lecture: Lecture, kind: 'notes' |
   const body = kind === 'notes' ? notes : kind === 'transcript' ? transcript : `## Edited Lecture Notes\n\n${notes}\n\n---\n\n## Full Transcript\n\n${transcript}`;
   const blob = new Blob([`# ${course.name}\n\n## ${lecture.title}\n\n${metadata(course, lecture)}\n\n---\n\n${body}\n`], { type: 'text/markdown;charset=utf-8' });
   const filename = `${safeFilename(lecture.title)}-${kind}.md`;
-  if (kind === 'transcript') shareOrDownload(blob, filename, 'LectureAI transcript');
-  else download(blob, filename);
+  shareOrDownload(blob, filename, kind === 'notes' ? 'LectureAI notes' : kind === 'transcript' ? 'LectureAI transcript' : 'LectureAI notes and transcript');
 }
 
 export function exportTranscriptText(course: Course, lecture: Lecture) {
@@ -99,8 +112,7 @@ export async function exportDocx(course: Course, lecture: Lecture) {
   ];
   const documentFile = new Document({ sections: [{ properties: {}, children }] });
   const blob = await Packer.toBlob(documentFile);
-  if (isIOSDevice() || isStandaloneApp()) shareOrDownload(blob, `${safeFilename(lecture.title)}.docx`, 'LectureAI notes and transcript');
-  else download(blob, `${safeFilename(lecture.title)}.docx`);
+  shareOrDownload(blob, `${safeFilename(lecture.title)}.docx`, 'LectureAI notes and transcript');
 }
 
 export function printPdf(course: Course, lecture: Lecture) {

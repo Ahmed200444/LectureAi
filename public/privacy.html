@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>LectureAI Privacy — Local-first lecture recording</title>
+  <meta name="description" content="How LectureAI stores recordings, transcripts, and notes locally by default, what network requests can occur, and what does not leave your device." />
+  <link rel="canonical" href="https://lecture-ai-blush.vercel.app/privacy" />
+  <meta property="og:title" content="LectureAI Privacy" />
+  <meta property="og:description" content="LectureAI keeps lecture recordings, transcripts, and notes local by default and does not require a paid cloud transcription service." />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://lecture-ai-blush.vercel.app/privacy" />
+  <link rel="stylesheet" href="/public-info.css" />
+</head>
+<body>
+<header>
+  <a class="brand" href="/">LectureAI</a>
+  <nav aria-label="Public information"><a href="/how-it-works">How it works</a><a href="/privacy" aria-current="page">Privacy</a></nav>
+</header>
+<main>
+  <p class="lede">Privacy</p>
+  <h1>Your lecture content stays local by default.</h1>
+  <p>LectureAI is designed so the original recording, transcript, notes, course information, bookmarks, and imported lecture files are stored on the device running the app unless you explicitly export or share them.</p>
+
+  <section class="card">
+    <h2>What stays on your device</h2>
+    <ul>
+      <li>Original lecture recordings and recording checkpoints.</li>
+      <li>Transcripts, corrections, translations, notes, bookmarks, and course metadata.</li>
+      <li>Generated study material created from the local transcript.</li>
+    </ul>
+  </section>
+
+  <section class="card">
+    <h2>What network access can occur</h2>
+    <p>The web app itself and software assets are downloaded from the LectureAI site. On-device transcription can also download speech-model files from the model host when the model is not already cached. Those model downloads do not require uploading your lecture audio.</p>
+    <p>On Windows, LectureAI can use an optional helper that listens only on the local computer's loopback address. The hosted browser interface sends a recording to that local helper only when you choose the computer transcription action.</p>
+  </section>
+
+  <section class="card">
+    <h2>No mandatory paid transcription provider</h2>
+    <p>LectureAI does not require a paid speech API, subscription, recording-minute quota, or transcription-minute quota. Real limits can still come from the browser, device storage, battery, memory, and operating-system behavior.</p>
+  </section>
+
+  <section class="card">
+    <h2>Search engines do not protect private lecture data</h2>
+    <p>Lecture content is not published as public web pages. LectureAI does not rely on robots.txt as a privacy boundary for recordings, transcripts, or notes; those items remain in local application storage instead of becoming crawlable URLs.</p>
+  </section>
+
+  <a class="cta" href="/">Open LectureAI</a>
+</main>
+<footer>LectureAI is local-first software. Device and browser limitations still apply, especially for long browser recordings and background behavior on iPhone and iPad.</footer>
+</body>
+</html>

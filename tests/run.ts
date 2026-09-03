@@ -200,7 +200,7 @@ test('keeps mobile recording and transcript length unlimited by policy while gua
   assert.match(recorder, /checkpointFailureRef/);
   assert.doesNotMatch(recorder, /track\.enabled = false/);
   assert.match(recorder, /if \(verified\.duration\) elapsedRef\.current = verified\.duration/);
-  assert.match(flow, /disabled=\{!micVerified\}/);
+  assert.match(flow, /disabled=\{!micVerified \|\| controlsBusy\}/);
   assert.match(flow, /Audio playback verified/);
   assert.match(flow, /Verify saved lecture audio/);
   assert.doesNotMatch(detail, /50 MB safety limit/);

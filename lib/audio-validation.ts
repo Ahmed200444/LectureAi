@@ -43,19 +43,30 @@ async function decodedSignalLevel(blob: Blob) {
   const context = new AudioContextClass();
   try {
     const decoded = await context.decodeAudioData(await blob.arrayBuffer());
-    if (!decoded.length || !decoded.numberOfChannels) return { rms: 0, peak: 0 };
-    const channel = decoded.getChannelData(0);
-    const stride = Math.max(1, Math.floor(channel.length / 48_000));
-    let sum = 0;
-    let count = 0;
-    let peak = 0;
-    for (let index = 0; index < channel.length; index += stride) {
-      const value = Math.abs(channel[index] || 0);
-      peak = Math.max(peak, value);
-      sum += value * value;
-      count += 1;
+    if (!decoded.length || !decoded.numberOfChannels) return { rms: 0, peak: 0, selectedChannel: 0 };
+
+    // Some iPhone/iPad recordings can expose a nearly silent channel beside the real
+    // microphone channel. Validate the strongest encoded channel rather than assuming
+    // channel 0 is the audible one.
+    let strongest = { rms: 0, peak: 0, selectedChannel: 0 };
+    for (let channelIndex = 0; channelIndex < decoded.numberOfChannels; channelIndex += 1) {
+      const channel = decoded.getChannelData(channelIndex);
+      const stride = Math.max(1, Math.floor(channel.length / 48_000));
+      let sum = 0;
+      let count = 0;
+      let peak = 0;
+      for (let index = 0; index < channel.length; index += stride) {
+        const value = Math.abs(channel[index] || 0);
+        peak = Math.max(peak, value);
+        sum += value * value;
+        count += 1;
+      }
+      const rms = count ? Math.sqrt(sum / count) : 0;
+      if (rms > strongest.rms || (rms === strongest.rms && peak > strongest.peak)) {
+        strongest = { rms, peak, selectedChannel: channelIndex };
+      }
     }
-    return { rms: count ? Math.sqrt(sum / count) : 0, peak };
+    return strongest;
   } finally {
     await context.close().catch(() => undefined);
   }

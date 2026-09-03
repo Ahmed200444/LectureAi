@@ -86,11 +86,14 @@ export async function applyLectureAudioPreferences(track: MediaStreamTrack) {
   return track.getSettings?.() || {};
 }
 
+/**
+ * Prefer AAC in an M4A/MP4 container everywhere the browser supports it. That format
+ * is broadly playable by iPhone/iPad, Safari, Windows, macOS, Android and common
+ * messaging/mail apps. WebM/Opus remains a standards-compliant fallback for browsers
+ * that cannot encode MP4 audio; LectureAI never lies about the resulting extension.
+ */
 export function recordingMimeCandidates() {
-  const ios = isIOSDevice();
-  return ios
-    ? ['audio/mp4;codecs=mp4a.40.2', 'audio/mp4', 'audio/webm;codecs=opus', 'audio/webm']
-    : ['audio/webm;codecs=opus', 'audio/mp4;codecs=mp4a.40.2', 'audio/mp4', 'audio/webm'];
+  return ['audio/mp4;codecs=mp4a.40.2', 'audio/mp4', 'audio/webm;codecs=opus', 'audio/webm'];
 }
 
 export function recordingFileExtension(mimeType: string) {
