@@ -106,7 +106,7 @@ export default function App() {
       recorder.record();
       await KeepAwake.activateKeepAwakeAsync(KEEP_AWAKE_TAG);
       setStatus('Recording safely on-device');
-    } catch (error) {
+    } catch {
       setStatus('Could not start recording');
       Alert.alert('Recording did not start', 'Close other apps using the microphone and try again.');
     }
@@ -151,7 +151,7 @@ export default function App() {
           setStatus('Recording saved — tap Save / Share below');
         });
       }, 250);
-    } catch (error) {
+    } catch {
       await KeepAwake.deactivateKeepAwake(KEEP_AWAKE_TAG).catch(() => {});
       setStatus('Could not finish the recording cleanly');
       Alert.alert('Finish failed', 'Keep Expo Go open and try stopping once more.');
