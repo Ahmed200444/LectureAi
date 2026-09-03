@@ -23,6 +23,7 @@ assert.match(app, /sampleRate: 48_000/);
 assert.match(app, /numberOfChannels: 1/);
 assert.match(app, /bitRate: 192_000/);
 assert.match(app, /isMeteringEnabled: true/);
+assert.match(app, /directory: 'document'/);
 assert.match(app, /recorder\.pause\(\)/);
 assert.match(app, /recorder\.record\(\)/);
 assert.match(app, /markMoment/);
@@ -36,8 +37,9 @@ assert.doesNotMatch(app, /allowsBackgroundRecording:\s*true/);
 assert.doesNotMatch(appJson, /enableBackgroundRecording\"\s*:\s*true/);
 assert.match(app, /Expo Go cannot guarantee locked-screen\/background recording/);
 
-// The original file is copied from temporary recorder/import locations into the
-// project document directory and checked before metadata says it was preserved.
+// The live file is placed in persistent document storage and the completed original
+// is copied into LectureAI/Recordings, checked, and left unverified until listened to.
+assert.match(app, /live recording is written to persistent document storage/i);
 assert.match(storage, /new Directory\(Paths\.document, 'LectureAI'\)/);
 assert.match(storage, /new Directory\(root, 'Recordings'\)/);
 assert.match(storage, /source\.copy\(destination\)/);
@@ -46,6 +48,17 @@ assert.match(storage, /info\(\{ md5: true \}\)/);
 assert.match(storage, /audioVerification: 'needs-listen-check'/);
 assert.match(storage, /audioVerification: 'user-playback-confirmed'/);
 assert.match(app, /I listened — audio is clear/);
+
+// Metadata has a second document-directory copy, and an orphan scan can surface an
+// original audio file even when the primary SQLite library metadata is unreadable.
+assert.match(storage, /LIBRARY_BACKUP_FILENAME = 'library-backup\.json'/);
+assert.match(storage, /writeLibraryBackup/);
+assert.match(storage, /readLibraryBackup/);
+assert.match(storage, /recordings\.list\(\)/);
+assert.match(storage, /recovered-document-file/);
+assert.match(storage, /recoveryNotice/);
+assert.match(app, /Recovered audio — verify/);
+assert.match(app, /Recovered original audio/);
 
 // Large metadata belongs in local persistent storage; the audio remains a file.
 assert.match(storage, /expo-sqlite\/kv-store/);
@@ -57,6 +70,8 @@ assert.doesNotMatch(storage, /bytes\(\)[\s\S]*Storage\.setItem/);
 assert.match(storage, /transcriptVersion/);
 assert.match(storage, /staleDerivedContent: true/);
 assert.match(storage, /studyPackSourceVersion/);
+assert.match(storage, /translations: \{ en: \[\], ar: \[\] \}/);
+assert.match(storage, /translationsSourceVersion: null/);
 assert.match(study, /derivedContentIsFresh/);
 assert.match(app, /Transcript changed/);
 assert.match(app, /Update derived content/);
@@ -68,10 +83,11 @@ assert.ok(study.includes('(?:inaudible|uncertain)'), 'Study generator must exclu
 assert.match(study, /possibleExamTopics/);
 assert.match(study, /not a claim that the professor promised it will be on an exam/);
 assert.match(app, /source audio/);
+assert.match(app, /Lecture emphasis/);
 
 // Do not fake the browser Whisper worker as a React Native transcription engine.
 assert.doesNotMatch(app, /@huggingface\/transformers/);
 assert.match(app, /does not pretend the browser Whisper worker can run natively/);
 assert.match(app, /Import transcript JSON/);
 
-console.log('✓ unified Expo Go recorder, persistent audio/library, transcript freshness, and source-grounded study safeguards are present');
+console.log('✓ unified Expo Go recorder, persistent audio/library recovery, transcript freshness, and source-grounded study safeguards are present');
