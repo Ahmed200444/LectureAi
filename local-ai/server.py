@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import shutil
+import socket
 import tempfile
 import threading
 import time
@@ -10,12 +12,15 @@ import uuid
 from pathlib import Path
 
 import uvicorn
-from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 
 from engine import MODEL_INFO, hardware_payload, load_model, transcribe_audio
+from pairing import PairingStore, is_private_client
 
 ROOT = Path(__file__).resolve().parent.parent
 MODELS_DIR = ROOT / "models"
@@ -28,6 +33,8 @@ jobs_lock = threading.Lock()
 transcription_slot = threading.Semaphore(1)
 JOB_RETENTION_SECONDS = 60 * 60
 helper_state: dict[str, str | None] = {"warm_status": "starting", "warm_model": None, "warm_error": None}
+LAN_MODE = os.getenv("LECTUREAI_LAN_MODE", "0").strip().lower() in {"1", "true", "yes", "on"}
+pairing_store = PairingStore(os.getenv("LECTUREAI_PAIRING_CODE") or None)
 
 DEFAULT_ALLOWED_ORIGINS = (
     "http://localhost:3000",
@@ -50,12 +57,47 @@ app.add_middleware(
     allow_origins=allowed_origins,
     allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Content-Type", "Access-Control-Request-Private-Network"],
+    allow_headers=["Authorization", "Content-Type", "Access-Control-Request-Private-Network"],
 )
 
 
+class PairRequest(BaseModel):
+    code: str
+
+
+def request_host(request: Request) -> str:
+    return request.client.host if request.client else ""
+
+
+def bearer_token(request: Request) -> str | None:
+    header = request.headers.get("authorization", "").strip()
+    if not header.lower().startswith("bearer "):
+        return None
+    return header[7:].strip() or None
+
+
+def request_authorized(request: Request) -> bool:
+    if not LAN_MODE:
+        return True
+    return pairing_store.authorize(request_host(request), bearer_token(request))
+
+
+def protected_path(path: str) -> bool:
+    return path == "/transcribe" or path == "/jobs" or path.startswith("/jobs/")
+
+
 @app.middleware("http")
-async def private_network_header(request, call_next):
+async def network_guard(request: Request, call_next):
+    # Loopback remains the default. LAN access exists only when explicitly enabled,
+    # and even then it is restricted to private/link-local clients plus a paired
+    # bearer token before any transcription endpoint is allowed to run.
+    if LAN_MODE:
+        host = request_host(request)
+        if not is_private_client(host):
+            return JSONResponse(status_code=403, content={"detail": "LectureAI LAN mode accepts only private/local-network clients."})
+        if protected_path(request.url.path) and not request_authorized(request):
+            return JSONResponse(status_code=401, content={"detail": "Pair this device with the Windows helper before transcription."})
+
     response = await call_next(request)
     response.headers["Access-Control-Allow-Private-Network"] = "true"
     response.headers["Cache-Control"] = "no-store"
@@ -89,16 +131,46 @@ def start_model_warmup():
     threading.Thread(target=warm_configured_model, name="lectureai-model-warmup", daemon=True).start()
 
 
+@app.post("/pair")
+def pair_device(payload: PairRequest, request: Request):
+    if not LAN_MODE:
+        raise HTTPException(404, "Wireless pairing is disabled. Start the helper with --lan to enable it deliberately.")
+    try:
+        session = pairing_store.pair(request_host(request), payload.code)
+    except PermissionError as error:
+        raise HTTPException(403, str(error)) from error
+    except RuntimeError as error:
+        raise HTTPException(429, str(error)) from error
+    except ValueError as error:
+        raise HTTPException(401, str(error)) from error
+    return {
+        "ok": True,
+        "token": session.token,
+        "expires_at": session.expires_at,
+        "expires_in_seconds": max(0, round(session.expires_at - time.time())),
+        "privacy": "authenticated-private-lan",
+    }
+
+
 @app.get("/health")
-def health():
+def health(request: Request):
     cleanup_jobs()
+    if LAN_MODE and not request_authorized(request):
+        return {
+            "ok": True,
+            "version": "0.5.0",
+            "privacy": "authenticated-private-lan",
+            "pairing_required": True,
+        }
+
     with jobs_lock:
         queued = sum(1 for job in jobs.values() if job.get("status") == "queued")
         active = sum(1 for job in jobs.values() if job.get("status") in {"loading-model", "transcribing"})
     return {
         "ok": True,
-        "version": "0.4.0",
-        "privacy": "loopback-only",
+        "version": "0.5.0",
+        "privacy": "authenticated-private-lan" if LAN_MODE else "loopback-only",
+        "pairing_required": False,
         "configured_model": configured_model(),
         "active_jobs": active,
         "queued_jobs": queued,
@@ -255,7 +327,41 @@ async def transcribe(
         return result
 
 
+def local_ipv4() -> str | None:
+    # Determine the address Windows would normally use on the current LAN without
+    # sending application data. Fall back cleanly when offline.
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.connect(("8.8.8.8", 80))
+        address = sock.getsockname()[0]
+        return address if is_private_client(address) and not address.startswith("127.") else None
+    except OSError:
+        return None
+    finally:
+        sock.close()
+
+
 if __name__ == "__main__":
-    print("LectureAI local transcription: http://127.0.0.1:8765")
-    print("Audio stays on this computer. Press Ctrl+C to stop.")
-    uvicorn.run(app, host="127.0.0.1", port=8765, log_level="info")
+    parser = argparse.ArgumentParser(description="LectureAI private local transcription helper")
+    parser.add_argument("--lan", action="store_true", help="Allow explicitly paired iPhone/iPad clients on the same private LAN")
+    parser.add_argument("--port", type=int, default=int(os.getenv("LECTUREAI_HELPER_PORT", "8765")))
+    args = parser.parse_args()
+    if args.lan:
+        LAN_MODE = True
+
+    if LAN_MODE:
+        address = local_ipv4()
+        print("LectureAI authenticated LAN transcription is ON.")
+        print(f"Pairing code: {pairing_store.code}")
+        if address:
+            print(f"Computer address for LectureAI: http://{address}:{args.port}")
+        else:
+            print(f"Computer address: use this PC's private IPv4 address with port {args.port}.")
+        print("Only paired private-LAN clients can submit or read transcription jobs.")
+        print("Audio is copied only to this computer for local transcription. Press Ctrl+C to stop.")
+        uvicorn.run(app, host="0.0.0.0", port=args.port, log_level="info")
+    else:
+        print(f"LectureAI local transcription: http://127.0.0.1:{args.port}")
+        print("Audio stays on this computer. Add --lan only when you deliberately want paired iPhone/iPad access.")
+        print("Press Ctrl+C to stop.")
+        uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="info")
