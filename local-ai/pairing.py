@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import ipaddress
 import secrets
-import string
 import threading
 import time
 from dataclasses import dataclass
@@ -11,6 +10,11 @@ PAIRING_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 SESSION_TTL_SECONDS = 12 * 60 * 60
 PAIRING_WINDOW_SECONDS = 60
 MAX_PAIRING_ATTEMPTS_PER_WINDOW = 10
+IPV4_PRIVATE_NETWORKS = tuple(
+    ipaddress.ip_network(value)
+    for value in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
+)
+IPV6_UNIQUE_LOCAL = ipaddress.ip_network("fc00::/7")
 
 
 def generate_pairing_code(length: int = 8) -> str:
@@ -20,13 +24,18 @@ def generate_pairing_code(length: int = 8) -> str:
 def is_private_client(host: str | None) -> bool:
     if not host:
         return False
-    if host in {"localhost", "::1"}:
+    if host == "localhost":
         return True
     try:
         address = ipaddress.ip_address(host)
     except ValueError:
         return False
-    return bool(address.is_loopback or address.is_private or address.is_link_local)
+
+    if address.is_loopback or address.is_link_local:
+        return True
+    if isinstance(address, ipaddress.IPv4Address):
+        return any(address in network for network in IPV4_PRIVATE_NETWORKS)
+    return address in IPV6_UNIQUE_LOCAL
 
 
 @dataclass(frozen=True)
