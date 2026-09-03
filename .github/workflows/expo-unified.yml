@@ -36,6 +36,9 @@ jobs:
       - name: Verify Expo SDK dependency compatibility
         run: npx expo install --check
 
+      - name: Run Expo project doctor
+        run: npx expo-doctor
+
       - name: Bundle iOS project
         run: npx expo export --platform ios --output-dir dist-ios
 
@@ -55,6 +58,9 @@ jobs:
 
       - name: Install Expo project dependencies
         run: npm install --no-audit --no-fund
+
+      - name: Verify Expo SDK dependency compatibility
+        run: npx expo install --check
 
       - name: Bundle Android project
         run: npx expo export --platform android --output-dir dist-android
