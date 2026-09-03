@@ -49,7 +49,8 @@ assert.match(app, /I listened — audio is clear/);
 
 // Large metadata belongs in local persistent storage; the audio remains a file.
 assert.match(storage, /expo-sqlite\/kv-store/);
-assert.doesNotMatch(storage, /base64\(|bytes\(\).*Storage\.setItem/s);
+assert.doesNotMatch(storage, /base64\(/);
+assert.doesNotMatch(storage, /bytes\(\)[\s\S]*Storage\.setItem/);
 
 // Transcript edits must invalidate derived material instead of silently leaving
 // stale notes/translations behind.
