@@ -95,6 +95,26 @@ function guessedMime(filename) {
   return 'application/octet-stream';
 }
 
+function contextualGlossary(lecture, supplied) {
+  const candidates = [
+    ...(Array.isArray(supplied) ? supplied : []),
+    lecture?.title,
+    lecture?.course,
+    ...(Array.isArray(lecture?.glossary) ? lecture.glossary : []),
+  ];
+  const seen = new Set();
+  const terms = [];
+  for (const candidate of candidates) {
+    const value = String(candidate || '').replace(/[\r\n\t]+/g, ' ').trim().slice(0, 120);
+    const key = value.toLocaleLowerCase();
+    if (!value || seen.has(key)) continue;
+    seen.add(key);
+    terms.push(value);
+    if (terms.length >= 250) break;
+  }
+  return terms;
+}
+
 function sleep(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
@@ -111,7 +131,7 @@ export async function transcribeOnComputer({ address, token, lecture, glossary =
   });
   form.append('model', 'configured');
   form.append('lectureId', String(lecture.id || 'lecture'));
-  form.append('glossary', JSON.stringify(Array.isArray(glossary) ? glossary.slice(0, 250) : []));
+  form.append('glossary', JSON.stringify(contextualGlossary(lecture, glossary)));
   if (lecture.audioMd5) form.append('audioMd5', String(lecture.audioMd5).toLowerCase());
 
   onProgress({ progress: 3, message: lecture.audioMd5 ? 'Sending the preserved original to your paired Windows computer · transfer checksum will be verified…' : 'Sending the preserved original to your paired Windows computer…' });
