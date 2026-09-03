@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Alert,
   AppState,
@@ -37,6 +37,12 @@ import {
   upsertLecture,
 } from './src/storage';
 import { applyStudyPack, derivedContentIsFresh } from './src/study';
+import { computerHealth, pairWithComputer, transcribeOnComputer } from './src/computer';
+import {
+  clearActiveRecordingJournal,
+  recoverInterruptedRecording,
+  saveActiveRecordingJournal,
+} from './src/recording-journal';
 
 const KEEP_AWAKE_TAG = 'lectureai-recording';
 const LOW_STORAGE_BYTES = 500 * 1024 * 1024;
@@ -46,10 +52,6 @@ const RECORDING_OPTIONS = {
   numberOfChannels: 1,
   bitRate: 192_000,
   isMeteringEnabled: true,
-  // Keep the live recorder output in persistent document storage instead of the
-  // temporary cache. The finished file is still copied to LectureAI/Recordings so
-  // the library owns a stable original independent of the recorder's current URI.
-  directory: 'document',
 };
 
 function newId() {
@@ -83,9 +85,9 @@ function recordingLevel(metering) {
   return Math.max(0, Math.min(1, (metering + 60) / 60));
 }
 
-function normalizeImportedTranscript(payload, lectureId) {
+function normalizeTranscriptPayload(payload, lectureId) {
   const rows = Array.isArray(payload) ? payload : payload?.segments;
-  if (!Array.isArray(rows)) throw new Error('Transcript JSON must contain a segments array.');
+  if (!Array.isArray(rows)) throw new Error('Transcript data must contain a segments array.');
   return rows.map((row, index) => {
     const start = Number(row.start ?? row.startTime ?? 0);
     const end = Number(row.end ?? row.endTime ?? start);
@@ -102,6 +104,7 @@ function normalizeImportedTranscript(payload, lectureId) {
       manuallyReviewed: Boolean(row.manuallyReviewed),
       uncertain: /^\s*\[(?:uncertain|inaudible)\]/i.test(text),
       speaker: String(row.speaker || 'Speaker'),
+      words: Array.isArray(row.words) ? row.words : undefined,
     };
   }).sort((a, b) => a.startTime - b.startTime);
 }
@@ -137,24 +140,68 @@ export default function App() {
   const [warning, setWarning] = useState('');
   const [inputName, setInputName] = useState('');
   const [lastSavedId, setLastSavedId] = useState('');
+  const [computerProgress, setComputerProgress] = useState(null);
+  const recordingStartedAt = useRef(null);
+  const journalSnapshot = useRef({});
 
   const selectedLecture = lectures.find((lecture) => lecture.id === selectedId) || null;
   const lastSaved = lectures.find((lecture) => lecture.id === lastSavedId) || null;
   const freeDisk = Paths.availableDiskSpace;
   const level = recordingLevel(recorderState.metering);
 
+  journalSnapshot.current = {
+    title,
+    startedAt: recordingStartedAt.current,
+    sourceUri: recorder.uri || recorderState.url || null,
+    durationMs: recorderState.durationMillis || 0,
+    marks,
+    state: paused ? 'paused' : 'recording',
+  };
+
   async function refresh() {
-    setLectures(await loadLibrary());
+    const library = await loadLibrary();
+    setLectures(library);
+    return library;
+  }
+
+  async function persistSettings(patch) {
+    const next = await saveSettings({ ...settings, ...patch });
+    setSettingsState(next);
+    return next;
+  }
+
+  async function persistRecordingJournal(stateOverride) {
+    let statusSnapshot = null;
+    try {
+      statusSnapshot = await recorder.getStatus();
+    } catch {
+      // The state hook/recorder URI below remain valid fallbacks.
+    }
+    const snapshot = journalSnapshot.current;
+    saveActiveRecordingJournal({
+      ...snapshot,
+      sourceUri: recorder.uri || statusSnapshot?.url || snapshot.sourceUri || null,
+      durationMs: statusSnapshot?.durationMillis || snapshot.durationMs || 0,
+      state: stateOverride || snapshot.state,
+    });
   }
 
   useEffect(() => {
     let mounted = true;
-    void Promise.all([loadLibrary(), loadSettings()]).then(([library, loadedSettings]) => {
+    void (async () => {
+      const loadedSettings = await loadSettings();
+      const recovery = await recoverInterruptedRecording();
+      const library = await loadLibrary();
       if (!mounted) return;
-      setLectures(library);
       setSettingsState(loadedSettings);
+      setLectures(library);
+      if (recovery.recovered) {
+        setWarning('LectureAI recovered an audio file from an interrupted recording session. Open it from Lectures and verify the beginning, middle, and end before relying on it.');
+      } else if (recovery.message) {
+        setWarning(recovery.message);
+      }
       setReady(true);
-    }).catch((error) => {
+    })().catch((error) => {
       if (!mounted) return;
       setWarning(error instanceof Error ? error.message : 'Could not open the local LectureAI library.');
       setReady(true);
@@ -165,6 +212,7 @@ export default function App() {
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (state) => {
       if (state !== 'active' && recordingActive) {
+        void persistRecordingJournal('backgrounded');
         setWarning('LectureAI left the foreground while recording. Expo Go cannot guarantee locked-screen/background recording on iPhone; return to LectureAI and verify the saved audio afterward.');
       }
     });
@@ -173,25 +221,37 @@ export default function App() {
 
   useEffect(() => {
     if (recorderState.mediaServicesDidReset && recordingActive) {
+      void persistRecordingJournal('media-services-reset');
       setWarning('iOS audio services were reset during this lecture. Finish and verify the recording before relying on it.');
     }
   }, [recorderState.mediaServicesDidReset, recordingActive]);
 
+  useEffect(() => {
+    if (!recordingActive) return undefined;
+    void persistRecordingJournal();
+    const journalTimer = setInterval(() => { void persistRecordingJournal(); }, 5_000);
+    const storageTimer = setInterval(() => {
+      if (Paths.availableDiskSpace < 200 * 1024 * 1024) {
+        setWarning(`Device storage is critically low (${formatBytes(Paths.availableDiskSpace)} free). Keep LectureAI open and finish/save the lecture as soon as practical.`);
+      }
+    }, 60_000);
+    return () => {
+      clearInterval(journalTimer);
+      clearInterval(storageTimer);
+    };
+  }, [recordingActive]);
+
   useEffect(() => () => {
     KeepAwake.deactivateKeepAwake(KEEP_AWAKE_TAG).catch(() => {});
   }, []);
-
-  async function persistSettings(patch) {
-    const next = await saveSettings({ ...settings, ...patch });
-    setSettingsState(next);
-  }
 
   async function startRecording() {
     if (recordingActive) return;
     try {
       setWarning('');
       if (Paths.availableDiskSpace < LOW_STORAGE_BYTES) {
-        Alert.alert('Low storage', `Only about ${formatBytes(Paths.availableDiskSpace)} is available. Free some storage before relying on LectureAI for a long lecture.`);
+        Alert.alert('Not enough free storage', `Only about ${formatBytes(Paths.availableDiskSpace)} is available. Free at least 500 MB before starting an important lecture.`);
+        return;
       }
       const permission = await AudioModule.requestRecordingPermissionsAsync();
       if (!permission.granted) {
@@ -205,16 +265,25 @@ export default function App() {
         allowsRecording: true,
         interruptionMode: 'doNotMix',
       });
-      await recorder.prepareToRecordAsync(RECORDING_OPTIONS);
+      await recorder.prepareToRecordAsync();
       const input = await recorder.getCurrentInput().catch(() => null);
       setInputName(input?.name || input?.type || 'Built-in microphone');
+      recordingStartedAt.current = new Date().toISOString();
       recorder.record();
       if (settings.keepScreenAwake) await KeepAwake.activateKeepAwakeAsync(KEEP_AWAKE_TAG).catch(() => {});
       setMarks([]);
       setPaused(false);
       setRecordingActive(true);
       setLastSavedId('');
-      setStatus('Recording on-device · live file is in document storage · keep LectureAI open');
+      saveActiveRecordingJournal({
+        title,
+        startedAt: recordingStartedAt.current,
+        sourceUri: recorder.uri || recorderState.url || null,
+        durationMs: 0,
+        marks: [],
+        state: 'recording',
+      });
+      setStatus('Recording on-device · keep LectureAI open');
     } catch (error) {
       setStatus('Recording did not start');
       setWarning(error instanceof Error ? error.message : 'Could not start recording.');
@@ -226,6 +295,7 @@ export default function App() {
     try {
       recorder.pause();
       setPaused(true);
+      void persistRecordingJournal('paused');
       setStatus('Paused · same recording session preserved');
     } catch {
       setWarning('LectureAI could not pause cleanly. Finish and verify the recording if anything looks wrong.');
@@ -237,6 +307,7 @@ export default function App() {
     try {
       recorder.record();
       setPaused(false);
+      void persistRecordingJournal('recording');
       setStatus('Recording continued');
     } catch {
       setWarning('LectureAI could not resume the same recording. Finish and verify what was captured.');
@@ -254,20 +325,32 @@ export default function App() {
     const durationMs = Math.max(0, recorderState.durationMillis || Math.round(recorder.currentTime * 1000));
     try {
       setStatus('Finishing and preserving original audio…');
+      await persistRecordingJournal('finishing');
       await recorder.stop();
       await KeepAwake.deactivateKeepAwake(KEEP_AWAKE_TAG).catch(() => {});
       setRecordingActive(false);
       setPaused(false);
 
       const uri = recorder.uri || recorderState.url;
-      if (!uri) throw new Error('The native recorder stopped but did not return an audio file path.');
+      saveActiveRecordingJournal({
+        title,
+        startedAt: recordingStartedAt.current,
+        sourceUri: uri || journalSnapshot.current.sourceUri || null,
+        durationMs,
+        marks,
+        state: 'stopped-awaiting-preservation',
+      });
+      if (!uri) throw new Error('The native recorder stopped but did not return an audio file path. The recovery journal was kept so LectureAI can retry if Expo later exposes the file.');
+
       const id = newId();
       const preserved = await preserveAudioFile(uri, id, title, 'm4a');
       const lecture = createLecture({ id, title, audio: preserved, durationMs, marks, source: 'recorded' });
       await upsertLecture(lecture);
+      clearActiveRecordingJournal();
+      recordingStartedAt.current = null;
       await refresh();
       setLastSavedId(id);
-      setStatus('Original audio preserved in LectureAI document storage · listen before trusting it');
+      setStatus('Original audio copied into LectureAI document storage · listen before trusting it');
       player.replace({ uri: preserved.uri });
       if (settings.autoOpenShareSheet) void shareAudio(lecture).catch(() => undefined);
     } catch (error) {
@@ -281,8 +364,7 @@ export default function App() {
 
   async function verifyLastSaved() {
     if (!lastSaved) return;
-    const updated = markAudioVerified(lastSaved);
-    await upsertLecture(updated);
+    await upsertLecture(markAudioVerified(lastSaved));
     await refresh();
     setStatus('Original audio playback confirmed');
   }
@@ -303,7 +385,7 @@ export default function App() {
       if (result.canceled) return;
       const asset = result.assets[0];
       if (!asset?.uri) throw new Error('The selected recording could not be opened.');
-      if ((asset.size || 0) > Paths.availableDiskSpace) throw new Error('There is not enough free device storage to preserve this recording.');
+      if ((asset.size || 0) + 50 * 1024 * 1024 > Paths.availableDiskSpace) throw new Error('There is not enough free device storage to preserve a separate original copy of this recording.');
       const id = newId();
       const importedTitle = String(asset.name || 'Imported lecture').replace(/\.[^.]+$/, '');
       const ext = String(asset.name || '').split('.').pop() || 'm4a';
@@ -323,7 +405,7 @@ export default function App() {
       if (result.canceled) return;
       const file = new File(result.assets[0]);
       const payload = JSON.parse(await file.text());
-      const segments = normalizeImportedTranscript(payload, lecture.id);
+      const segments = normalizeTranscriptPayload(payload, lecture.id);
       const updated = replaceTranscript(lecture, segments, 'import');
       await upsertLecture(updated);
       await refresh();
@@ -344,6 +426,72 @@ export default function App() {
     await upsertLecture(updated);
     await refresh();
     setDetailTab('study');
+  }
+
+  async function pairComputer(address, code) {
+    const paired = await pairWithComputer(address, code);
+    const health = await computerHealth(paired.baseUrl, paired.token);
+    await persistSettings({
+      computerAddress: paired.baseUrl,
+      computerToken: paired.token,
+      computerTokenExpiresAt: paired.expiresAt,
+    });
+    return health;
+  }
+
+  async function testComputer() {
+    if (!settings.computerAddress || !settings.computerToken) throw new Error('Pair this device with your Windows helper first.');
+    return computerHealth(settings.computerAddress, settings.computerToken);
+  }
+
+  async function forgetComputer() {
+    await persistSettings({ computerAddress: '', computerToken: '', computerTokenExpiresAt: null });
+  }
+
+  async function runComputerTranscription(lecture) {
+    if (!settings.computerAddress || !settings.computerToken) {
+      Alert.alert('Pair your computer first', 'Open Settings in LectureAI, then enter the address and pairing code shown by start-helper-for-phone.bat on your Windows computer.');
+      return;
+    }
+    if (settings.computerTokenExpiresAt && Date.now() / 1000 >= Number(settings.computerTokenExpiresAt)) {
+      Alert.alert('Pairing expired', 'The local pairing token expired. Pair again from Settings before transcription.');
+      return;
+    }
+
+    try {
+      setComputerProgress({ lectureId: lecture.id, progress: 1, message: 'Checking paired Windows computer…' });
+      await computerHealth(settings.computerAddress, settings.computerToken);
+      const result = await transcribeOnComputer({
+        address: settings.computerAddress,
+        token: settings.computerToken,
+        lecture,
+        glossary: [],
+        onProgress: (update) => setComputerProgress({ lectureId: lecture.id, ...update }),
+      });
+      const segments = normalizeTranscriptPayload(result, lecture.id);
+      if (!segments.length) throw new Error('The computer returned an empty transcript. The original audio is unchanged.');
+      let updated = replaceTranscript(lecture, segments, `windows:${result.model || 'configured'}`);
+      updated = {
+        ...updated,
+        transcriptStatus: 'ready',
+        transcriptionMetadata: {
+          engine: result.engine || 'faster-whisper',
+          model: result.model || 'configured',
+          detectedLanguage: result.detected_language || null,
+          languageProbability: result.language_probability ?? null,
+          duration: result.duration ?? null,
+        },
+      };
+      updated = applyStudyPack(updated);
+      await upsertLecture(updated);
+      await refresh();
+      setDetailTab('transcript');
+      setComputerProgress({ lectureId: lecture.id, progress: 100, message: 'Transcript and source-grounded study pack ready.' });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Computer transcription failed.';
+      setComputerProgress({ lectureId: lecture.id, progress: 0, message });
+      Alert.alert('Transcription did not finish', `${message}\n\nYour original recording is still preserved.`);
+    }
   }
 
   async function deleteLecture(lecture) {
@@ -376,10 +524,13 @@ export default function App() {
           setDetailTab={setDetailTab}
           player={player}
           playerStatus={playerStatus}
+          computerProgress={computerProgress?.lectureId === selectedLecture.id ? computerProgress : null}
+          computerPaired={Boolean(settings.computerAddress && settings.computerToken)}
           onBack={() => { player.pause(); setSelectedId(''); }}
           onVerify={async () => { await upsertLecture(markAudioVerified(selectedLecture)); await refresh(); }}
           onShare={() => void shareAudio(selectedLecture).catch((error) => Alert.alert('Share failed', error.message))}
           onImportTranscript={() => void importTranscript(selectedLecture)}
+          onComputerTranscribe={() => void runComputerTranscription(selectedLecture)}
           onSaveTranscriptEdit={(id, value) => void saveTranscriptEdit(selectedLecture, id, value)}
           onGenerateStudy={() => void generateStudy(selectedLecture)}
           onDelete={() => deleteLecture(selectedLecture)}
@@ -421,7 +572,16 @@ export default function App() {
           )}
           {tab === 'lectures' && <Library lectures={lectures} onOpen={openLecture} onImport={importAudio} />}
           {tab === 'study' && <StudyHome lectures={lectures} onOpen={(lecture) => openLecture(lecture, 'study')} />}
-          {tab === 'settings' && <SettingsScreen settings={settings} onChange={persistSettings} freeDisk={freeDisk} />}
+          {tab === 'settings' && (
+            <SettingsScreen
+              settings={settings}
+              onChange={persistSettings}
+              freeDisk={freeDisk}
+              onPair={pairComputer}
+              onTest={testComputer}
+              onForget={forgetComputer}
+            />
+          )}
         </View>
         <TabBar tab={tab} setTab={setTab} />
       </View>
@@ -456,7 +616,7 @@ function RecordScreen({ title, setTitle, recorderState, recordingActive, paused,
     <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
       <Text style={styles.eyebrow}>NATIVE AUDIO THROUGH EXPO GO</Text>
       <Text style={styles.hero}>Record the lecture. Keep the original.</Text>
-      <Text style={styles.lead}>The live recording is written to persistent document storage, then the finished original is preserved in LectureAI's recording library. Transcripts, notes and study tools never replace it.</Text>
+      <Text style={styles.lead}>Expo records natively. When you finish, LectureAI immediately copies the original into its document library before transcription, notes, or study processing can touch anything.</Text>
 
       <View style={styles.card}>
         <TextInput style={styles.titleInput} value={title} onChangeText={setTitle} editable={!recordingActive} placeholder="Lecture title" />
@@ -481,11 +641,11 @@ function RecordScreen({ title, setTitle, recorderState, recordingActive, paused,
 
       <View style={styles.infoCard}>
         <Text style={styles.infoTitle}>Recording safety</Text>
-        <Text style={styles.infoText}>• High-quality native Expo audio with 48 kHz / mono / 192 kbps preferences.</Text>
-        <Text style={styles.infoText}>• The active recording file is placed in document storage, not temporary cache, before the lecture ends.</Text>
-        <Text style={styles.infoText}>• Keep Expo Go open during important lectures. Stock Expo Go cannot add LectureAI's own iOS background-audio capability.</Text>
+        <Text style={styles.infoText}>• Native Expo audio with 48 kHz / mono / 192 kbps preferences.</Text>
+        <Text style={styles.infoText}>• An active-session recovery journal is updated while recording. If Expo exposes a recoverable file after an interruption, LectureAI preserves it on the next launch and marks it for verification.</Text>
+        <Text style={styles.infoText}>• Keep Expo Go open during important lectures. Stock Expo Go cannot guarantee locked-screen/background recording on iPhone.</Text>
         <Text style={styles.infoText}>• Free device storage: {formatBytes(freeDisk)}.</Text>
-        <Text style={styles.infoText}>• A saved file is not called verified until you listen to it and confirm playback.</Text>
+        <Text style={styles.infoText}>• A saved file is not called verified until you listen and confirm playback.</Text>
       </View>
 
       {warning ? <View style={styles.warningCard}><Text style={styles.warningTitle}>Check this</Text><Text style={styles.warningText}>{warning}</Text></View> : null}
@@ -511,7 +671,7 @@ function Library({ lectures, onOpen, onImport }) {
   return (
     <ScrollView contentContainerStyle={styles.scroll}>
       <View style={styles.sectionHead}><View><Text style={styles.eyebrow}>LOCAL LIBRARY</Text><Text style={styles.sectionTitle}>Lectures</Text></View><SecondaryButton label="Import audio" onPress={onImport} compact /></View>
-      {!lectures.length ? <Empty title="No lectures yet" body="Record a lecture or import an existing audio file. The original stays in LectureAI document storage." /> : lectures.map((lecture) => (
+      {!lectures.length ? <Empty title="No lectures yet" body="Record a lecture or import an existing audio file. LectureAI keeps a separate original in document storage." /> : lectures.map((lecture) => (
         <Pressable key={lecture.id} style={styles.listCard} onPress={() => onOpen(lecture)}>
           <View style={styles.listCardTop}><Text style={styles.listTitle}>{lecture.title}</Text><Text style={styles.chevron}>›</Text></View>
           <Text style={styles.meta}>{new Date(lecture.createdAt).toLocaleString()} · {formatDuration(lecture.durationMs)} · {formatBytes(lecture.size)}</Text>
@@ -524,12 +684,12 @@ function Library({ lectures, onOpen, onImport }) {
 }
 
 function StudyHome({ lectures, onOpen }) {
-  const ready = lectures.filter((lecture) => lecture.transcriptStatus === 'ready');
+  const available = lectures.filter((lecture) => lecture.transcriptStatus === 'ready');
   return (
     <ScrollView contentContainerStyle={styles.scroll}>
       <Text style={styles.eyebrow}>SOURCE-GROUNDED STUDY</Text><Text style={styles.sectionTitle}>Study</Text>
-      <Text style={styles.lead}>Study material is generated from trustworthy transcript sections and keeps timestamps back to the lecture. Transcript edits mark derived content stale.</Text>
-      {!ready.length ? <Empty title="Transcribe or import a transcript first" body="Once a lecture has timestamped text, LectureAI can build whole-lecture notes, concepts, definitions, examples and study questions." /> : ready.map((lecture) => (
+      <Text style={styles.lead}>Study material uses trustworthy transcript sections and keeps timestamps back to source audio. Transcript edits invalidate older derived content.</Text>
+      {!available.length ? <Empty title="Transcribe or import a transcript first" body="Once a lecture has timestamped text, LectureAI can build whole-lecture notes, concepts, definitions, examples and study questions." /> : available.map((lecture) => (
         <Pressable key={lecture.id} style={styles.listCard} onPress={() => onOpen(lecture)}>
           <View style={styles.listCardTop}><Text style={styles.listTitle}>{lecture.title}</Text><Text style={styles.chevron}>›</Text></View>
           <Text style={styles.meta}>{lecture.transcript.length} timestamped segments</Text>
@@ -540,21 +700,63 @@ function StudyHome({ lectures, onOpen }) {
   );
 }
 
-function SettingsScreen({ settings, onChange, freeDisk }) {
+function SettingsScreen({ settings, onChange, freeDisk, onPair, onTest, onForget }) {
+  const [address, setAddress] = useState(settings.computerAddress || '');
+  const [code, setCode] = useState('');
+  const [computerMessage, setComputerMessage] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => { setAddress(settings.computerAddress || ''); }, [settings.computerAddress]);
+
+  async function pair() {
+    try {
+      setBusy(true);
+      setComputerMessage('Pairing…');
+      const health = await onPair(address, code);
+      setCode('');
+      setComputerMessage(`Paired · ${health.configured_model || 'Whisper'} ready on this Windows computer.`);
+    } catch (error) {
+      setComputerMessage(error instanceof Error ? error.message : 'Pairing failed.');
+    } finally { setBusy(false); }
+  }
+
+  async function test() {
+    try {
+      setBusy(true);
+      const health = await onTest();
+      setComputerMessage(`Connected · ${health.configured_model || 'configured Whisper'} · ${health.warm_status || 'helper running'}.`);
+    } catch (error) {
+      setComputerMessage(error instanceof Error ? error.message : 'Could not reach the paired computer.');
+    } finally { setBusy(false); }
+  }
+
   return (
-    <ScrollView contentContainerStyle={styles.scroll}>
+    <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
       <Text style={styles.eyebrow}>LECTUREAI</Text><Text style={styles.sectionTitle}>Settings</Text>
       <SettingRow title="Keep screen awake while recording" description="Recommended for Expo Go because background/locked-screen recording is not guaranteed." value={settings.keepScreenAwake} onToggle={() => onChange({ keepScreenAwake: !settings.keepScreenAwake })} />
       <SettingRow title="Open share sheet after save" description="Optional. The original is already preserved locally before sharing." value={settings.autoOpenShareSheet} onToggle={() => onChange({ autoOpenShareSheet: !settings.autoOpenShareSheet })} />
-      <View style={styles.infoCard}><Text style={styles.infoTitle}>Device storage</Text><Text style={styles.infoText}>{formatBytes(freeDisk)} available. LectureAI does not impose a recording-minute quota; real storage and device limits still apply.</Text></View>
-      <View style={styles.infoCard}><Text style={styles.infoTitle}>Transcription status</Text><Text style={styles.infoText}>This Expo-Go build intentionally does not pretend the browser Whisper worker can run natively. Timestamped JSON import works now. A secure computer-pairing transcription path and a validated Expo-compatible on-device engine are separate milestones.</Text></View>
-      <View style={styles.infoCard}><Text style={styles.infoTitle}>Privacy & recovery</Text><Text style={styles.infoText}>Original recordings live in the project's document directory. Lecture metadata is stored locally with a second document-directory metadata backup, and LectureAI scans for orphaned original audio on launch so a metadata failure does not silently hide a preserved recording. Nothing is automatically uploaded to a paid speech service.</Text></View>
+
+      <View style={styles.card}>
+        <Text style={styles.cardTitle}>Windows transcription</Text>
+        <Text style={styles.infoText}>On your Windows laptop, double-click <Text style={styles.inlineCode}>start-helper-for-phone.bat</Text>. Enter the private address and pairing code it prints. Use this only on a trusted private/home Wi-Fi network; the current local transfer uses HTTP and is not end-to-end encrypted.</Text>
+        <TextInput style={styles.textField} autoCapitalize="none" autoCorrect={false} value={address} onChangeText={setAddress} placeholder="http://192.168.1.20:8765" />
+        <TextInput style={styles.textField} autoCapitalize="characters" autoCorrect={false} value={code} onChangeText={setCode} placeholder="Pairing code" />
+        <PrimaryButton label={busy ? 'Please wait…' : 'Pair this iPhone/iPad'} onPress={pair} disabled={busy} />
+        {settings.computerToken ? <View style={styles.buttonRow}><SecondaryButton label="Test connection" onPress={test} disabled={busy} /><SecondaryButton label="Forget computer" onPress={() => void onForget().then(() => setComputerMessage('Pairing removed from this device.'))} disabled={busy} /></View> : null}
+        {computerMessage ? <Text style={styles.connectionMessage}>{computerMessage}</Text> : null}
+        <Text style={styles.meta}>If the phone cannot reach the PC, make sure Expo Go has Local Network permission, both devices are on the same private Wi-Fi, and Windows Firewall allows Python on Private networks only.</Text>
+      </View>
+
+      <View style={styles.infoCard}><Text style={styles.infoTitle}>Device storage</Text><Text style={styles.infoText}>{formatBytes(freeDisk)} available. LectureAI imposes no minute quota; storage, battery, and OS behavior remain real limits.</Text></View>
+      <View style={styles.infoCard}><Text style={styles.infoTitle}>On-device transcription</Text><Text style={styles.infoText}>This Expo Go build does not pretend the browser Whisper worker is a native React Native engine. High-accuracy free transcription is available through your paired Windows faster-whisper helper; timestamped JSON import remains a fallback.</Text></View>
+      <View style={styles.infoCard}><Text style={styles.infoTitle}>Privacy & recovery</Text><Text style={styles.infoText}>Original recordings and metadata stay local by default. A secondary metadata backup plus orphan-file scan can rediscover preserved audio, and the active-session journal may recover an interrupted Expo recorder file when iOS leaves one available.</Text></View>
     </ScrollView>
   );
 }
 
-function LectureDetail({ lecture, detailTab, setDetailTab, player, playerStatus, onBack, onVerify, onShare, onImportTranscript, onSaveTranscriptEdit, onGenerateStudy, onDelete }) {
+function LectureDetail({ lecture, detailTab, setDetailTab, player, playerStatus, computerProgress, computerPaired, onBack, onVerify, onShare, onImportTranscript, onComputerTranscribe, onSaveTranscriptEdit, onGenerateStudy, onDelete }) {
   const fresh = derivedContentIsFresh(lecture);
+  const transcriptionBusy = computerProgress && computerProgress.progress > 0 && computerProgress.progress < 100;
   return (
     <View style={styles.app}>
       <View style={styles.detailHeader}>
@@ -563,7 +765,8 @@ function LectureDetail({ lecture, detailTab, setDetailTab, player, playerStatus,
         <Text style={styles.meta}>{formatDuration(lecture.durationMs)} · {formatBytes(lecture.size)}</Text>
       </View>
       <View style={styles.detailTabs}>{['audio','transcript','notes','study'].map((id) => <Pressable key={id} onPress={() => setDetailTab(id)} style={[styles.detailTab, detailTab === id && styles.detailTabActive]}><Text style={[styles.detailTabText, detailTab === id && styles.detailTabTextActive]}>{id === 'audio' ? 'Audio' : id === 'transcript' ? 'Transcript' : id === 'notes' ? 'Notes' : 'Study'}</Text></Pressable>)}</View>
-      <ScrollView contentContainerStyle={styles.scroll}>
+      <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
+        {computerProgress ? <View style={styles.progressCard}><Text style={styles.progressText}>{computerProgress.message}</Text>{computerProgress.progress > 0 ? <View style={styles.progressTrack}><View style={[styles.progressFill, { width: `${Math.min(100, computerProgress.progress)}%` }]} /></View> : null}</View> : null}
         {detailTab === 'audio' && (
           <>
             {lecture.recoveryNotice ? <View style={styles.warningCard}><Text style={styles.warningTitle}>Recovered original audio</Text><Text style={styles.warningText}>{lecture.recoveryNotice}</Text></View> : null}
@@ -581,23 +784,19 @@ function LectureDetail({ lecture, detailTab, setDetailTab, player, playerStatus,
         )}
         {detailTab === 'transcript' && (
           <>
-            <View style={styles.infoCard}><Text style={styles.infoTitle}>Timestamped transcript</Text><Text style={styles.infoText}>The original audio remains the source of truth. Imported or future AI transcript text can be corrected without changing the recording.</Text></View>
-            {!lecture.transcript.length ? <Empty title="No transcript yet" body="Import timestamped transcript JSON for now. The secure wireless computer transcription path and validated Expo-native local transcription are being built without pretending they already work." action={<PrimaryButton label="Import transcript JSON" onPress={onImportTranscript} />} /> : lecture.transcript.map((segment) => (
+            <View style={styles.infoCard}><Text style={styles.infoTitle}>Timestamped transcript</Text><Text style={styles.infoText}>The original audio remains the source of truth. Correcting transcript text never modifies the recording.</Text></View>
+            {!lecture.transcript.length ? <Empty title="No transcript yet" body={computerPaired ? 'Use your paired Windows computer for local faster-whisper transcription, or import timestamped transcript JSON.' : 'Pair your Windows computer in Settings for free local faster-whisper transcription, or import timestamped transcript JSON.'} action={<><PrimaryButton label={transcriptionBusy ? 'Transcribing…' : 'Transcribe on paired computer'} onPress={onComputerTranscribe} disabled={transcriptionBusy} /><SecondaryButton label="Import transcript JSON" onPress={onImportTranscript} /></>} /> : lecture.transcript.map((segment) => (
               <View key={segment.id} style={[styles.transcriptRow, segment.uncertain && styles.uncertainRow]}>
                 <Pressable onPress={() => { player.seekTo(segment.startTime); player.play(); }}><Text style={styles.timestamp}>{formatTime(segment.startTime)} – {formatTime(segment.endTime)}</Text></Pressable>
                 <TextInput multiline style={styles.transcriptInput} defaultValue={segment.editedText} onEndEditing={(event) => onSaveTranscriptEdit(segment.id, event.nativeEvent.text)} />
-                <Text style={styles.meta}>{segment.uncertain ? 'Needs verification against audio' : segment.manuallyReviewed ? 'Reviewed' : 'Machine/imported text'}</Text>
+                <Text style={styles.meta}>{segment.uncertain ? 'Needs verification against audio' : segment.manuallyReviewed ? 'Reviewed' : 'Machine/imported text'} · {segment.speaker || 'Speaker'}</Text>
               </View>
             ))}
-            {lecture.transcript.length ? <SecondaryButton label="Replace / import transcript JSON" onPress={onImportTranscript} /> : null}
+            {lecture.transcript.length ? <View style={styles.buttonRow}><SecondaryButton label="Retranscribe on computer" onPress={onComputerTranscribe} disabled={transcriptionBusy} /><SecondaryButton label="Replace JSON transcript" onPress={onImportTranscript} /></View> : null}
           </>
         )}
-        {detailTab === 'notes' && (
-          <StudyPackView lecture={lecture} mode="notes" fresh={fresh} onGenerate={onGenerateStudy} player={player} />
-        )}
-        {detailTab === 'study' && (
-          <StudyPackView lecture={lecture} mode="study" fresh={fresh} onGenerate={onGenerateStudy} player={player} />
-        )}
+        {detailTab === 'notes' && <StudyPackView lecture={lecture} mode="notes" fresh={fresh} onGenerate={onGenerateStudy} player={player} />}
+        {detailTab === 'study' && <StudyPackView lecture={lecture} mode="study" fresh={fresh} onGenerate={onGenerateStudy} player={player} />}
       </ScrollView>
     </View>
   );
@@ -646,12 +845,12 @@ function Empty({ title, body, action = null }) {
   return <View style={styles.empty}><Text style={styles.emptyTitle}>{title}</Text><Text style={styles.muted}>{body}</Text>{action ? <View style={{ marginTop: 14 }}>{action}</View> : null}</View>;
 }
 
-function PrimaryButton({ label, onPress }) {
-  return <Pressable style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed]} onPress={onPress}><Text style={styles.primaryButtonText}>{label}</Text></Pressable>;
+function PrimaryButton({ label, onPress, disabled = false }) {
+  return <Pressable disabled={disabled} style={({ pressed }) => [styles.primaryButton, disabled && styles.disabled, pressed && !disabled && styles.pressed]} onPress={onPress}><Text style={styles.primaryButtonText}>{label}</Text></Pressable>;
 }
 
-function SecondaryButton({ label, onPress, compact = false }) {
-  return <Pressable style={({ pressed }) => [styles.secondaryButton, compact && styles.compactButton, pressed && styles.pressed]} onPress={onPress}><Text style={styles.secondaryButtonText}>{label}</Text></Pressable>;
+function SecondaryButton({ label, onPress, compact = false, disabled = false }) {
+  return <Pressable disabled={disabled} style={({ pressed }) => [styles.secondaryButton, compact && styles.compactButton, disabled && styles.disabled, pressed && !disabled && styles.pressed]} onPress={onPress}><Text style={styles.secondaryButtonText}>{label}</Text></Pressable>;
 }
 
 function DangerButton({ label, onPress }) {
@@ -674,7 +873,10 @@ const styles = StyleSheet.create({
   sectionTitle: { color: '#173129', fontWeight: '900', fontSize: 30, letterSpacing: -.6 },
   lead: { color: '#587066', fontSize: 15, lineHeight: 22, marginTop: 9 },
   card: { backgroundColor: '#FFF', borderWidth: 1, borderColor: '#DFE8E3', borderRadius: 22, padding: 18, marginTop: 20 },
+  cardTitle: { color: '#173129', fontWeight: '900', fontSize: 19 },
   titleInput: { borderBottomWidth: 1, borderBottomColor: '#DDE5E0', paddingVertical: 10, color: '#173129', fontSize: 18, fontWeight: '800' },
+  textField: { borderWidth: 1, borderColor: '#D4DFD9', backgroundColor: '#FAFCFB', borderRadius: 13, paddingHorizontal: 12, paddingVertical: 11, marginTop: 10, color: '#173129', fontSize: 14 },
+  inlineCode: { fontFamily: 'monospace', fontWeight: '800' },
   statusRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 16 },
   statusDot: { width: 9, height: 9, borderRadius: 9, backgroundColor: '#A9B6AF' },
   statusDotLive: { backgroundColor: '#D44949' },
@@ -691,6 +893,7 @@ const styles = StyleSheet.create({
   secondaryButtonText: { color: '#214F3D', fontWeight: '800', fontSize: 13, textAlign: 'center' },
   dangerButton: { minHeight: 50, borderRadius: 15, backgroundColor: '#8F3D3D', alignItems: 'center', justifyContent: 'center', marginTop: 12 },
   dangerButtonText: { color: '#FFF', fontWeight: '900', fontSize: 14 },
+  disabled: { opacity: .45 },
   pressed: { opacity: .72 },
   buttonRow: { flexDirection: 'row', gap: 9 },
   infoCard: { backgroundColor: '#EDF3EF', borderRadius: 18, padding: 16, marginTop: 14 },
@@ -701,7 +904,6 @@ const styles = StyleSheet.create({
   warningText: { color: '#795D32', fontSize: 13, lineHeight: 19, marginTop: 4 },
   recoveryText: { color: '#8A5D1F', fontSize: 12, fontWeight: '800', marginTop: 7 },
   savedCard: { backgroundColor: '#FFF', borderRadius: 20, borderWidth: 1, borderColor: '#CFE1D8', padding: 17, marginTop: 16 },
-  cardTitle: { color: '#173129', fontWeight: '900', fontSize: 19 },
   successBox: { backgroundColor: '#E6F2EB', borderRadius: 13, padding: 12, marginTop: 11 },
   successText: { color: '#246046', fontSize: 13, fontWeight: '800' },
   sectionHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 8 },
@@ -723,6 +925,7 @@ const styles = StyleSheet.create({
   switchOn: { backgroundColor: '#315F4B' },
   switchKnob: { width: 20, height: 20, borderRadius: 20, backgroundColor: '#FFF' },
   switchKnobOn: { alignSelf: 'flex-end' },
+  connectionMessage: { color: '#315F4B', fontSize: 12, fontWeight: '800', marginTop: 10, lineHeight: 18 },
   tabBar: { minHeight: 66, flexDirection: 'row', borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: '#D9E2DD', backgroundColor: '#FBFCFA', paddingHorizontal: 8, paddingBottom: 4 },
   tabButton: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 2, borderRadius: 13, marginVertical: 5 },
   tabButtonActive: { backgroundColor: '#E9F0EC' },
@@ -748,4 +951,8 @@ const styles = StyleSheet.create({
   studyItem: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: '#E2E8E4', paddingTop: 10, marginTop: 9 },
   studyText: { color: '#24372F', fontSize: 14, lineHeight: 20 },
   questionType: { color: '#527064', fontWeight: '900', fontSize: 9, letterSpacing: .8, marginBottom: 4 },
+  progressCard: { backgroundColor: '#EAF1ED', borderRadius: 14, padding: 12, marginBottom: 12 },
+  progressText: { color: '#315F4B', fontWeight: '800', fontSize: 12 },
+  progressTrack: { height: 6, borderRadius: 8, backgroundColor: '#D1DDD7', overflow: 'hidden', marginTop: 8 },
+  progressFill: { height: '100%', backgroundColor: '#315F4B' },
 });
