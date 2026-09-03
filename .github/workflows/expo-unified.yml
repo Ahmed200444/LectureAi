@@ -37,7 +37,7 @@ jobs:
         run: npx expo install --check
 
       - name: Run Expo project doctor
-        run: npx expo-doctor
+        run: npm run doctor
 
       - name: Bundle iOS project
         run: npx expo export --platform ios --output-dir dist-ios
