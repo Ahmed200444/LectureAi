@@ -55,6 +55,14 @@ assert.match(storage, /audioVerification: 'needs-listen-check'/);
 assert.match(storage, /audioVerification: 'user-playback-confirmed'/);
 assert.match(app, /I listened — audio is clear/);
 
+// preserveAudioFile writes before metadata on purpose. The authoritative upsert must
+// remove any orphan-recovery placeholder for that same physical audio file, and
+// deletion must remove duplicate metadata aliases for the same URI/name as well.
+assert.match(storage, /item\.audioUri !== lecture\.audioUri/);
+assert.match(storage, /item\.audioFilename !== lecture\.audioFilename/);
+assert.match(storage, /every physical audio file appears exactly once in the library/);
+assert.match(storage, /recoveryNotice: undefined/);
+
 // An active-session journal never pretends to be encoded-audio checkpointing. It
 // remembers the latest file URL Expo exposes and only copies a real surviving file.
 assert.match(journal, /JOURNAL_FILENAME = 'active-recording\.json'/);
