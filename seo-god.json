@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "site_url": "https://lecture-ai-blush.vercel.app",
+  "openseo": {
+    "url": "http://127.0.0.1:3001",
+    "status": "not_installed"
+  },
+  "gsc": {
+    "connected": false
+  },
+  "phases": {
+    "setup": "in_progress",
+    "audit": "pending",
+    "measure": "pending",
+    "ai_visibility": "pending",
+    "schedule": "pending"
+  },
+  "schedule": {
+    "mode": "none",
+    "time_local": "05:00",
+    "marker": ".seo-god/last-run.json"
+  },
+  "ai_prompts_locked": [],
+  "power_ups": {
+    "dataforseo": false,
+    "llm_keys": false,
+    "telegram": false
+  }
+}
