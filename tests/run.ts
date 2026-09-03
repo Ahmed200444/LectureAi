@@ -90,7 +90,7 @@ test('generates every required note section with source timestamps', () => {
     englishTranslation: [], arabicTranslation: [], bookmarks: [], attachments: [], notesOriginal: '', notesCurrent: '', noteVersions: [], createdAt: now, updatedAt: now,
   };
   const notes = generateNotesHtml(lecture);
-  for (const heading of ['Lecture Summary', 'Detailed Lecture Notes', 'Key Concepts', 'Definitions', 'Examples', 'Formulas / Technical Information', 'Important Professor Notes', 'Possible Exam Topics', 'Study Questions']) assert.ok(notes.includes(heading), `Missing note section: ${heading}`);
+  for (const heading of ['Lecture Summary', 'Detailed Lecture Notes', 'Key Concepts', 'Definitions', 'Examples', 'Formulas / Technical Information', 'Important Lecture Emphasis', 'Possible Exam Topics', 'Study Questions']) assert.ok(notes.includes(heading), `Missing note section: ${heading}`);
   assert.match(notes, /data-time="0"/);
 });
 
