@@ -20,6 +20,8 @@ export function NotesEditor({ lecture, onSave, onSeek }: NotesEditorProps) {
   const [saveState, setSaveState] = useState<'saved' | 'saving'>('saved');
   const [showOriginal, setShowOriginal] = useState(false);
   const [regenerated, setRegenerated] = useState<RegenerationChoice>(null);
+  const transcriptVersion = Number(lecture.transcriptVersion || 0);
+  const notesFresh = !lecture.segments.length || Number(lecture.notesSourceVersion || 0) === transcriptVersion;
 
   useEffect(() => {
     if (!editorRef.current || showOriginal) return;
@@ -41,6 +43,8 @@ export function NotesEditor({ lecture, onSave, onSeek }: NotesEditorProps) {
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(async () => {
       const html = DOMPurify.sanitize(editorRef.current?.innerHTML || '', { ADD_ATTR: ['data-time', 'contenteditable'] });
+      // Manual note edits preserve the version they were based on. They must not
+      // silently pretend stale source-grounded notes became current after transcript edits.
       await onSave({ ...lecture, notesCurrent: html });
       setSaveState('saved');
     }, 700);
@@ -63,8 +67,15 @@ export function NotesEditor({ lecture, onSave, onSeek }: NotesEditorProps) {
     const version = { id: crypto.randomUUID(), html: regenerated.html, createdAt: new Date().toISOString(), label: mode === 'replace' ? 'Regenerated notes' : 'Alternative generated notes' };
     const currentSnapshot = { id: crypto.randomUUID(), html: lecture.notesCurrent, createdAt: new Date().toISOString(), label: 'Edited notes before regeneration' };
     const updated = mode === 'replace'
-      ? { ...lecture, notesCurrent: regenerated.html, noteVersions: [...lecture.noteVersions, currentSnapshot, version] }
-      : { ...lecture, noteVersions: [...lecture.noteVersions, version] };
+      ? {
+          ...lecture,
+          notesCurrent: regenerated.html,
+          notesSourceVersion: transcriptVersion,
+          derivedContentStale: lecture.translationSourceVersion !== undefined && Number(lecture.translationSourceVersion) !== transcriptVersion,
+          noteVersions: [...lecture.noteVersions, currentSnapshot, version],
+          updatedAt: new Date().toISOString(),
+        }
+      : { ...lecture, noteVersions: [...lecture.noteVersions, version], updatedAt: new Date().toISOString() };
     await onSave(updated);
     setRegenerated(null);
   }
@@ -79,6 +90,7 @@ export function NotesEditor({ lecture, onSave, onSeek }: NotesEditorProps) {
         <div><span className="eyebrow">Current edited version</span><strong>Lecture notes</strong></div>
         <span className={`save-state ${saveState}`}><Save size={14} /> {saveState === 'saving' ? 'Saving…' : 'Saved locally'}</span>
       </div>
+      {!notesFresh && <div className="inline-warning"><RotateCcw size={16} /><span>The transcript changed after these notes were generated. Your existing edits are preserved; regenerate when you want notes grounded in the corrected transcript.</span><button className="text-button" onClick={createRegeneration}>Update notes</button></div>}
       <div className="editor-toolbar" role="toolbar" aria-label="Note formatting">
         <button onClick={() => command('bold')} aria-label="Bold"><Bold size={16} /></button>
         <button onClick={() => command('italic')} aria-label="Italic"><Italic size={16} /></button>
