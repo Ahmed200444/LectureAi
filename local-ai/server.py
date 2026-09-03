@@ -5,6 +5,7 @@ import os
 import shutil
 import tempfile
 import threading
+import time
 import uuid
 from pathlib import Path
 
@@ -21,6 +22,11 @@ MODELS_DIR = ROOT / "models"
 MODELS_DIR.mkdir(exist_ok=True)
 jobs: dict[str, dict] = {}
 jobs_lock = threading.Lock()
+# Large/medium Whisper inference can consume most of a laptop's GPU/RAM. Keep one
+# authoritative transcription job active at a time instead of letting multiple UI
+# clicks fight over the same model and make every job less reliable.
+transcription_slot = threading.Semaphore(1)
+JOB_RETENTION_SECONDS = 60 * 60
 helper_state: dict[str, str | None] = {"warm_status": "starting", "warm_model": None, "warm_error": None}
 
 DEFAULT_ALLOWED_ORIGINS = (
@@ -69,7 +75,8 @@ def warm_configured_model():
     model = configured_model()
     helper_state.update({"warm_status": "loading", "warm_model": model, "warm_error": None})
     try:
-        load_model(model, MODELS_DIR)
+        with transcription_slot:
+            load_model(model, MODELS_DIR)
         helper_state.update({"warm_status": "ready", "warm_model": model, "warm_error": None})
     except Exception as error:
         # Do not stop the helper. A transcription request can retry model loading and
@@ -84,11 +91,18 @@ def start_model_warmup():
 
 @app.get("/health")
 def health():
+    cleanup_jobs()
+    with jobs_lock:
+        queued = sum(1 for job in jobs.values() if job.get("status") == "queued")
+        active = sum(1 for job in jobs.values() if job.get("status") in {"loading-model", "transcribing"})
     return {
         "ok": True,
         "version": "0.4.0",
         "privacy": "loopback-only",
         "configured_model": configured_model(),
+        "active_jobs": active,
+        "queued_jobs": queued,
+        "max_concurrent_transcriptions": 1,
         **helper_state,
         **hardware_payload(),
     }
@@ -98,26 +112,42 @@ def resolve_model(choice: str):
     return configured_model() if choice == "configured" else choice
 
 
+def cleanup_jobs(now: float | None = None):
+    cutoff = (now or time.time()) - JOB_RETENTION_SECONDS
+    with jobs_lock:
+        expired = [
+            job_id
+            for job_id, job in jobs.items()
+            if job.get("status") in {"complete", "failed"}
+            and float(job.get("finished_at") or 0) < cutoff
+        ]
+        for job_id in expired:
+            jobs.pop(job_id, None)
+
+
 def set_job(job_id: str, **patch):
     with jobs_lock:
         if job_id in jobs:
             jobs[job_id].update(patch)
+            jobs[job_id]["updated_at"] = time.time()
 
 
 def run_job(job_id: str, target: Path, directory: Path, model: str, glossary_terms: list[str], lecture_id: str):
     try:
-        set_job(job_id, status="loading-model", progress=10, message=f"Loading {model} multilingual model…")
-        result = transcribe_audio(
-            target,
-            model,
-            MODELS_DIR,
-            glossary_terms,
-            lambda value, message: set_job(job_id, status="transcribing", progress=value, message=message),
-        )
+        set_job(job_id, status="queued", progress=5, message="Recording preserved · waiting for the local transcription slot…")
+        with transcription_slot:
+            set_job(job_id, status="loading-model", progress=10, message=f"Loading {model} multilingual model…")
+            result = transcribe_audio(
+                target,
+                model,
+                MODELS_DIR,
+                glossary_terms,
+                lambda value, message: set_job(job_id, status="transcribing", progress=value, message=message),
+            )
         result["lectureId"] = lecture_id[:100]
-        set_job(job_id, status="complete", progress=100, message="Transcript ready", result=result)
+        set_job(job_id, status="complete", progress=100, message="Transcript ready", result=result, finished_at=time.time())
     except Exception as error:
-        set_job(job_id, status="failed", progress=100, message="Transcription failed", error=str(error))
+        set_job(job_id, status="failed", progress=100, message="Transcription failed", error=str(error), finished_at=time.time())
     finally:
         shutil.rmtree(directory, ignore_errors=True)
 
@@ -167,6 +197,7 @@ async def create_job(
     glossary: str = Form("[]"),
     lectureId: str = Form("lecture"),
 ):
+    cleanup_jobs()
     model = resolve_model(model)
     if model not in MODEL_INFO:
         raise HTTPException(400, "Choose small, medium, or large-v3.")
@@ -178,18 +209,27 @@ async def create_job(
         shutil.rmtree(directory, ignore_errors=True)
         raise
     job_id = uuid.uuid4().hex
+    created_at = time.time()
     with jobs_lock:
-        jobs[job_id] = {"id": job_id, "status": "queued", "progress": 3, "message": "Recording received · waiting for local transcription"}
+        jobs[job_id] = {
+            "id": job_id,
+            "status": "queued",
+            "progress": 3,
+            "message": "Recording received · waiting for local transcription",
+            "created_at": created_at,
+            "updated_at": created_at,
+        }
     background_tasks.add_task(run_job, job_id, target, directory, model, glossary_terms, lectureId)
     return {"job_id": job_id, "status": "queued"}
 
 
 @app.get("/jobs/{job_id}")
 def get_job(job_id: str):
+    cleanup_jobs()
     with jobs_lock:
         job = jobs.get(job_id)
         if not job:
-            raise HTTPException(404, "Transcription job not found.")
+            raise HTTPException(404, "Transcription job not found or its completed result has expired.")
         return dict(job)
 
 
@@ -207,7 +247,8 @@ async def transcribe(
     with tempfile.TemporaryDirectory(prefix="lectureai-") as directory:
         target = await save_upload(audio, Path(directory))
         try:
-            result = transcribe_audio(target, model, MODELS_DIR, glossary_terms)
+            with transcription_slot:
+                result = transcribe_audio(target, model, MODELS_DIR, glossary_terms)
         except Exception as error:
             raise HTTPException(500, f"Local transcription failed: {error}") from error
         result["lectureId"] = lectureId[:100]
