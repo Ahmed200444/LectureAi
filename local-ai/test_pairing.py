@@ -16,7 +16,12 @@ def run():
     assert is_private_client("192.168.1.25")
     assert is_private_client("10.0.0.7")
     assert is_private_client("172.16.10.2")
+    assert is_private_client("169.254.10.4")
+    assert is_private_client("::1")
+    assert is_private_client("fd00::10")
     assert not is_private_client("8.8.8.8")
+    assert not is_private_client("100.64.0.1"), "Carrier-grade NAT is not the trusted private LAN allowlist"
+    assert not is_private_client("203.0.113.5"), "Documentation/reserved ranges must not be accepted just because ipaddress marks them non-global"
     assert not is_private_client("example.com")
 
     clock = [1_000.0]
