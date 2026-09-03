@@ -125,7 +125,7 @@ export function generateNotesHtml(lecture: Lecture) {
     list(examples.map(sourced), 'No explicit trustworthy examples were detected.'),
     '<h2>Formulas / Technical Information</h2>',
     list(technical.map(sourced), 'No formulas or technical expressions were detected in trustworthy transcript sections.'),
-    '<h2>Important Professor Notes</h2>',
+    '<h2>Important Lecture Emphasis</h2>',
     list([...marked, ...keySegments.map(sourced)].slice(0, 10), 'No marked or explicit emphasis was detected.'),
     '<h2>Possible Exam Topics</h2>',
     '<p><em>LectureAI suggests reviewing these topics; this is not a claim that the professor said they will be on an exam.</em></p>',
