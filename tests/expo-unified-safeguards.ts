@@ -4,6 +4,10 @@ import { readFileSync } from 'node:fs';
 const app = readFileSync(new URL('../expo-recorder/App.js', import.meta.url), 'utf8');
 const storage = readFileSync(new URL('../expo-recorder/src/storage.js', import.meta.url), 'utf8');
 const study = readFileSync(new URL('../expo-recorder/src/study.js', import.meta.url), 'utf8');
+const journal = readFileSync(new URL('../expo-recorder/src/recording-journal.js', import.meta.url), 'utf8');
+const computer = readFileSync(new URL('../expo-recorder/src/computer.js', import.meta.url), 'utf8');
+const server = readFileSync(new URL('../local-ai/server.py', import.meta.url), 'utf8');
+const pairing = readFileSync(new URL('../local-ai/pairing.py', import.meta.url), 'utf8');
 const packageJson = JSON.parse(readFileSync(new URL('../expo-recorder/package.json', import.meta.url), 'utf8')) as { dependencies?: Record<string, string> };
 const appJson = readFileSync(new URL('../expo-recorder/app.json', import.meta.url), 'utf8');
 
@@ -23,7 +27,8 @@ assert.match(app, /sampleRate: 48_000/);
 assert.match(app, /numberOfChannels: 1/);
 assert.match(app, /bitRate: 192_000/);
 assert.match(app, /isMeteringEnabled: true/);
-assert.match(app, /directory: 'document'/);
+assert.doesNotMatch(app, /directory:\s*['"]document['"]/i, 'SDK 54 RecordingOptions does not support a project-controlled directory field');
+assert.match(app, /recorder\.prepareToRecordAsync\(\)/);
 assert.match(app, /recorder\.pause\(\)/);
 assert.match(app, /recorder\.record\(\)/);
 assert.match(app, /markMoment/);
@@ -37,9 +42,10 @@ assert.doesNotMatch(app, /allowsBackgroundRecording:\s*true/);
 assert.doesNotMatch(appJson, /enableBackgroundRecording\"\s*:\s*true/);
 assert.match(app, /Expo Go cannot guarantee locked-screen\/background recording/);
 
-// The live file is placed in persistent document storage and the completed original
-// is copied into LectureAI/Recordings, checked, and left unverified until listened to.
-assert.match(app, /live recording is written to persistent document storage/i);
+// The completed recorder output is copied into LectureAI/Recordings, checked, and
+// left unverified until the user actually listens. SDK54 does not promise the live
+// temporary recorder file itself is under our chosen directory.
+assert.match(app, /immediately copies the original into its document library/i);
 assert.match(storage, /new Directory\(Paths\.document, 'LectureAI'\)/);
 assert.match(storage, /new Directory\(root, 'Recordings'\)/);
 assert.match(storage, /source\.copy\(destination\)/);
@@ -48,6 +54,19 @@ assert.match(storage, /info\(\{ md5: true \}\)/);
 assert.match(storage, /audioVerification: 'needs-listen-check'/);
 assert.match(storage, /audioVerification: 'user-playback-confirmed'/);
 assert.match(app, /I listened — audio is clear/);
+
+// An active-session journal never pretends to be encoded-audio checkpointing. It
+// remembers the latest file URL Expo exposes and only copies a real surviving file.
+assert.match(journal, /JOURNAL_FILENAME = 'active-recording\.json'/);
+assert.match(journal, /saveActiveRecordingJournal/);
+assert.match(journal, /recoverInterruptedRecording/);
+assert.match(journal, /source\.exists/);
+assert.match(journal, /source\.size < MIN_RECOVERABLE_BYTES/);
+assert.match(journal, /interrupted-recorder-recovery/);
+assert.match(journal, /listen to the beginning, middle, and end/i);
+assert.match(app, /persistRecordingJournal/);
+assert.match(app, /stopped-awaiting-preservation/);
+assert.match(app, /clearActiveRecordingJournal/);
 
 // Metadata has a second document-directory copy, and an orphan scan can surface an
 // original audio file even when the primary SQLite library metadata is unreadable.
@@ -85,9 +104,30 @@ assert.match(study, /not a claim that the professor promised it will be on an ex
 assert.match(app, /source audio/);
 assert.match(app, /Lecture emphasis/);
 
+// Paired Windows transcription is explicit, private-LAN scoped, authenticated, and
+// actually wired into the Expo UI rather than existing as an unused helper module.
+assert.match(app, /from '\.\/src\/computer'/);
+assert.match(app, /pairWithComputer/);
+assert.match(app, /computerHealth/);
+assert.match(app, /transcribeOnComputer/);
+assert.match(app, /Transcribe on paired computer/);
+assert.match(app, /start-helper-for-phone\.bat/);
+assert.match(computer, /private local IPv4 address/);
+assert.match(computer, /Authorization: `Bearer \$\{token\}`/);
+assert.match(computer, /\/pair/);
+assert.match(computer, /\/jobs/);
+assert.match(server, /--lan/);
+assert.match(server, /PairingStore/);
+assert.match(server, /request_authorized/);
+assert.match(server, /host="0\.0\.0\.0"/);
+assert.match(pairing, /secrets\.compare_digest/);
+assert.match(pairing, /MAX_PAIRING_ATTEMPTS_PER_WINDOW/);
+assert.match(app, /trusted private\/home Wi-Fi/);
+assert.match(app, /not end-to-end encrypted/);
+
 // Do not fake the browser Whisper worker as a React Native transcription engine.
 assert.doesNotMatch(app, /@huggingface\/transformers/);
-assert.match(app, /does not pretend the browser Whisper worker can run natively/);
+assert.match(app, /does not pretend the browser Whisper worker is a native React Native engine/);
 assert.match(app, /Import transcript JSON/);
 
-console.log('✓ unified Expo Go recorder, persistent audio/library recovery, transcript freshness, and source-grounded study safeguards are present');
+console.log('✓ Expo Go recording, recovery, paired Windows transcription, transcript freshness, and source-grounded study safeguards are present');
