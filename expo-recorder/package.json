@@ -1,0 +1,29 @@
+{
+  "name": "lectureai-expo",
+  "version": "0.2.0",
+  "private": true,
+  "main": "index.js",
+  "scripts": {
+    "start": "expo start --tunnel",
+    "start:lan": "expo start --lan",
+    "ios": "expo start --ios",
+    "android": "expo start --android",
+    "web": "expo start --web",
+    "doctor": "npx expo-doctor"
+  },
+  "dependencies": {
+    "expo": "~54.0.15",
+    "expo-audio": "~1.1.1",
+    "expo-document-picker": "~14.0.8",
+    "expo-file-system": "~19.0.24",
+    "expo-keep-awake": "~15.0.7",
+    "expo-sharing": "~14.0.8",
+    "expo-sqlite": "~16.0.10",
+    "react": "19.1.0",
+    "react-native": "0.81.4"
+  },
+  "devDependencies": {
+    "@types/react": "~19.1.10",
+    "typescript": "~5.9.2"
+  }
+}
