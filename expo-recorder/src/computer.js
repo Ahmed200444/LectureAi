@@ -2,6 +2,9 @@ const DEFAULT_PORT = 8765;
 const PAIR_TIMEOUT_MS = 8_000;
 const REQUEST_TIMEOUT_MS = 20_000;
 const POLL_DELAY_MS = 900;
+const MIN_UPLOAD_TIMEOUT_MS = 120_000;
+const MAX_UPLOAD_TIMEOUT_MS = 30 * 60_000;
+const CONSERVATIVE_UPLOAD_BYTES_PER_SECOND = 256 * 1024;
 
 function privateIpv4(hostname) {
   const parts = String(hostname || '').split('.').map((value) => Number(value));
@@ -115,6 +118,18 @@ function contextualGlossary(lecture, supplied) {
   return terms;
 }
 
+function uploadTimeoutMs(sizeBytes) {
+  const size = Math.max(0, Number(sizeBytes) || 0);
+  if (!size) return MIN_UPLOAD_TIMEOUT_MS;
+  // A two-hour lecture can be hundreds of MB. Give slow private Wi-Fi enough time
+  // instead of aborting a healthy transfer at a fixed two-minute deadline.
+  const estimatedTransferMs = (size / CONSERVATIVE_UPLOAD_BYTES_PER_SECOND) * 1000;
+  return Math.max(
+    MIN_UPLOAD_TIMEOUT_MS,
+    Math.min(MAX_UPLOAD_TIMEOUT_MS, Math.ceil(estimatedTransferMs + 60_000)),
+  );
+}
+
 function sleep(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
@@ -139,7 +154,7 @@ export async function transcribeOnComputer({ address, token, lecture, glossary =
     method: 'POST',
     headers: authHeaders(token),
     body: form,
-  }, Math.max(REQUEST_TIMEOUT_MS, 120_000));
+  }, uploadTimeoutMs(lecture.size));
   if (!create.ok) throw new Error(await responseMessage(create));
   const created = await create.json();
   if (!created?.job_id) throw new Error('The Windows helper did not return a transcription job ID.');
