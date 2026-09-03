@@ -7,12 +7,13 @@ This directory is the unified LectureAI app target for **Expo Go on iPhone/iPad*
 The goal is a free, cable-free recording experience:
 
 1. Install Expo Go from the App Store.
-2. Open the LectureAI Expo project.
-3. Record through native `expo-audio` rather than Safari `MediaRecorder`.
-4. When recording stops, LectureAI immediately copies the original into its own document-storage recording library.
-5. Listen to the preserved original before trusting transcript/notes.
-6. Optionally pair a Windows laptop on trusted private Wi-Fi for free local faster-whisper transcription.
-7. Review/correct the timestamped transcript and generate source-grounded notes/study material.
+2. On Windows, double-click `start-expo-go.bat` in the LectureAI folder. It installs the Expo project dependencies on first use and starts a LAN QR code.
+3. Scan the QR code with the iPhone camera or Expo Go. No USB cable or paid Apple Developer account is needed.
+4. Record through native `expo-audio` rather than Safari `MediaRecorder`.
+5. When recording stops, LectureAI immediately copies the original into its own document-storage recording library.
+6. Listen to the preserved original before trusting transcript/notes.
+7. Optionally pair a Windows laptop on trusted private Wi-Fi for free local faster-whisper transcription.
+8. Review/correct the timestamped transcript and generate source-grounded notes/study material.
 
 The App Store version of Expo Go supports Expo SDK 54, so this project targets SDK 54 until the distribution strategy changes.
 
@@ -43,13 +44,14 @@ The App Store version of Expo Go supports Expo SDK 54, so this project targets S
 - A second `library-backup.json` metadata copy lives in the LectureAI document directory.
 - Original audio remains as a normal file, not a giant value in SQLite/key-value storage.
 - On launch, LectureAI scans `LectureAI/Recordings` for orphaned original audio files and surfaces them as **Recovered audio — verify** instead of silently hiding them if metadata was lost.
+- New protected audio is de-duplicated against temporary recovery placeholders so one physical recording appears once in the lecture library.
 - Record and imported-audio sources.
-- Delete removes the original audio plus LectureAI metadata for that lecture.
+- Delete removes the original audio plus LectureAI metadata aliases for that lecture/file.
 - Audio verification state, marks, transcript state, and derived-content version state are kept per lecture.
 
 ### Free paired Windows transcription
 
-The Expo app now includes an explicit authenticated private-LAN path to the existing faster-whisper helper.
+The Expo app includes an explicit authenticated private-LAN path to the existing faster-whisper helper.
 
 1. Finish/save the original recording first.
 2. On Windows, run `setup-windows.bat` once if needed.
@@ -57,16 +59,18 @@ The Expo app now includes an explicit authenticated private-LAN path to the exis
 4. The helper starts LAN mode deliberately and prints a private IPv4 address plus an 8-character pairing code.
 5. In LectureAI Expo → Settings, enter the address/code and pair.
 6. Open a lecture → Transcript → **Transcribe on paired computer**.
-7. The original audio is transferred to the paired Windows PC, transcribed locally with the configured faster-whisper model, and the timestamped transcript returns to LectureAI.
+7. The protected original audio is transferred to the paired Windows PC. When Expo exposes an MD5 for the preserved file, Windows verifies the received bytes match before accepting the job.
+8. The configured faster-whisper model transcribes locally and the timestamped transcript returns to LectureAI.
 
 Safeguards:
 
 - Normal Windows helper mode remains loopback-only. LAN access happens only with `--lan` / the phone launcher.
-- LAN mode accepts only private/link-local clients.
+- LAN mode accepts explicit RFC1918/loopback/link-local ranges rather than treating every non-global/reserved IP as trusted.
 - Transcription/job endpoints require a bearer session token.
 - The token is bound to the paired client address and expires after 12 hours.
 - Pairing attempts are rate limited and the pairing code is compared with a constant-time function.
 - The app accepts only private IPv4 helper addresses.
+- When an original MD5 is available, transfer corruption is detected before transcription; a mismatch never modifies the phone original.
 - Use this feature only on a **trusted private/home Wi-Fi network**. The current LAN transport is plain HTTP and is **not end-to-end encrypted**. Public/campus Wi-Fi may also isolate devices and prevent direct peer connections.
 - On iOS, Expo Go must have **Local Network** permission for direct LAN access.
 
@@ -99,13 +103,17 @@ The repository includes a benchmark protocol and WER/CER tooling, including Arab
 
 ## Run the Expo project
 
+Easiest on Windows: double-click `start-expo-go.bat` from the repository root and scan its QR code.
+
+Manual equivalent:
+
 ```bash
 cd expo-recorder
 npm install
-npm start
+npx expo start --lan
 ```
 
-Then open the project in the App Store version of Expo Go on the iPhone/iPad.
+The Windows computer and iPhone/iPad need to be reachable on the same LAN while Expo Go initially loads the development project. This removes the USB/AltStore/IPA requirement, but it is still an Expo development project until it is published through an Expo account or another distribution path.
 
 ## Acceptance gate before trusting a full lecture
 
@@ -121,7 +129,7 @@ Do not rely on this branch for an important class until all of these pass on the
 - Verify low-storage blocking/warnings.
 - Verify foreground/background warning.
 - Verify imported audio preservation.
-- Verify Windows pairing on trusted private Wi-Fi, token expiry/re-pairing, and a real audio upload/transcription round trip.
+- Verify Windows pairing on trusted private Wi-Fi, token expiry/re-pairing, checksum behavior when available, and a real audio upload/transcription round trip.
 - Verify transcript edit → stale-study warning → regeneration → timestamp seeking.
 - Verify deletion removes the protected audio file and lecture metadata.
 
