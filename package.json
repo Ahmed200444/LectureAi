@@ -11,7 +11,7 @@
     "start": "vite preview",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types tests/run.ts && node --experimental-strip-types tests/ios-safeguards.ts && node --experimental-strip-types tests/multilingual-safeguards.ts && node --experimental-strip-types tests/recording-interruption-safeguards.ts && node --experimental-strip-types tests/native-ios-safeguards.ts && node --experimental-strip-types tests/safari-saved-audio-safeguards.ts && node --experimental-strip-types tests/expo-unified-safeguards.ts && node --experimental-strip-types tests/notes-grounding-safeguards.ts && node --experimental-strip-types tests/quality-audit-safeguards.ts && node --experimental-strip-types tests/derived-content-freshness.ts",
+    "test": "node --experimental-strip-types tests/run.ts && node --experimental-strip-types tests/ios-safeguards.ts && node --experimental-strip-types tests/multilingual-safeguards.ts && node --experimental-strip-types tests/recording-interruption-safeguards.ts && node --experimental-strip-types tests/native-ios-safeguards.ts && node --experimental-strip-types tests/safari-saved-audio-safeguards.ts && node --experimental-strip-types tests/expo-unified-safeguards.ts && node --experimental-strip-types tests/cloudflare-pages-safeguards.ts && node --experimental-strip-types tests/notes-grounding-safeguards.ts && node --experimental-strip-types tests/quality-audit-safeguards.ts && node --experimental-strip-types tests/derived-content-freshness.ts",
     "check": "npm run typecheck && npm run lint && npm run test && npm run build"
   },
   "dependencies": {
