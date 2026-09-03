@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -158,7 +159,7 @@ def health(request: Request):
     if LAN_MODE and not request_authorized(request):
         return {
             "ok": True,
-            "version": "0.5.0",
+            "version": "0.6.0",
             "privacy": "authenticated-private-lan",
             "pairing_required": True,
         }
@@ -168,13 +169,14 @@ def health(request: Request):
         active = sum(1 for job in jobs.values() if job.get("status") in {"loading-model", "transcribing"})
     return {
         "ok": True,
-        "version": "0.5.0",
+        "version": "0.6.0",
         "privacy": "authenticated-private-lan" if LAN_MODE else "loopback-only",
         "pairing_required": False,
         "configured_model": configured_model(),
         "active_jobs": active,
         "queued_jobs": queued,
         "max_concurrent_transcriptions": 1,
+        "transfer_integrity": "md5-when-provided",
         **helper_state,
         **hardware_payload(),
     }
@@ -234,6 +236,15 @@ def parse_glossary(glossary: str):
         raise HTTPException(400, "Glossary must be a JSON array.")
 
 
+def normalize_expected_md5(value: str) -> str | None:
+    candidate = str(value or "").strip().lower()
+    if not candidate:
+        return None
+    if len(candidate) != 32 or any(character not in "0123456789abcdef" for character in candidate):
+        raise HTTPException(400, "audioMd5 must be a 32-character hexadecimal MD5 value.")
+    return candidate
+
+
 def ensure_upload_space(directory: Path, incoming_bytes: int = 0):
     """Protect the disk without imposing a LectureAI file-size or minute quota."""
     free = shutil.disk_usage(directory).free
@@ -242,21 +253,29 @@ def ensure_upload_space(directory: Path, incoming_bytes: int = 0):
         raise HTTPException(507, "Not enough free disk space to keep receiving this recording safely.")
 
 
-async def save_upload(audio: UploadFile, directory: Path):
+async def save_upload(audio: UploadFile, directory: Path, expected_md5: str | None = None):
     suffix = Path(audio.filename or "lecture.webm").suffix.lower()
     if suffix not in {".webm", ".m4a", ".mp4", ".wav", ".mp3", ".ogg", ".flac", ".aac"}:
         suffix = ".audio"
     target = directory / f"original{suffix}"
     total = 0
+    digest = hashlib.md5()  # integrity check only; not used for authentication/security
     ensure_upload_space(directory)
     with target.open("wb") as output:
         while chunk := await audio.read(1024 * 1024):
             total += len(chunk)
+            digest.update(chunk)
             if total % (64 * 1024 * 1024) < len(chunk):
                 ensure_upload_space(directory, max(512 * 1024 * 1024, total // 4))
             output.write(chunk)
     if not total:
         raise HTTPException(400, "The transferred recording is empty.")
+
+    received_md5 = digest.hexdigest()
+    if expected_md5 and received_md5 != expected_md5:
+        target.unlink(missing_ok=True)
+        raise HTTPException(400, "The transferred recording did not match the preserved phone file. Retry the transfer; the phone original was not modified.")
+
     ensure_upload_space(directory, max(512 * 1024 * 1024, min(total, 2 * 1024 * 1024 * 1024)))
     return target
 
@@ -268,15 +287,17 @@ async def create_job(
     model: str = Form("configured"),
     glossary: str = Form("[]"),
     lectureId: str = Form("lecture"),
+    audioMd5: str = Form(""),
 ):
     cleanup_jobs()
     model = resolve_model(model)
     if model not in MODEL_INFO:
         raise HTTPException(400, "Choose small, medium, or large-v3.")
     glossary_terms = parse_glossary(glossary)
+    expected_md5 = normalize_expected_md5(audioMd5)
     directory = Path(tempfile.mkdtemp(prefix="lectureai-job-"))
     try:
-        target = await save_upload(audio, directory)
+        target = await save_upload(audio, directory, expected_md5)
     except Exception:
         shutil.rmtree(directory, ignore_errors=True)
         raise
@@ -287,12 +308,12 @@ async def create_job(
             "id": job_id,
             "status": "queued",
             "progress": 3,
-            "message": "Recording received · waiting for local transcription",
+            "message": "Recording received and integrity-checked · waiting for local transcription" if expected_md5 else "Recording received · waiting for local transcription",
             "created_at": created_at,
             "updated_at": created_at,
         }
     background_tasks.add_task(run_job, job_id, target, directory, model, glossary_terms, lectureId)
-    return {"job_id": job_id, "status": "queued"}
+    return {"job_id": job_id, "status": "queued", "integrity_checked": bool(expected_md5)}
 
 
 @app.get("/jobs/{job_id}")
@@ -311,13 +332,15 @@ async def transcribe(
     model: str = Form("configured"),
     glossary: str = Form("[]"),
     lectureId: str = Form("lecture"),
+    audioMd5: str = Form(""),
 ):
     model = resolve_model(model)
     if model not in MODEL_INFO:
         raise HTTPException(400, "Choose small, medium, or large-v3.")
     glossary_terms = parse_glossary(glossary)
+    expected_md5 = normalize_expected_md5(audioMd5)
     with tempfile.TemporaryDirectory(prefix="lectureai-") as directory:
-        target = await save_upload(audio, Path(directory))
+        target = await save_upload(audio, Path(directory), expected_md5)
         try:
             with transcription_slot:
                 result = transcribe_audio(target, model, MODELS_DIR, glossary_terms)
@@ -358,6 +381,7 @@ if __name__ == "__main__":
         else:
             print(f"Computer address: use this PC's private IPv4 address with port {args.port}.")
         print("Only paired private-LAN clients can submit or read transcription jobs.")
+        print("Use this only on a trusted private network; LAN HTTP is authenticated but not end-to-end encrypted.")
         print("Audio is copied only to this computer for local transcription. Press Ctrl+C to stop.")
         uvicorn.run(app, host="0.0.0.0", port=args.port, log_level="info")
     else:
