@@ -133,9 +133,19 @@ assert.match(pairing, /MAX_PAIRING_ATTEMPTS_PER_WINDOW/);
 assert.match(app, /trusted private\/home Wi-Fi/);
 assert.match(app, /not end-to-end encrypted/);
 
+// When Expo exposes an MD5 for the protected original, the phone sends it and the
+// Windows helper hashes the received bytes before accepting the transcription job.
+assert.match(computer, /form\.append\('audioMd5'/);
+assert.match(computer, /created\.integrity_checked !== true/);
+assert.match(server, /normalize_expected_md5/);
+assert.match(server, /hashlib\.md5\(\)/);
+assert.match(server, /received_md5 != expected_md5/);
+assert.match(server, /integrity_checked/);
+assert.match(server, /phone original was not modified/i);
+
 // Do not fake the browser Whisper worker as a React Native transcription engine.
 assert.doesNotMatch(app, /@huggingface\/transformers/);
 assert.match(app, /does not pretend the browser Whisper worker is a native React Native engine/);
 assert.match(app, /Import transcript JSON/);
 
-console.log('✓ Expo Go recording, recovery, paired Windows transcription, transcript freshness, and source-grounded study safeguards are present');
+console.log('✓ Expo Go recording, recovery, paired Windows transcription, transfer integrity, transcript freshness, and source-grounded study safeguards are present');
