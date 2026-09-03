@@ -104,6 +104,13 @@ assert.match(storage, /computerToken: _secureOnly/);
 assert.match(storage, /legacyToken/);
 assert.match(storage, /withoutToken/);
 
+// Forgetting a computer must remain authoritative even if a previous secure-store
+// deletion was interrupted. A stale keychain token must not silently re-pair later.
+assert.match(storage, /const pairingAddress = String\(parsed\?\.computerAddress/);
+assert.match(storage, /let computerToken = pairingAddress \? secureToken : ''/);
+assert.match(storage, /if \(!pairingAddress && secureToken\)/);
+assert.match(storage, /explicit forget\/tombstone/);
+
 // Transcript edits must invalidate derived material instead of silently leaving
 // stale notes/translations behind.
 assert.match(storage, /transcriptVersion/);
@@ -145,6 +152,13 @@ assert.match(pairing, /MAX_PAIRING_ATTEMPTS_PER_WINDOW/);
 assert.match(app, /trusted private\/home Wi-Fi/);
 assert.match(app, /not end-to-end encrypted/);
 
+// Long lecture uploads can be hundreds of MB. Do not abort every transfer at the
+// same two-minute timeout; scale the LAN upload budget conservatively by file size.
+assert.match(computer, /function uploadTimeoutMs/);
+assert.match(computer, /CONSERVATIVE_UPLOAD_BYTES_PER_SECOND/);
+assert.match(computer, /MAX_UPLOAD_TIMEOUT_MS/);
+assert.match(computer, /uploadTimeoutMs\(lecture\.size\)/);
+
 // When Expo exposes an MD5 for the protected original, the phone sends it and the
 // Windows helper hashes the received bytes before accepting the transcription job.
 assert.match(computer, /form\.append\('audioMd5'/);
@@ -160,4 +174,4 @@ assert.doesNotMatch(app, /@huggingface\/transformers/);
 assert.match(app, /does not pretend the browser Whisper worker is a native React Native engine/);
 assert.match(app, /Import transcript JSON/);
 
-console.log('✓ Expo Go recording, recovery, secure paired Windows transcription, transfer integrity, transcript freshness, and source-grounded study safeguards are present');
+console.log('✓ Expo Go recording, recovery, secure paired Windows transcription, slow-upload tolerance, transfer integrity, transcript freshness, and source-grounded study safeguards are present');
