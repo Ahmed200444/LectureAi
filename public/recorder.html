@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#f7f7f2" />
+    <meta name="description" content="Launch Lecture Recorder in Expo Go for free native iPhone lecture recording with no cable, SideStore, or paid Apple developer membership." />
+    <meta name="robots" content="index,follow" />
+    <link rel="canonical" href="https://lecture-ai-blush.vercel.app/recorder" />
+    <link rel="stylesheet" href="/public-info.css" />
+    <meta property="og:title" content="Lecture Recorder — Free iPhone lecture recording for LectureAI" />
+    <meta property="og:description" content="A free native recording route through Expo Go. No cable, SideStore, or paid Apple developer membership." />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://lecture-ai-blush.vercel.app/recorder" />
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="Lecture Recorder — Free iPhone recorder" />
+    <meta name="twitter:description" content="Record lectures natively through Expo Go, then save the original audio to Files and import it into LectureAI." />
+    <script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Lecture Recorder","applicationCategory":"EducationalApplication","operatingSystem":"iOS through Expo Go","isAccessibleForFree":true,"url":"https://lecture-ai-blush.vercel.app/recorder","description":"Free native iPhone lecture recording companion for LectureAI. Records with Expo Audio, keeps the screen awake during lectures, and exports the original M4A through the iOS share sheet."}</script>
+    <title>Lecture Recorder — Free native iPhone recording for LectureAI</title>
+    <style>
+      .hero-actions{display:flex;gap:12px;flex-wrap:wrap;margin-top:22px}.cta.secondary{background:#fff;color:#214f3d;border:1px solid #bfcfc7}.badge{display:inline-flex;align-items:center;gap:8px;background:#e7f1ec;color:#214f3d;border-radius:999px;padding:7px 11px;font-size:.8rem;font-weight:800;letter-spacing:.04em}.step-number{display:inline-grid;place-items:center;width:30px;height:30px;border-radius:50%;background:#214f3d;color:#fff;font-weight:800;margin-right:8px}.note{background:#fff1dd;border-color:#ead6b6}.small{font-size:.92rem;color:#587066}
+    </style>
+  </head>
+  <body>
+    <header>
+      <a class="brand" href="/">LectureAI</a>
+      <nav>
+        <a href="/how-it-works">How it works</a>
+        <a href="/privacy">Privacy</a>
+      </nav>
+    </header>
+    <main>
+      <span class="badge">100% FREE · NO CABLE</span>
+      <h1>Lecture Recorder</h1>
+      <p class="lede">A simpler recording route for iPhone: the recorder runs in Expo Go using Expo's native audio API instead of Safari's MediaRecorder.</p>
+
+      <div class="hero-actions">
+        <a class="cta" href="https://expo.dev/go">1. Install Expo Go</a>
+        <a class="cta secondary" href="https://snack.expo.dev/?platform=mydevice&sdkVersion=57.0.0&supportedPlatforms=ios&name=Lecture%20Recorder&description=Free%20native%20lecture%20recorder%20for%20LectureAI&dependencies=expo-audio%2Cexpo-sharing%2Cexpo-keep-awake&sourceUrl=https%3A%2F%2Fraw.githubusercontent.com%2FAhmed200444%2FLectureAi%2Fmain%2Fexpo-recorder%2FApp.js">2. Open Lecture Recorder</a>
+      </div>
+
+      <section class="card">
+        <h2>How to use it</h2>
+        <p><span class="step-number">1</span>Install the free Expo Go app from the App Store.</p>
+        <p><span class="step-number">2</span>Return here and tap <strong>Open Lecture Recorder</strong>. Choose the iPhone / My Device option so it launches in Expo Go.</p>
+        <p><span class="step-number">3</span>Tap <strong>Start recording</strong>. The recorder keeps the display awake while a lecture is being recorded.</p>
+        <p><span class="step-number">4</span>Tap <strong>Finish &amp; save</strong>, then choose <strong>Save to Files</strong> in the iPhone share sheet.</p>
+        <p><span class="step-number">5</span>Import the saved M4A into LectureAI for transcription, notes, translation, and study tools.</p>
+      </section>
+
+      <section class="facts">
+        <div><strong>Native audio</strong><br><span class="small">Uses Expo Audio on iPhone rather than browser MediaRecorder.</span></div>
+        <div><strong>High quality</strong><br><span class="small">AAC/M4A at Expo's high-quality preset.</span></div>
+        <div><strong>Original saved first</strong><br><span class="small">The recording is created on-device before you share or import it.</span></div>
+        <div><strong>No subscription</strong><br><span class="small">The recorder code and Expo Go route do not require a paid plan.</span></div>
+      </section>
+
+      <section class="card note">
+        <h2>Important iPhone limitation</h2>
+        <p>Keep Expo Go open while recording. Expo Go cannot add Lecture Recorder's own iOS background-audio entitlement, so locked-screen or long background recording is not guaranteed. The recorder deliberately keeps the screen awake to avoid that problem.</p>
+        <p class="small">A fully standalone iPhone build with guaranteed background recording requires Apple's normal signed-app distribution path. This free route avoids that cost and avoids SideStore/cable setup.</p>
+      </section>
+
+      <section class="card">
+        <h2>Why this route</h2>
+        <p>It avoids the Safari playback/container issue we encountered, avoids SideStore sign-in, and avoids repeatedly re-signing a free Personal Team build. The actual recording screen runs inside Expo Go as React Native code.</p>
+      </section>
+    </main>
+    <footer>
+      LectureAI · Local-first lecture recording and study tools · <a href="/privacy">Privacy</a>
+    </footer>
+  </body>
+</html>
