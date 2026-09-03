@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 const app = readFileSync(new URL('../expo-recorder/App.js', import.meta.url), 'utf8');
 const storage = readFileSync(new URL('../expo-recorder/src/storage.js', import.meta.url), 'utf8');
 const study = readFileSync(new URL('../expo-recorder/src/study.js', import.meta.url), 'utf8');
+const exportsSource = readFileSync(new URL('../expo-recorder/src/exports.js', import.meta.url), 'utf8');
 const journal = readFileSync(new URL('../expo-recorder/src/recording-journal.js', import.meta.url), 'utf8');
 const computer = readFileSync(new URL('../expo-recorder/src/computer.js', import.meta.url), 'utf8');
 const server = readFileSync(new URL('../local-ai/server.py', import.meta.url), 'utf8');
@@ -20,6 +21,12 @@ assert.ok(packageJson.dependencies?.['expo-sqlite']);
 assert.match(packageJson.dependencies?.['expo-secure-store'] || '', /^~15\./);
 assert.ok(packageJson.dependencies?.['expo-sharing']);
 assert.ok(packageJson.dependencies?.['expo-document-picker']);
+
+// The same Expo target must intentionally support both iPhone and iPad. Keep iPad
+// support explicit and do not force a phone-only fullscreen configuration.
+assert.match(appJson, /"supportsTablet"\s*:\s*true/);
+assert.match(appJson, /"requireFullScreen"\s*:\s*false/);
+assert.match(appJson, /"targetAppleDevices"\s*:\s*\["iPhone",\s*"iPad"\]/);
 
 // Recording must use native Expo audio rather than browser MediaRecorder/Safari.
 assert.match(app, /from 'expo-audio'/);
@@ -131,6 +138,22 @@ assert.match(study, /not a claim that the professor promised it will be on an ex
 assert.match(app, /source audio/);
 assert.match(app, /Lecture emphasis/);
 
+// iPhone/iPad exports must preserve the corrected transcript and never silently
+// export stale notes/study content as current. Original audio stays a separate file.
+assert.match(exportsSource, /export function buildTranscriptText/);
+assert.match(exportsSource, /editedText \|\| segment\?\.originalText/);
+assert.match(exportsSource, /export function buildNotesMarkdown/);
+assert.match(exportsSource, /export function buildStudyMarkdown/);
+assert.match(exportsSource, /export function buildLectureJson/);
+assert.match(exportsSource, /Notes are missing or stale/);
+assert.match(exportsSource, /Study material is missing or stale/);
+assert.match(exportsSource, /Original audio is exported separately/);
+assert.match(exportsSource, /export async function exportTranscript/);
+assert.match(exportsSource, /export async function exportNotes/);
+assert.match(exportsSource, /export async function exportStudyGuide/);
+assert.match(exportsSource, /export async function exportLectureData/);
+assert.match(exportsSource, /Sharing\.shareAsync/);
+
 // Paired Windows transcription is explicit, private-LAN scoped, authenticated, and
 // actually wired into the Expo UI rather than existing as an unused helper module.
 assert.match(app, /from '\.\/src\/computer'/);
@@ -174,4 +197,4 @@ assert.doesNotMatch(app, /@huggingface\/transformers/);
 assert.match(app, /does not pretend the browser Whisper worker is a native React Native engine/);
 assert.match(app, /Import transcript JSON/);
 
-console.log('✓ Expo Go recording, recovery, secure paired Windows transcription, slow-upload tolerance, transfer integrity, transcript freshness, and source-grounded study safeguards are present');
+console.log('✓ Expo Go iPhone/iPad recording, recovery, exports, secure paired Windows transcription, slow-upload tolerance, transfer integrity, transcript freshness, and source-grounded study safeguards are present');
