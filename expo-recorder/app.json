@@ -1,0 +1,32 @@
+{
+  "expo": {
+    "name": "LectureAI",
+    "slug": "lectureai",
+    "version": "0.2.0",
+    "orientation": "default",
+    "userInterfaceStyle": "light",
+    "assetBundlePatterns": ["**/*"],
+    "ios": {
+      "supportsTablet": true,
+      "requireFullScreen": false,
+      "bundleIdentifier": "app.lectureai.recorder"
+    },
+    "android": {
+      "package": "app.lectureai.recorder"
+    },
+    "plugins": [
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Allow LectureAI to record your lecture audio.",
+          "enableBackgroundRecording": true
+        }
+      ]
+    ],
+    "extra": {
+      "expoGoTarget": true,
+      "targetAppleDevices": ["iPhone", "iPad"],
+      "backgroundRecording": "enabled-in-native-build-expo-go-best-effort"
+    }
+  }
+}

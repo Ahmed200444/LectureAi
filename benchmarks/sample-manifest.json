@@ -4,7 +4,10 @@
     "language": "en-egyptian-ar-code-switch",
     "condition": "row-1-3",
     "reference": "Here we're creating a pointer يعني المتغير ده بيشاور على memory address.",
-    "hypothesis": "Replace this with the model transcript.",
-    "manual_review": "Check technical English preservation and Arabic script."
+    "hypothesis": "",
+    "technical_terms": ["pointer", "memory address"],
+    "manual_review_seconds": null,
+    "hallucination_count": null,
+    "notes": "SCHEMA EXAMPLE ONLY. Paste a real model transcript into hypothesis in a private copy before running evaluate.py. Do not treat this file as measured LectureAI accuracy."
   }
 ]
