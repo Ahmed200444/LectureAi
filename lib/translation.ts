@@ -27,23 +27,15 @@ function charScript(character: string): Script {
   return 'neutral';
 }
 
-/**
- * Mixed university speech often contains English technical terms inside Arabic.
- * Do not send a whole mixed sentence through one one-way translation model. Split
- * it into script runs so already-target-language text stays untouched and only the
- * opposite-script spans are translated.
- */
 function splitScriptRuns(value: string): TranslationPiece[] {
   const pieces: TranslationPiece[] = [];
   let currentScript: Exclude<Script, 'neutral'> | null = null;
   let buffer = '';
-
   const flush = () => {
     if (!buffer) return;
     pieces.push({ text: buffer, script: currentScript || 'neutral' });
     buffer = '';
   };
-
   for (const character of value) {
     const script = charScript(character);
     if (script !== 'neutral' && currentScript && script !== currentScript) {
@@ -73,8 +65,16 @@ function createPlans(segments: TranscriptSegment[], target: TargetLanguage) {
     if (!shouldTranslate(segment, target)) return;
     const source = (segment.editedText || segment.originalText).trim();
     const pieces = splitScriptRuns(source);
+    const preserveMixedEnglish = target === 'ar' && segment.detectedLanguage === 'mixed';
+
     for (const piece of pieces) {
       if (piece.script === 'neutral' || piece.script === target) continue;
+      // In Arabic lecture speech, English spans are often the professor's actual
+      // technical terminology (API, gradient, pointer, transformer, etc.). For a
+      // code-switched segment, preserve those spoken English spans in the Arabic
+      // convenience view instead of silently translating terminology the lecturer
+      // deliberately said in English.
+      if (preserveMixedEnglish && piece.script === 'en') continue;
       const { core } = translationCore(piece.text);
       if (!core) continue;
       piece.translationIndex = texts.length;
@@ -135,7 +135,7 @@ export async function translateTranscriptView(
         const downloaded = message.total ? ` · ${Math.round((message.loaded || 0) / 1024 / 1024)} of ${Math.round(message.total / 1024 / 1024)} MB` : '';
         onProgress({ progress: Math.max(5, Math.min(70, Math.round((message.progress || 0) * .65) + 5)), message: `Loading local ${target === 'en' ? 'Arabic → English' : 'English → Arabic'} translation model${downloaded}…` });
       } else if (message.type === 'model-ready') {
-        onProgress({ progress: 74, message: `Local translation model ready · translating ${texts.length} language span${texts.length === 1 ? '' : 's'} without rewriting already-${target === 'en' ? 'English' : 'Arabic'} text…` });
+        onProgress({ progress: 74, message: `Local translation model ready · translating ${texts.length} language span${texts.length === 1 ? '' : 's'} while preserving code-switched source terminology…` });
       } else if (message.id === id && message.type === 'result') {
         const result = message.payload?.translations;
         if (!Array.isArray(result) || result.length !== texts.length) {
