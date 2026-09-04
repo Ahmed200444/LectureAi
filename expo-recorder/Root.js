@@ -10,10 +10,18 @@ import {
   View,
   useWindowDimensions,
 } from 'react-native';
+import { setAudioModeAsync } from 'expo-audio';
 import * as Sharing from 'expo-sharing';
 import App from './App';
 import { loadLibrary } from './src/storage';
-import { exportLectureData, exportNotes, exportStudyGuide, exportTranscript } from './src/exports';
+import {
+  exportEnglishTranscript,
+  exportLectureData,
+  exportNotes,
+  exportSourceTranscript,
+  exportStudyGuide,
+  exportTranscript,
+} from './src/exports';
 
 function formatDuration(milliseconds = 0) {
   const total = Math.max(0, Math.floor(Number(milliseconds || 0) / 1000));
@@ -54,6 +62,23 @@ export default function Root() {
   const selected = lectures.find((lecture) => lecture.id === selectedId) || null;
   const tablet = width >= 700;
 
+  useEffect(() => {
+    // The config plugin in app.json adds the native iOS/Android background-recording
+    // capability to standalone/development builds. This runtime flag activates that
+    // capability for the audio session. Stock Expo Go cannot gain native capabilities
+    // that are not compiled into the Expo Go binary, so important background tests are
+    // still performed on a LectureAI native build rather than assumed from Expo Go.
+    void setAudioModeAsync({
+      playsInSilentMode: true,
+      allowsRecording: true,
+      allowsBackgroundRecording: true,
+      interruptionMode: 'doNotMix',
+    }).catch(() => {
+      // App.js applies the normal recording mode again at start. Failing this optional
+      // startup preflight must not prevent foreground recording in Expo Go.
+    });
+  }, []);
+
   async function refreshExports() {
     const library = await loadLibrary();
     setLectures(library);
@@ -87,7 +112,7 @@ export default function Root() {
             <Pressable onPress={() => setOpen(false)} style={styles.closeButton}><Text style={styles.closeText}>Done</Text></Pressable>
           </View>
           <ScrollView contentContainerStyle={[styles.modalContent, tablet && styles.modalContentTablet]}>
-            <Text style={styles.lead}>Choose a lecture, then export the protected original audio, corrected timestamped transcript, current notes, study guide, or structured LectureAI data through the iOS/iPadOS share sheet.</Text>
+            <Text style={styles.lead}>Choose a lecture, then export the protected original audio, English transcript, original-language transcript, corrected timestamped transcript, current notes, study guide, or structured LectureAI data through the iOS/iPadOS share sheet.</Text>
             <Text style={styles.sectionTitle}>Choose lecture</Text>
             {!lectures.length ? (
               <View style={styles.empty}><Text style={styles.emptyTitle}>No lectures yet</Text><Text style={styles.muted}>Record or import a lecture first.</Text></View>
@@ -102,10 +127,12 @@ export default function Root() {
                 <Text style={styles.cardTitle}>{selected.title}</Text>
                 <Text style={styles.meta}>Exports never rewrite the protected original audio.</Text>
                 <ExportButton label="Original audio" description="Share / Save to Files in its preserved audio format." disabled={Boolean(busy)} busy={busy === 'audio'} onPress={() => run('audio', exportAudio)} />
-                <ExportButton label="Corrected transcript (.txt)" description="Timestamped text using your edited transcript when available." disabled={Boolean(busy) || !selected.transcript?.length} busy={busy === 'transcript'} onPress={() => run('transcript', exportTranscript)} />
+                <ExportButton label="English transcript (.txt)" description="English faster-whisper transcript/translation with timestamps when Windows transcription produced it." disabled={Boolean(busy) || !selected.englishTranscript?.length} busy={busy === 'english'} onPress={() => run('english', exportEnglishTranscript)} />
+                <ExportButton label="Original-language transcript (.txt)" description={`Transcript as spoken${selected.sourceLanguage ? ` · detected source: ${selected.sourceLanguage}` : ''}.`} disabled={Boolean(busy) || !selected.sourceTranscript?.length} busy={busy === 'source'} onPress={() => run('source', exportSourceTranscript)} />
+                <ExportButton label="Current editable transcript (.txt)" description="Timestamped text currently used by LectureAI notes/study." disabled={Boolean(busy) || !selected.transcript?.length} busy={busy === 'transcript'} onPress={() => run('transcript', exportTranscript)} />
                 <ExportButton label="Notes (.md)" description="Current source-grounded summary and detailed notes with source timestamps." disabled={Boolean(busy) || !selected.studyPack || selected.staleDerivedContent} busy={busy === 'notes'} onPress={() => run('notes', exportNotes)} />
                 <ExportButton label="Study guide (.md)" description="Key concepts, review topics and study questions." disabled={Boolean(busy) || !selected.studyPack || selected.staleDerivedContent} busy={busy === 'study'} onPress={() => run('study', exportStudyGuide)} />
-                <ExportButton label="Lecture data (.json)" description="Metadata, marks, transcript and current study data; original audio remains separate." disabled={Boolean(busy)} busy={busy === 'data'} onPress={() => run('data', exportLectureData)} />
+                <ExportButton label="Lecture data (.json)" description="Metadata, marks, English/source transcripts and current study data; original audio remains separate." disabled={Boolean(busy)} busy={busy === 'data'} onPress={() => run('data', exportLectureData)} />
                 {selected.staleDerivedContent ? <View style={styles.warning}><Text style={styles.warningText}>Transcript changed. Regenerate derived content before exporting Notes or Study.</Text></View> : null}
               </View>
             ) : null}
