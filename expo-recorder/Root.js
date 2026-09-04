@@ -13,12 +13,7 @@ import {
 import * as Sharing from 'expo-sharing';
 import App from './App';
 import { loadLibrary } from './src/storage';
-import {
-  exportLectureData,
-  exportNotes,
-  exportStudyGuide,
-  exportTranscript,
-} from './src/exports';
+import { exportLectureData, exportNotes, exportStudyGuide, exportTranscript } from './src/exports';
 
 function formatDuration(milliseconds = 0) {
   const total = Math.max(0, Math.floor(Number(milliseconds || 0) / 1000));
@@ -37,6 +32,7 @@ function audioMime(filename) {
   if (ext === 'ogg') return 'audio/ogg';
   if (ext === 'flac') return 'audio/flac';
   if (ext === 'webm') return 'audio/webm';
+  if (ext === 'aac') return 'audio/aac';
   return 'audio/mp4';
 }
 
@@ -55,7 +51,6 @@ export default function Root() {
   const [lectures, setLectures] = useState([]);
   const [selectedId, setSelectedId] = useState('');
   const [busy, setBusy] = useState('');
-
   const selected = lectures.find((lecture) => lecture.id === selectedId) || null;
   const tablet = width >= 700;
 
@@ -84,29 +79,15 @@ export default function Root() {
 
   return (
     <View style={styles.root}>
-      <App />
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel="Open lecture export hub"
-        onPress={() => setOpen(true)}
-        style={({ pressed }) => [styles.exportFab, tablet && styles.exportFabTablet, pressed && styles.pressed]}
-      >
-        <Text style={styles.exportFabIcon}>⇧</Text>
-        <Text style={styles.exportFabText}>Export</Text>
-      </Pressable>
-
+      <App onOpenExports={() => setOpen(true)} />
       <Modal visible={open} animationType="slide" presentationStyle={tablet ? 'pageSheet' : 'fullScreen'} onRequestClose={() => setOpen(false)}>
         <SafeAreaView style={styles.modalSafe}>
           <View style={styles.modalHeader}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.eyebrow}>IPHONE + IPAD EXPORTS</Text>
-              <Text style={styles.title}>Export lecture</Text>
-            </View>
+            <View style={{ flex: 1 }}><Text style={styles.eyebrow}>IPHONE + IPAD EXPORTS</Text><Text style={styles.title}>Export lecture</Text></View>
             <Pressable onPress={() => setOpen(false)} style={styles.closeButton}><Text style={styles.closeText}>Done</Text></Pressable>
           </View>
           <ScrollView contentContainerStyle={[styles.modalContent, tablet && styles.modalContentTablet]}>
-            <Text style={styles.lead}>Choose a lecture, then export the original audio, corrected timestamped transcript, current notes, study guide, or structured LectureAI data. Files open through the iOS/iPadOS share sheet so you can Save to Files, AirDrop, or send them to another app.</Text>
-
+            <Text style={styles.lead}>Choose a lecture, then export the protected original audio, corrected timestamped transcript, current notes, study guide, or structured LectureAI data through the iOS/iPadOS share sheet.</Text>
             <Text style={styles.sectionTitle}>Choose lecture</Text>
             {!lectures.length ? (
               <View style={styles.empty}><Text style={styles.emptyTitle}>No lectures yet</Text><Text style={styles.muted}>Record or import a lecture first.</Text></View>
@@ -116,17 +97,16 @@ export default function Root() {
                 <Text style={styles.check}>{selectedId === lecture.id ? '✓' : '›'}</Text>
               </Pressable>
             ))}
-
             {selected ? (
               <View style={styles.exportCard}>
                 <Text style={styles.cardTitle}>{selected.title}</Text>
                 <Text style={styles.meta}>Exports never rewrite the protected original audio.</Text>
                 <ExportButton label="Original audio" description="Share / Save to Files in its preserved audio format." disabled={Boolean(busy)} busy={busy === 'audio'} onPress={() => run('audio', exportAudio)} />
                 <ExportButton label="Corrected transcript (.txt)" description="Timestamped text using your edited transcript when available." disabled={Boolean(busy) || !selected.transcript?.length} busy={busy === 'transcript'} onPress={() => run('transcript', exportTranscript)} />
-                <ExportButton label="Notes (.md)" description="Current source-grounded summary and detailed notes with source timestamps." disabled={Boolean(busy) || !selected.studyPack} busy={busy === 'notes'} onPress={() => run('notes', exportNotes)} />
-                <ExportButton label="Study guide (.md)" description="Key concepts, review topics and study questions." disabled={Boolean(busy) || !selected.studyPack} busy={busy === 'study'} onPress={() => run('study', exportStudyGuide)} />
+                <ExportButton label="Notes (.md)" description="Current source-grounded summary and detailed notes with source timestamps." disabled={Boolean(busy) || !selected.studyPack || selected.staleDerivedContent} busy={busy === 'notes'} onPress={() => run('notes', exportNotes)} />
+                <ExportButton label="Study guide (.md)" description="Key concepts, review topics and study questions." disabled={Boolean(busy) || !selected.studyPack || selected.staleDerivedContent} busy={busy === 'study'} onPress={() => run('study', exportStudyGuide)} />
                 <ExportButton label="Lecture data (.json)" description="Metadata, marks, transcript and current study data; original audio remains separate." disabled={Boolean(busy)} busy={busy === 'data'} onPress={() => run('data', exportLectureData)} />
-                {selected.staleDerivedContent ? <View style={styles.warning}><Text style={styles.warningText}>Transcript changed. Regenerate derived content before exporting Notes or Study so stale material is never presented as current.</Text></View> : null}
+                {selected.staleDerivedContent ? <View style={styles.warning}><Text style={styles.warningText}>Transcript changed. Regenerate derived content before exporting Notes or Study.</Text></View> : null}
               </View>
             ) : null}
           </ScrollView>
@@ -147,10 +127,6 @@ function ExportButton({ label, description, onPress, disabled, busy }) {
 
 const styles = StyleSheet.create({
   root: { flex: 1 },
-  exportFab: { position: 'absolute', right: 14, bottom: 76, minHeight: 44, borderRadius: 16, backgroundColor: '#173129', paddingHorizontal: 13, flexDirection: 'row', gap: 6, alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOpacity: 0.18, shadowRadius: 8, shadowOffset: { width: 0, height: 3 }, elevation: 5 },
-  exportFabTablet: { right: 24, bottom: 82 },
-  exportFabIcon: { color: '#FFF', fontSize: 17, fontWeight: '900' },
-  exportFabText: { color: '#FFF', fontSize: 12, fontWeight: '900' },
   pressed: { opacity: 0.72 },
   modalSafe: { flex: 1, backgroundColor: '#F7F7F2' },
   modalHeader: { paddingHorizontal: 20, paddingVertical: 14, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: '#D9E2DD', flexDirection: 'row', alignItems: 'center', gap: 12 },
