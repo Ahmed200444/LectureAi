@@ -8,6 +8,7 @@ const study = readFileSync(new URL('../expo-recorder/src/study.js', import.meta.
 const exportsSource = readFileSync(new URL('../expo-recorder/src/exports.js', import.meta.url), 'utf8');
 const journal = readFileSync(new URL('../expo-recorder/src/recording-journal.js', import.meta.url), 'utf8');
 const computer = readFileSync(new URL('../expo-recorder/src/computer.js', import.meta.url), 'utf8');
+const engine = readFileSync(new URL('../local-ai/engine.py', import.meta.url), 'utf8');
 const server = readFileSync(new URL('../local-ai/server.py', import.meta.url), 'utf8');
 const pairing = readFileSync(new URL('../local-ai/pairing.py', import.meta.url), 'utf8');
 const packageJson = JSON.parse(readFileSync(new URL('../expo-recorder/package.json', import.meta.url), 'utf8')) as { scripts?: Record<string, string>, dependencies?: Record<string, string> };
@@ -25,6 +26,9 @@ assert.ok(!packageJson.scripts?.postinstall, 'Expo install must not rewrite App.
 assert.match(appJson, /"supportsTablet"\s*:\s*true/);
 assert.match(appJson, /"requireFullScreen"\s*:\s*false/);
 assert.match(appJson, /"targetAppleDevices"\s*:\s*\["iPhone",\s*"iPad"\]/);
+assert.match(appJson, /"enableBackgroundRecording"\s*:\s*true/);
+assert.match(root, /allowsBackgroundRecording:\s*true/);
+assert.match(packageJson.scripts?.['build:ios:preview'] || '', /eas-cli@latest build --platform ios --profile preview/);
 
 // SDK 57 records into document storage rather than relying on a cache recording.
 assert.match(app, /from 'expo-audio'/);
@@ -81,10 +85,28 @@ assert.match(root, /<App onOpenExports=/);
 assert.doesNotMatch(root, /exportFab/);
 assert.match(app, /Export lecture files/);
 assert.match(exportsSource, /editedText \|\| segment\?\.originalText/);
+assert.match(exportsSource, /buildEnglishTranscriptText/);
+assert.match(exportsSource, /buildSourceTranscriptText/);
+assert.match(exportsSource, /sourceTranscript: lecture\.sourceTranscript/);
+assert.match(exportsSource, /englishTranscript: lecture\.englishTranscript/);
 assert.match(exportsSource, /Notes are missing or stale/);
 assert.match(exportsSource, /Study material is missing or stale/);
 assert.match(exportsSource, /Original audio is exported separately/);
 assert.match(exportsSource, /Sharing\.shareAsync/);
+
+// Windows faster-whisper keeps both the source-language pass and a separate English pass.
+assert.match(engine, /task="transcribe"/);
+assert.match(engine, /task="translate"/);
+assert.match(engine, /"source_segments": source_segments/);
+assert.match(engine, /"english_segments": english_segments/);
+assert.match(engine, /"segments": current_segments/);
+assert.match(engine, /beam_size=8/);
+assert.match(engine, /word_timestamps=True/);
+assert.match(engine, /vad_filter=True/);
+assert.match(engine, /\[uncertain\]/);
+assert.match(computer, /lecture\.sourceTranscript = sourceTranscript/);
+assert.match(computer, /lecture\.englishTranscript = englishTranscript/);
+assert.match(computer, /lecture\.sourceLanguage =/);
 
 // Uncertain imported ASR must not become trusted study material.
 assert.match(study, /segment\?\.uncertain === true/);
@@ -113,4 +135,4 @@ assert.match(pairing, /secrets\.compare_digest/);
 assert.match(pairing, /MAX_PAIRING_ATTEMPTS_PER_WINDOW/);
 assert.match(app, /not end-to-end encrypted/);
 
-console.log('✓ Expo SDK57 recording, unexpected-stop preservation, async storage integrity, playback gate, imports/exports, secure Windows transcription, and study safeguards are present');
+console.log('✓ Expo SDK57 recording, native background mode, dual English/source transcription, async storage integrity, playback gate, imports/exports, secure Windows transcription, and study safeguards are present');
