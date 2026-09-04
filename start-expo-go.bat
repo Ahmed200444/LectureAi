@@ -11,8 +11,10 @@ if errorlevel 1 (
   exit /b 1
 )
 
-if not exist "node_modules" (
-  echo Installing the free LectureAI Expo dependencies for the first time...
+for /f "delims=" %%V in ('node -p "try{require('./node_modules/expo/package.json').version}catch(e){''}"') do set "EXPO_VERSION=%%V"
+echo %EXPO_VERSION% | findstr /b "57." >nul 2>&1
+if errorlevel 1 (
+  echo Installing/upgrading LectureAI dependencies for Expo Go SDK 57...
   call npm install --no-audit --no-fund
   if errorlevel 1 (
     echo Dependency installation failed. Check your internet connection and try again.
@@ -22,12 +24,12 @@ if not exist "node_modules" (
 )
 
 echo.
-echo Starting LectureAI for Expo Go...
+echo Starting LectureAI for Expo Go SDK 57...
 echo Keep this window open while Expo Go is loading the project.
-echo Scan the QR code with your iPhone camera or Expo Go.
+echo Scan the QR code with your iPhone camera.
 echo No USB cable or Apple Developer subscription is required.
 echo.
-call npx expo start --lan
+call npx expo start --clear --lan
 
 echo.
 echo LectureAI Expo server stopped.
