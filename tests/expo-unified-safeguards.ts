@@ -12,13 +12,13 @@ const pairing = readFileSync(new URL('../local-ai/pairing.py', import.meta.url),
 const packageJson = JSON.parse(readFileSync(new URL('../expo-recorder/package.json', import.meta.url), 'utf8')) as { dependencies?: Record<string, string> };
 const appJson = readFileSync(new URL('../expo-recorder/app.json', import.meta.url), 'utf8');
 
-// App Store Expo Go on iPhone currently targets SDK 54; do not silently move the
-// physical-device project to a newer SDK that the store app cannot open.
-assert.match(packageJson.dependencies?.expo || '', /^~54\./);
-assert.match(packageJson.dependencies?.['expo-audio'] || '', /^~1\./);
+// App Store Expo Go on iPhone currently targets SDK 57; keep the physical-device
+// project aligned with the store app so QR launches remain usable on real devices.
+assert.match(packageJson.dependencies?.expo || '', /^~57\./);
+assert.match(packageJson.dependencies?.['expo-audio'] || '', /^~57\./);
 assert.ok(packageJson.dependencies?.['expo-file-system']);
 assert.ok(packageJson.dependencies?.['expo-sqlite']);
-assert.match(packageJson.dependencies?.['expo-secure-store'] || '', /^~15\./);
+assert.match(packageJson.dependencies?.['expo-secure-store'] || '', /^~57\./);
 assert.ok(packageJson.dependencies?.['expo-sharing']);
 assert.ok(packageJson.dependencies?.['expo-document-picker']);
 
@@ -35,7 +35,7 @@ assert.match(app, /sampleRate: 48_000/);
 assert.match(app, /numberOfChannels: 1/);
 assert.match(app, /bitRate: 192_000/);
 assert.match(app, /isMeteringEnabled: true/);
-assert.doesNotMatch(app, /directory:\s*['"]document['"]/i, 'SDK 54 RecordingOptions does not support a project-controlled directory field');
+assert.doesNotMatch(app, /directory:\s*['"]document['"]/i, 'RecordingOptions must not claim a project-controlled live recorder directory');
 assert.match(app, /recorder\.prepareToRecordAsync\(\)/);
 assert.match(app, /recorder\.pause\(\)/);
 assert.match(app, /recorder\.record\(\)/);
@@ -51,8 +51,8 @@ assert.doesNotMatch(appJson, /enableBackgroundRecording\"\s*:\s*true/);
 assert.match(app, /Expo Go cannot guarantee locked-screen\/background recording/);
 
 // The completed recorder output is copied into LectureAI/Recordings, checked, and
-// left unverified until the user actually listens. SDK54 does not promise the live
-// temporary recorder file itself is under our chosen directory.
+// left unverified until the user actually listens. The live temporary recorder file
+// itself is not treated as already preserved in our chosen document directory.
 assert.match(app, /immediately copies the original into its document library/i);
 assert.match(storage, /new Directory\(Paths\.document, 'LectureAI'\)/);
 assert.match(storage, /new Directory\(root, 'Recordings'\)/);
