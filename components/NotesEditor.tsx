@@ -17,11 +17,14 @@ type RegenerationChoice = { html: string } | null;
 export function NotesEditor({ lecture, onSave, onSeek }: NotesEditorProps) {
   const editorRef = useRef<HTMLDivElement>(null);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lectureRef = useRef(lecture);
   const [saveState, setSaveState] = useState<'saved' | 'saving'>('saved');
   const [showOriginal, setShowOriginal] = useState(false);
   const [regenerated, setRegenerated] = useState<RegenerationChoice>(null);
   const transcriptVersion = Number(lecture.transcriptVersion || 0);
   const notesFresh = !lecture.segments.length || Number(lecture.notesSourceVersion || 0) === transcriptVersion;
+
+  useEffect(() => { lectureRef.current = lecture; }, [lecture]);
 
   useEffect(() => {
     if (!editorRef.current || showOriginal) return;
@@ -43,9 +46,11 @@ export function NotesEditor({ lecture, onSave, onSeek }: NotesEditorProps) {
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(async () => {
       const html = DOMPurify.sanitize(editorRef.current?.innerHTML || '', { ADD_ATTR: ['data-time', 'contenteditable'] });
-      // Manual note edits preserve the version they were based on. They must not
-      // silently pretend stale source-grounded notes became current after transcript edits.
-      await onSave({ ...lecture, notesCurrent: html });
+      // Merge the edited HTML into the newest lecture object instead of the render
+      // snapshot that scheduled this timer. This prevents a delayed note save from
+      // restoring an older transcript/source-version state after another update.
+      const latest = lectureRef.current;
+      await onSave({ ...latest, notesCurrent: html, updatedAt: new Date().toISOString() });
       setSaveState('saved');
     }, 700);
   }
@@ -59,23 +64,25 @@ export function NotesEditor({ lecture, onSave, onSeek }: NotesEditorProps) {
   }
 
   function createRegeneration() {
-    setRegenerated({ html: generateNotesHtml(lecture) });
+    setRegenerated({ html: generateNotesHtml(lectureRef.current) });
   }
 
   async function applyRegeneration(mode: 'replace' | 'alternative') {
     if (!regenerated) return;
+    const latest = lectureRef.current;
+    const sourceVersion = Number(latest.transcriptVersion || 0);
     const version = { id: crypto.randomUUID(), html: regenerated.html, createdAt: new Date().toISOString(), label: mode === 'replace' ? 'Regenerated notes' : 'Alternative generated notes' };
-    const currentSnapshot = { id: crypto.randomUUID(), html: lecture.notesCurrent, createdAt: new Date().toISOString(), label: 'Edited notes before regeneration' };
+    const currentSnapshot = { id: crypto.randomUUID(), html: latest.notesCurrent, createdAt: new Date().toISOString(), label: 'Edited notes before regeneration' };
     const updated = mode === 'replace'
       ? {
-          ...lecture,
+          ...latest,
           notesCurrent: regenerated.html,
-          notesSourceVersion: transcriptVersion,
-          derivedContentStale: lecture.translationSourceVersion !== undefined && Number(lecture.translationSourceVersion) !== transcriptVersion,
-          noteVersions: [...lecture.noteVersions, currentSnapshot, version],
+          notesSourceVersion: sourceVersion,
+          derivedContentStale: latest.translationSourceVersion !== undefined && Number(latest.translationSourceVersion) !== sourceVersion,
+          noteVersions: [...latest.noteVersions, currentSnapshot, version],
           updatedAt: new Date().toISOString(),
         }
-      : { ...lecture, noteVersions: [...lecture.noteVersions, version], updatedAt: new Date().toISOString() };
+      : { ...latest, noteVersions: [...latest.noteVersions, version], updatedAt: new Date().toISOString() };
     await onSave(updated);
     setRegenerated(null);
   }
