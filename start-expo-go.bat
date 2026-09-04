@@ -23,6 +23,14 @@ if errorlevel 1 (
   )
 )
 
+echo Applying LectureAI recorder compatibility fix...
+node scripts\sdk57-runtime-hotfix.mjs
+if errorlevel 1 (
+  echo Recorder compatibility fix failed.
+  pause
+  exit /b 1
+)
+
 echo.
 echo Starting LectureAI for Expo Go SDK 57...
 echo Keep this window open while Expo Go is loading the project.
