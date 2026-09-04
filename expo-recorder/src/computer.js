@@ -4,6 +4,7 @@ const REQUEST_TIMEOUT_MS = 20_000;
 const POLL_DELAY_MS = 900;
 const MIN_UPLOAD_TIMEOUT_MS = 120_000;
 const MAX_UPLOAD_TIMEOUT_MS = 30 * 60_000;
+const MAX_JOB_WAIT_MS = 3 * 60 * 60_000;
 const CONSERVATIVE_UPLOAD_BYTES_PER_SECOND = 256 * 1024;
 
 function privateIpv4(hostname) {
@@ -22,11 +23,7 @@ export function normalizeComputerAddress(value) {
   if (!trimmed) throw new Error('Enter the Windows helper address shown on your computer.');
   const candidate = /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
   let parsed;
-  try {
-    parsed = new URL(candidate);
-  } catch {
-    throw new Error('The computer address is not valid. Example: http://192.168.1.20:8765');
-  }
+  try { parsed = new URL(candidate); } catch { throw new Error('The computer address is not valid. Example: http://192.168.1.20:8765'); }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new Error('Use an http:// or https:// computer address.');
   if (!privateIpv4(parsed.hostname)) throw new Error('For privacy, LectureAI only sends recordings to a private local IPv4 address on your current Wi-Fi/LAN.');
   if (parsed.username || parsed.password || parsed.pathname !== '/' || parsed.search || parsed.hash) throw new Error('Use only the helper base address, without a path, username, query, or fragment.');
@@ -42,9 +39,7 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = REQUEST_TIMEOUT_M
   } catch (error) {
     if (error?.name === 'AbortError') throw new Error('The Windows helper did not respond in time. Confirm both devices are on the same Wi-Fi and the helper is running with --lan.');
     throw error;
-  } finally {
-    clearTimeout(timer);
-  }
+  } finally { clearTimeout(timer); }
 }
 
 async function responseMessage(response) {
@@ -53,9 +48,7 @@ async function responseMessage(response) {
   try {
     const parsed = JSON.parse(text);
     return parsed.detail || parsed.error || parsed.message || text;
-  } catch {
-    return text;
-  }
+  } catch { return text; }
 }
 
 function authHeaders(token) {
@@ -66,11 +59,7 @@ export async function pairWithComputer(address, pairingCode) {
   const baseUrl = normalizeComputerAddress(address);
   const code = String(pairingCode || '').trim().toUpperCase();
   if (!code) throw new Error('Enter the pairing code shown by the Windows helper.');
-  const response = await fetchWithTimeout(`${baseUrl}/pair`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ code }),
-  }, PAIR_TIMEOUT_MS);
+  const response = await fetchWithTimeout(`${baseUrl}/pair`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code }) }, PAIR_TIMEOUT_MS);
   if (!response.ok) throw new Error(await responseMessage(response));
   const payload = await response.json();
   if (!payload?.token) throw new Error('The Windows helper paired but did not return an authorization token.');
@@ -99,12 +88,7 @@ function guessedMime(filename) {
 }
 
 function contextualGlossary(lecture, supplied) {
-  const candidates = [
-    ...(Array.isArray(supplied) ? supplied : []),
-    lecture?.title,
-    lecture?.course,
-    ...(Array.isArray(lecture?.glossary) ? lecture.glossary : []),
-  ];
+  const candidates = [...(Array.isArray(supplied) ? supplied : []), lecture?.title, lecture?.course, ...(Array.isArray(lecture?.glossary) ? lecture.glossary : [])];
   const seen = new Set();
   const terms = [];
   for (const candidate of candidates) {
@@ -121,13 +105,8 @@ function contextualGlossary(lecture, supplied) {
 function uploadTimeoutMs(sizeBytes) {
   const size = Math.max(0, Number(sizeBytes) || 0);
   if (!size) return MIN_UPLOAD_TIMEOUT_MS;
-  // A two-hour lecture can be hundreds of MB. Give slow private Wi-Fi enough time
-  // instead of aborting a healthy transfer at a fixed two-minute deadline.
   const estimatedTransferMs = (size / CONSERVATIVE_UPLOAD_BYTES_PER_SECOND) * 1000;
-  return Math.max(
-    MIN_UPLOAD_TIMEOUT_MS,
-    Math.min(MAX_UPLOAD_TIMEOUT_MS, Math.ceil(estimatedTransferMs + 60_000)),
-  );
+  return Math.max(MIN_UPLOAD_TIMEOUT_MS, Math.min(MAX_UPLOAD_TIMEOUT_MS, Math.ceil(estimatedTransferMs + 60_000)));
 }
 
 function sleep(milliseconds) {
@@ -139,39 +118,27 @@ export async function transcribeOnComputer({ address, token, lecture, glossary =
   if (!token) throw new Error('Pair this iPhone/iPad with the Windows helper first.');
   const baseUrl = normalizeComputerAddress(address);
   const form = new FormData();
-  form.append('audio', {
-    uri: lecture.audioUri,
-    name: lecture.audioFilename || 'lecture.m4a',
-    type: guessedMime(lecture.audioFilename),
-  });
+  form.append('audio', { uri: lecture.audioUri, name: lecture.audioFilename || 'lecture.m4a', type: guessedMime(lecture.audioFilename) });
   form.append('model', 'configured');
   form.append('lectureId', String(lecture.id || 'lecture'));
   form.append('glossary', JSON.stringify(contextualGlossary(lecture, glossary)));
   if (lecture.audioMd5) form.append('audioMd5', String(lecture.audioMd5).toLowerCase());
 
   onProgress({ progress: 3, message: lecture.audioMd5 ? 'Sending the preserved original to your paired Windows computer · transfer checksum will be verified…' : 'Sending the preserved original to your paired Windows computer…' });
-  const create = await fetchWithTimeout(`${baseUrl}/jobs`, {
-    method: 'POST',
-    headers: authHeaders(token),
-    body: form,
-  }, uploadTimeoutMs(lecture.size));
+  const create = await fetchWithTimeout(`${baseUrl}/jobs`, { method: 'POST', headers: authHeaders(token), body: form }, uploadTimeoutMs(lecture.size));
   if (!create.ok) throw new Error(await responseMessage(create));
   const created = await create.json();
   if (!created?.job_id) throw new Error('The Windows helper did not return a transcription job ID.');
   if (lecture.audioMd5 && created.integrity_checked !== true) throw new Error('The Windows helper did not confirm transfer integrity. The phone original is unchanged; retry after updating/restarting the helper.');
 
+  const deadline = Date.now() + MAX_JOB_WAIT_MS;
   for (;;) {
+    if (Date.now() >= deadline) throw new Error('The Windows transcription job exceeded the three-hour safety window. The original audio remains preserved; restart the helper and retry when convenient.');
     await sleep(POLL_DELAY_MS);
-    const response = await fetchWithTimeout(`${baseUrl}/jobs/${encodeURIComponent(created.job_id)}`, {
-      headers: authHeaders(token),
-      cache: 'no-store',
-    });
+    const response = await fetchWithTimeout(`${baseUrl}/jobs/${encodeURIComponent(created.job_id)}`, { headers: authHeaders(token), cache: 'no-store' });
     if (!response.ok) throw new Error(await responseMessage(response));
     const job = await response.json();
-    onProgress({
-      progress: Math.max(3, Math.min(100, Number(job.progress || 0))),
-      message: String(job.message || 'Transcribing locally on your Windows computer…'),
-    });
+    onProgress({ progress: Math.max(3, Math.min(100, Number(job.progress || 0))), message: String(job.message || 'Transcribing locally on your Windows computer…') });
     if (job.status === 'complete') {
       if (!job.result?.segments) throw new Error('The Windows helper finished but returned no transcript segments.');
       return job.result;
