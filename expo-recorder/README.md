@@ -1,136 +1,113 @@
 # LectureAI Expo Go app
 
-This directory is the unified LectureAI app target for **Expo Go on iPhone/iPad**. It is intentionally separate from the production web app while the native-feeling workflow is built and physically tested.
+This directory is the unified **LectureAI** target for Expo Go on iPhone and iPad. It is intentionally kept separate from the stable production web/PWA while the native-feeling workflow is physically validated.
 
-## Why Expo Go
+## Current target
 
-The goal is a free, cable-free recording experience:
+The project targets **Expo SDK 57**, matching the current App Store Expo Go generation used by this branch. The Windows launcher checks the Expo SDK and also verifies that Expo CLI is signed into an Expo account before starting Metro.
 
-1. Install Expo Go from the App Store.
-2. On Windows, double-click `start-expo-go.bat` in the LectureAI folder. It installs the Expo project dependencies on first use and starts a LAN QR code.
-3. Scan the QR code with the iPhone camera or Expo Go. No USB cable or paid Apple Developer account is needed.
-4. Record through native `expo-audio` rather than Safari `MediaRecorder`.
-5. When recording stops, LectureAI immediately copies the original into its own document-storage recording library.
-6. Listen to the preserved original before trusting transcript/notes.
-7. Optionally pair a Windows laptop on trusted private Wi-Fi for free local faster-whisper transcription.
-8. Review/correct the timestamped transcript and generate source-grounded notes/study material.
+## Free testing flow
 
-The App Store version of Expo Go supports Expo SDK 54, so this project targets SDK 54 until the distribution strategy changes.
+1. Install Expo Go from the App Store on the iPhone/iPad.
+2. On Windows, double-click `start-expo-go.bat` from the repository root.
+3. If Expo CLI is not signed in, run `npx expo login` and use the same Expo account that is signed into Expo Go.
+4. Scan the QR code with the iPhone/iPad camera and open LectureAI in Expo Go.
+5. Keep Expo Go visible during important recording. Stock Expo Go cannot promise locked-screen/background recording.
+6. If campus/public Wi-Fi blocks LAN loading, run `npx expo start --clear --tunnel` from `expo-recorder` instead.
 
-## Current implemented features
+No USB cable or paid Apple Developer membership is required for this testing path.
 
-### Recording
+## Recording and original-audio safety
 
-- `expo-audio` native recording through Expo Go.
+- Native recording through `expo-audio`.
+- SDK 57 `directory: 'document'` is used for the live recorder output instead of relying on cache storage.
 - 48 kHz, mono, 192 kbps lecture-capture preferences layered over Expo's high-quality preset.
-- Audio-level metering.
-- Pause / continue in the same recorder session.
-- Important-moment marks.
-- Current recording-input label when Expo/iOS exposes it.
-- Keep-screen-awake option.
+- Audio-level metering, pause/continue, and important-moment marks.
+- Optional current-input label when Expo exposes that API; failure to obtain the label never blocks recording.
+- Keep-awake support is feature-detected so an unavailable keep-awake function cannot prevent microphone start.
 - Recording start is blocked below 500 MB available storage; critically low storage is warned about during an active session.
-- iOS media-services-reset warning.
-- Foreground/background warning.
-- Finished audio is immediately copied into `Paths.document/LectureAI/Recordings` and validated for existence/minimum size.
-- MD5 metadata when the file-system API exposes it.
-- An **active recording journal** is updated while recording. If an interrupted Expo session leaves a real file URL that still exists, the next launch attempts to copy that file into the protected recording library and labels it as recovered/unverified.
-- The journal is deliberately not described as encoded-audio checkpointing: SDK 54 does not let this project choose the live `expo-audio` recorder directory, and an interrupted M4A may not have finalized cleanly.
-- A recording is **not** called verified just because a file exists. The user must listen and explicitly confirm playback.
-- Share / Save to Files through the iOS share sheet.
+- Finished audio is copied into `Paths.document/LectureAI/Recordings` and checked for existence/minimum size.
+- When source and destination MD5 values are available, LectureAI compares them and rejects a mismatched permanent copy.
+- Metadata is stored through `expo-sqlite/kv-store` with a second `library-backup.json` document copy. The newer backup can repair an older primary metadata record.
+- The protected recordings directory is scanned for orphaned audio if metadata is missing or unreadable.
+- An active recording journal stores recovery metadata/pointers. It is **not** fake encoded-audio checkpointing.
+- If the underlying recorder unexpectedly changes from active to stopped (for example after an audio-route change), LectureAI attempts to preserve the exposed file automatically and marks it for careful verification.
 
-### Library and recovery
+## Playback verification gate
 
-- Persistent local lecture metadata backed by `expo-sqlite/kv-store`.
-- A second `library-backup.json` metadata copy lives in the LectureAI document directory.
-- Original audio remains as a normal file, not a giant value in SQLite/key-value storage.
-- On launch, LectureAI scans `LectureAI/Recordings` for orphaned original audio files and surfaces them as **Recovered audio — verify** instead of silently hiding them if metadata was lost.
-- New protected audio is de-duplicated against temporary recovery placeholders so one physical recording appears once in the lecture library.
-- Record and imported-audio sources.
-- Delete removes the original audio plus LectureAI metadata aliases for that lecture/file.
-- Audio verification state, marks, transcript state, and derived-content version state are kept per lecture.
+A file existing is not enough to call a lecture verified. LectureAI requires playback checks at the **beginning, middle, and end**, followed by explicit user confirmation that the samples were clear. Recovered/interrupted files keep a warning until this gate passes.
 
-### Free paired Windows transcription
+## Library, import, share, and export
 
-The Expo app includes an explicit authenticated private-LAN path to the existing faster-whisper helper.
+- Record and import existing audio files.
+- Imported audio is preserved as a separate local original; its duration is populated once the player exposes metadata.
+- Audio sharing chooses MIME type from the actual preserved filename rather than pretending every import is M4A.
+- Timestamped transcript JSON import reads the selected document URI directly.
+- Transcript editing/versioning invalidates stale derived study material.
+- Segments explicitly marked `uncertain`, or containing `[uncertain]` / `[inaudible]`, are excluded from trusted study generation.
+- The Export hub is opened from **Settings → Export lecture files** instead of floating over bottom navigation.
+- Original audio, corrected transcript `.txt`, notes `.md`, study guide `.md`, and structured LectureAI `.json` can use the iOS/iPadOS share sheet.
+- Notes/study exports are blocked when they are stale relative to the corrected transcript.
+- Delete removes the selected protected audio file and its LectureAI metadata after confirmation.
 
-1. Finish/save the original recording first.
-2. On Windows, run `setup-windows.bat` once if needed.
-3. Double-click `start-helper-for-phone.bat`.
-4. The helper starts LAN mode deliberately and prints a private IPv4 address plus an 8-character pairing code.
-5. In LectureAI Expo → Settings, enter the address/code and pair.
-6. Open a lecture → Transcript → **Transcribe on paired computer**.
-7. The protected original audio is transferred to the paired Windows PC. When Expo exposes an MD5 for the preserved file, Windows verifies the received bytes match before accepting the job.
-8. The configured faster-whisper model transcribes locally and the timestamped transcript returns to LectureAI.
+## Free paired Windows transcription
+
+1. Run `setup-windows.bat` once if needed.
+2. Double-click `start-helper-for-phone.bat`.
+3. The helper deliberately enables LAN mode and prints a private IPv4 address plus an 8-character pairing code.
+4. In LectureAI → Settings, enter the address/code and pair.
+5. Open a lecture → Transcript → **Transcribe on paired computer**.
 
 Safeguards:
 
-- Normal Windows helper mode remains loopback-only. LAN access happens only with `--lan` / the phone launcher.
-- LAN mode accepts explicit RFC1918/loopback/link-local ranges rather than treating every non-global/reserved IP as trusted.
-- Transcription/job endpoints require a bearer session token.
-- The token is bound to the paired client address and expires after 12 hours.
-- Pairing attempts are rate limited and the pairing code is compared with a constant-time function.
-- The app accepts only private IPv4 helper addresses.
-- When an original MD5 is available, transfer corruption is detected before transcription; a mismatch never modifies the phone original.
-- Use this feature only on a **trusted private/home Wi-Fi network**. The current LAN transport is plain HTTP and is **not end-to-end encrypted**. Public/campus Wi-Fi may also isolate devices and prevent direct peer connections.
-- On iOS, Expo Go must have **Local Network** permission for direct LAN access.
+- Normal helper mode remains loopback-only; phone access requires deliberate `--lan` mode.
+- Only private/local network clients are accepted.
+- Pairing attempts are rate-limited and the code is compared using a constant-time function.
+- Bearer tokens are bound to the paired client address, expire after 12 hours, and are stored in Expo SecureStore rather than ordinary lecture/settings metadata.
+- When an original MD5 is available, Windows verifies the uploaded bytes before accepting the job.
+- Upload timeouts scale with recording size, while job polling has a three-hour safety window so a broken job cannot leave the phone waiting forever.
+- Use this only on a trusted private/home Wi-Fi network. The transport is authenticated HTTP and is **not end-to-end encrypted**.
+- faster-whisper uses neutral `Speaker` labels because ASR is not speaker diarization.
+- Lecture-level detected-language metadata is returned; it must not be described as true per-segment code-switch classification.
 
-### Transcript / study integrity
+## Transcript / notes / study integrity
 
-- Paired Windows faster-whisper transcription is the preferred free high-accuracy Expo route.
-- Timestamped JSON transcript import remains a working fallback/advanced bridge.
-- Original transcript/audio stays separate from edits.
-- Editing a transcript increments its source version and clears older translation views so stale translations are not mistaken for current text.
-- Notes/study material is marked stale after transcript changes and regenerates from the current transcript.
-- `[uncertain]` and `[inaudible]` sections are excluded from trusted study generation.
-- The local fallback study generator samples/scans the **whole lecture**, not just the first few transcript segments.
-- Notes keep source timestamps so the user can jump back to the original audio.
-- Possible exam topics are explicitly study suggestions, never claims that a professor promised something will be on an exam.
-- faster-whisper output uses the neutral label **Speaker** until real diarization exists.
+- The original audio remains the source of truth.
+- Transcript edits increment the source version and make older derived material stale.
+- Study generation samples material across the lecture rather than only the first few segments.
+- Uncertain/inaudible source text is excluded from trusted study facts.
+- Possible exam topics are review suggestions only, not claims about what a professor promised will appear on an exam.
+- The Expo study generator is source-grounded/extractive; do not describe it as a fully semantic LLM summary engine.
 
-## Deliberately not faked
+## Deliberately not claimed
 
-### Locked-screen/background recording in Expo Go
+### Locked-screen/background recording
 
-`expo-audio` can support background recording in a custom app binary when the native iOS `audio` background mode is configured. Stock Expo Go cannot apply LectureAI's project-specific native config plugin changes, so this build does **not** promise uninterrupted locked-screen/background recording. Keep Expo Go visible for important lectures.
+A custom signed application can configure native iOS background audio. Stock Expo Go cannot apply LectureAI-specific native background configuration, so this free testing target does **not** promise uninterrupted locked-screen/background recording.
 
-### On-device Whisper inside Expo Go
+### Expo-native on-device Whisper
 
-The existing web phone transcriber relies on browser Web Workers, WebAssembly, `AudioContext`, and Transformers.js. That code is not copied into React Native and labeled working. A phone-only local transcription button will be enabled only if an Expo-Go-compatible engine is implemented and physically benchmarked.
+The stable web client has browser worker/Transformers.js transcription. That browser implementation is not mislabeled as a React Native Expo engine. Expo transcription currently uses the authenticated local Windows helper or timestamped transcript JSON import.
 
-### Accuracy claims
+### Accuracy percentages
 
-The repository includes a benchmark protocol and WER/CER tooling, including Arabic-normalized metrics, technical-term recall, number recall, hallucination counts, and manual correction time. No transcription accuracy percentage is published until human-verified classroom recordings are actually measured.
+The repository contains WER/CER benchmark tooling, Arabic-normalized metrics, technical-term recall, number recall, hallucination counts, and manual-review measurements. Do not publish an accuracy percentage until actual human-verified classroom samples have been measured.
 
-## Run the Expo project
+## Physical acceptance gate
 
-Easiest on Windows: double-click `start-expo-go.bat` from the repository root and scan its QR code.
+PR #28 must stay draft until the same branch passes on **both iPhone and iPad**:
 
-Manual equivalent:
+- 20-second start → meter → pause → continue → mark → finish;
+- beginning/middle/end playback gate and explicit confirmation;
+- close/reopen Expo Go and replay the preserved file;
+- Share / Save to Files and text/data exports;
+- microphone/input routing with and without Bluetooth/headphones where available;
+- disposable interruption/unexpected-stop recovery test;
+- 30 / 60 / 90 / 120-minute recordings where storage/battery permit;
+- low-storage behavior;
+- audio and transcript JSON imports;
+- real paired-Windows short and larger transcription round trips;
+- transcript edit → stale-derived warning → regeneration → timestamp seeking;
+- delete removes the intended protected original and metadata.
 
-```bash
-cd expo-recorder
-npm install
-npx expo start --lan
-```
-
-The Windows computer and iPhone/iPad need to be reachable on the same LAN while Expo Go initially loads the development project. This removes the USB/AltStore/IPA requirement, but it is still an Expo development project until it is published through an Expo account or another distribution path.
-
-## Acceptance gate before trusting a full lecture
-
-Do not rely on this branch for an important class until all of these pass on the exact target iPhone/iPad:
-
-- 20-second test recording: start → pause → continue → mark → finish → playback.
-- Verify the stored file still plays after closing/reopening Expo Go and reopening the project.
-- Verify Save to Files / share sheet.
-- Verify microphone/input routing with and without Bluetooth/headphones connected.
-- Verify interruption behavior for a phone call / Siri / another microphone user where practical.
-- Force-close/reopen after a disposable test recording and verify the recovery journal never falsely labels missing/unplayable audio as safe.
-- Verify 30, 60, 90, and 120 minute recordings as storage/battery permit.
-- Verify low-storage blocking/warnings.
-- Verify foreground/background warning.
-- Verify imported audio preservation.
-- Verify Windows pairing on trusted private Wi-Fi, token expiry/re-pairing, checksum behavior when available, and a real audio upload/transcription round trip.
-- Verify transcript edit → stale-study warning → regeneration → timestamp seeking.
-- Verify deletion removes the protected audio file and lecture metadata.
-
-The GitHub iOS/Android bundles, Expo Doctor, static safeguards, web tests/build, Python syntax checks, pairing tests, and benchmark unit tests are automated. Physical iPhone/iPad microphone, interruption, long-duration, local-network, and playback behavior cannot be certified by CI and remain the final merge gate.
+Automated iOS/Android bundling, Expo Doctor, root web tests/build, Python checks, pairing tests, and static safeguards are necessary but **do not replace this physical gate**.
