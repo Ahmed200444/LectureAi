@@ -4,6 +4,7 @@
   "private": true,
   "main": "index.js",
   "scripts": {
+    "postinstall": "node scripts/sdk57-runtime-hotfix.mjs",
     "start": "expo start --tunnel",
     "start:lan": "expo start --lan",
     "ios": "expo start --ios",
