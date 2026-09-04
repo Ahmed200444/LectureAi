@@ -67,3 +67,23 @@ jobs:
 
       - name: Verify Android bundle output
         run: test -d dist-android && test -f dist-android/metadata.json
+
+  source-zip:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Upload final LectureAI source ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: LectureAI-final-expo-unified
+          path: |
+            .
+            !.git/**
+            !node_modules/**
+            !expo-recorder/node_modules/**
+            !dist/**
+            !expo-recorder/dist-ios/**
+            !expo-recorder/dist-android/**
+          include-hidden-files: true
+          if-no-files-found: error
+          compression-level: 9
