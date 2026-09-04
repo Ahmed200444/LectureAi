@@ -5,9 +5,7 @@
     "version": "0.2.0",
     "orientation": "default",
     "userInterfaceStyle": "light",
-    "assetBundlePatterns": [
-      "**/*"
-    ],
+    "assetBundlePatterns": ["**/*"],
     "ios": {
       "supportsTablet": true,
       "requireFullScreen": false,
@@ -27,10 +25,7 @@
     ],
     "extra": {
       "expoGoTarget": true,
-      "targetAppleDevices": [
-        "iPhone",
-        "iPad"
-      ],
+      "targetAppleDevices": ["iPhone", "iPad"],
       "backgroundRecording": "enabled-in-native-build-expo-go-best-effort"
     }
   }
