@@ -9,7 +9,9 @@
     "ios": "expo start --ios",
     "android": "expo start --android",
     "web": "expo start --web",
-    "doctor": "npx --yes expo-doctor@latest"
+    "doctor": "npx --yes expo-doctor@latest",
+    "build:ios:preview": "npx --yes eas-cli@latest build --platform ios --profile preview",
+    "build:ios:production": "npx --yes eas-cli@latest build --platform ios --profile production"
   },
   "dependencies": {
     "expo": "~57.0.19",
