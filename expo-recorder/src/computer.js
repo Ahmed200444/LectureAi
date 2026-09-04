@@ -113,6 +113,35 @@ function sleep(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+function preservedTranscriptRows(rows) {
+  if (!Array.isArray(rows)) return [];
+  return rows.map((row, index) => ({
+    id: String(row?.id || `segment-${index + 1}`),
+    startTime: Math.max(0, Number(row?.start ?? row?.startTime ?? 0) || 0),
+    endTime: Math.max(0, Number(row?.end ?? row?.endTime ?? row?.start ?? row?.startTime ?? 0) || 0),
+    text: String(row?.text ?? row?.editedText ?? row?.originalText ?? '').trim(),
+    language: String(row?.language || ''),
+    uncertain: Boolean(row?.uncertain) || /^\s*\[(?:uncertain|inaudible)\]/i.test(String(row?.text || '')),
+    speaker: String(row?.speaker || 'Speaker'),
+  })).filter((row) => row.text && row.endTime >= row.startTime);
+}
+
+function attachDualTranscriptMetadata(lecture, result) {
+  if (!lecture || !result) return;
+  const sourceTranscript = preservedTranscriptRows(result.source_segments);
+  const englishTranscript = preservedTranscriptRows(result.english_segments || result.segments);
+  // App.js intentionally treats the English result as the editable/current transcript.
+  // Preserve the source-language pass alongside it on the same lecture object before
+  // App.js calls replaceTranscript(); replaceTranscript spreads the lecture and keeps
+  // these dedicated fields intact.
+  lecture.sourceTranscript = sourceTranscript;
+  lecture.englishTranscript = englishTranscript;
+  lecture.sourceLanguage = String(result.source_language || result.detected_language || 'unknown');
+  lecture.sourceLanguageProbability = result.language_probability ?? null;
+  lecture.englishTranscriptMethod = String(result.english_translation || 'unknown');
+  lecture.transcriptionAccuracyNote = String(result.accuracy_note || 'Machine transcription should be checked against the original audio when wording matters.');
+}
+
 export async function transcribeOnComputer({ address, token, lecture, glossary = [], onProgress = () => {} }) {
   if (!lecture?.audioUri) throw new Error('This lecture does not have an original audio file.');
   if (!token) throw new Error('Pair this iPhone/iPad with the Windows helper first.');
@@ -141,6 +170,7 @@ export async function transcribeOnComputer({ address, token, lecture, glossary =
     onProgress({ progress: Math.max(3, Math.min(100, Number(job.progress || 0))), message: String(job.message || 'Transcribing locally on your Windows computer…') });
     if (job.status === 'complete') {
       if (!job.result?.segments) throw new Error('The Windows helper finished but returned no transcript segments.');
+      attachDualTranscriptMetadata(lecture, job.result);
       return job.result;
     }
     if (job.status === 'failed') throw new Error(job.error || 'Windows transcription failed.');
