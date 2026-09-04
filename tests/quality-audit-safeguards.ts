@@ -23,8 +23,11 @@ assert.match(translationWorker, /await new Promise\(\(resolve\) => setTimeout\(r
 
 assert.match(windowsEngine, /"speaker": "Speaker"/);
 assert.doesNotMatch(windowsEngine, /"speaker": "Professor"/);
-assert.match(windowsEngine, /"language": detected_language/);
-assert.match(windowsEngine, /"language_scope": "lecture"/);
+assert.match(windowsEngine, /"language": "en" if translated else language/);
+assert.match(windowsEngine, /"language_scope": "translation" if translated else "lecture"/);
+assert.match(windowsEngine, /"source_language": detected_language/);
+assert.match(windowsEngine, /"source_segments": source_segments/);
+assert.match(windowsEngine, /"english_segments": english_segments/);
 assert.match(phoneWorker, /speaker: 'Speaker'/);
 assert.doesNotMatch(phoneWorker, /speaker: 'Professor'/);
 assert.match(transcript, /: 'Speaker'/);
@@ -37,4 +40,4 @@ assert.match(windowsServer, /finished_at=time\.time\(\)/);
 assert.match(windowsServer, /with transcription_slot:/);
 assert.match(windowsServer, /max_concurrent_transcriptions/);
 
-console.log('✓ code-switch translation, speaker truthfulness, language metadata, and Windows helper resource safeguards are present');
+console.log('✓ code-switch translation, speaker truthfulness, dual language metadata, and Windows helper resource safeguards are present');
