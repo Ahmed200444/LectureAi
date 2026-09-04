@@ -24,6 +24,14 @@ function transcriptText(segment) {
   return String(segment?.editedText || segment?.originalText || segment?.text || '').trim();
 }
 
+function segmentStart(segment) {
+  return Number(segment?.startTime ?? segment?.start ?? 0) || 0;
+}
+
+function segmentEnd(segment) {
+  return Number(segment?.endTime ?? segment?.end ?? segmentStart(segment)) || segmentStart(segment);
+}
+
 function studyIsFresh(lecture) {
   return Boolean(lecture?.studyPack)
     && Number(lecture.studyPackSourceVersion) === Number(lecture.transcriptVersion || 0);
@@ -38,17 +46,52 @@ function markdownItems(items = []) {
   return items.map((item) => `- ${String(item?.text || '').trim()}${sourceSuffix(item)}`).join('\n');
 }
 
-export function buildTranscriptText(lecture) {
-  const rows = (lecture?.transcript || [])
+function buildRows(segments, { includeSpeaker = true } = {}) {
+  return (segments || [])
     .map((segment) => {
       const text = transcriptText(segment);
       if (!text) return null;
       const speaker = String(segment?.speaker || 'Speaker');
-      return `[${formatTime(segment.startTime)}–${formatTime(segment.endTime)}] ${speaker}: ${text}`;
+      const prefix = includeSpeaker ? `${speaker}: ` : '';
+      return `[${formatTime(segmentStart(segment))}–${formatTime(segmentEnd(segment))}] ${prefix}${text}`;
     })
     .filter(Boolean);
+}
+
+export function buildTranscriptText(lecture) {
+  const rows = buildRows(lecture?.transcript || []);
   if (!rows.length) throw new Error('This lecture does not have a transcript to export.');
   return `${safeName(lecture.title)}\n\n${rows.join('\n\n')}\n`;
+}
+
+export function buildEnglishTranscriptText(lecture) {
+  const rows = buildRows(lecture?.englishTranscript || []);
+  if (!rows.length) throw new Error('This lecture does not have a preserved English transcript yet. Run Windows transcription first.');
+  return [
+    `${safeName(lecture.title)} — English transcript`,
+    '',
+    `Source language: ${String(lecture?.sourceLanguage || 'unknown')}`,
+    `Method: ${String(lecture?.englishTranscriptMethod || 'faster-whisper')}`,
+    'Machine transcription/translation can contain mistakes. Check important wording against the original audio.',
+    '',
+    rows.join('\n\n'),
+    '',
+  ].join('\n');
+}
+
+export function buildSourceTranscriptText(lecture) {
+  const rows = buildRows(lecture?.sourceTranscript || []);
+  if (!rows.length) throw new Error('This lecture does not have a preserved source-language transcript yet. Run Windows transcription first.');
+  return [
+    `${safeName(lecture.title)} — Original-language transcript`,
+    '',
+    `Detected source language: ${String(lecture?.sourceLanguage || 'unknown')}`,
+    lecture?.sourceLanguageProbability != null ? `Language detection probability: ${Number(lecture.sourceLanguageProbability).toFixed(3)}` : null,
+    'This preserves the speech-recognition pass before English translation. Check uncertain wording against the original audio.',
+    '',
+    rows.join('\n\n'),
+    '',
+  ].filter((line) => line !== null).join('\n');
 }
 
 export function buildNotesMarkdown(lecture) {
@@ -110,7 +153,7 @@ export function buildStudyMarkdown(lecture) {
 export function buildLectureJson(lecture) {
   if (!lecture) throw new Error('No lecture selected.');
   return JSON.stringify({
-    format: 'lectureai-expo-export-v1',
+    format: 'lectureai-expo-export-v2',
     exportedAt: new Date().toISOString(),
     lecture: {
       id: lecture.id,
@@ -128,7 +171,13 @@ export function buildLectureJson(lecture) {
       transcriptVersion: lecture.transcriptVersion || 0,
       transcriptEngine: lecture.transcriptEngine || null,
       transcriptionMetadata: lecture.transcriptionMetadata || null,
-      transcript: lecture.transcript || [],
+      currentEditableTranscript: lecture.transcript || [],
+      sourceLanguage: lecture.sourceLanguage || null,
+      sourceLanguageProbability: lecture.sourceLanguageProbability ?? null,
+      sourceTranscript: lecture.sourceTranscript || [],
+      englishTranscript: lecture.englishTranscript || [],
+      englishTranscriptMethod: lecture.englishTranscriptMethod || null,
+      transcriptionAccuracyNote: lecture.transcriptionAccuracyNote || null,
       translations: lecture.translations || { en: [], ar: [] },
       translationsSourceVersion: lecture.translationsSourceVersion ?? null,
       studyPack: studyIsFresh(lecture) ? lecture.studyPack : null,
@@ -160,7 +209,15 @@ async function writeAndShare(lecture, suffix, extension, content, mimeType, UTI)
 }
 
 export async function exportTranscript(lecture) {
-  return writeAndShare(lecture, 'transcript', 'txt', buildTranscriptText(lecture), 'text/plain', 'public.plain-text');
+  return writeAndShare(lecture, 'transcript-current', 'txt', buildTranscriptText(lecture), 'text/plain', 'public.plain-text');
+}
+
+export async function exportEnglishTranscript(lecture) {
+  return writeAndShare(lecture, 'transcript-english', 'txt', buildEnglishTranscriptText(lecture), 'text/plain', 'public.plain-text');
+}
+
+export async function exportSourceTranscript(lecture) {
+  return writeAndShare(lecture, 'transcript-source-language', 'txt', buildSourceTranscriptText(lecture), 'text/plain', 'public.plain-text');
 }
 
 export async function exportNotes(lecture) {
