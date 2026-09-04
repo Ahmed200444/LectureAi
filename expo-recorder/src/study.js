@@ -9,8 +9,8 @@ function textOf(segment) {
 
 function trustworthy(segment) {
   const text = textOf(segment);
-  if (!text) return false;
-  return !/^\s*\[(?:inaudible|uncertain)\]/i.test(text) && !/\[inaudible\]/i.test(text);
+  if (!text || segment?.uncertain === true) return false;
+  return !/^\s*\[(?:inaudible|uncertain)\]/i.test(text) && !/\[(?:inaudible|uncertain)\]/i.test(text);
 }
 
 function source(segment) {
@@ -90,15 +90,7 @@ export function generateStudyPack(lecture) {
     return {
       sourceVersion,
       generatedAt: new Date().toISOString(),
-      summary: [],
-      detailedNotes: [],
-      keyConcepts: [],
-      definitions: [],
-      examples: [],
-      technicalInformation: [],
-      professorEmphasis: [],
-      possibleExamTopics: [],
-      studyQuestions: [],
+      summary: [], detailedNotes: [], keyConcepts: [], definitions: [], examples: [], technicalInformation: [], professorEmphasis: [], possibleExamTopics: [], studyQuestions: [],
       warning: 'No trustworthy transcript sections are available yet. Verify the audio and transcript before generating study material.',
     };
   }
@@ -109,7 +101,6 @@ export function generateStudyPack(lecture) {
   const examples = all.filter((segment) => /example|for instance|suppose|consider|مثال|مثلاً|افترض|خلينا نفترض/i.test(textOf(segment))).map(sourced);
   const technical = all.filter((segment) => /[=+−*/^]|equation|formula|algorithm|function|derivative|integral|complexity|runtime|memory|pointer|class|object|model|loss|gradient|معادلة|خوارزمية|دالة/i.test(textOf(segment))).map(sourced);
   const emphasis = all.filter((segment) => /important|remember|key point|exam|don't forget|must know|مهم|خدوا بالكم|امتحان|ما تنسوش|لازم تعرف/i.test(textOf(segment))).map(sourced);
-
   const summary = uniqueByText(representative.filter((_, index) => index % 2 === 0).map(sourced), 7);
   const detailedNotes = uniqueByText(representative.map(sourced), 16);
 
@@ -123,17 +114,10 @@ export function generateStudyPack(lecture) {
     examples: uniqueByText(examples, 8),
     technicalInformation: uniqueByText(technical, 10),
     professorEmphasis: uniqueByText(emphasis, 10),
-    possibleExamTopics: concepts.slice(0, 8).map((concept) => ({
-      topic: concept,
-      note: `Review ${concept} and explain it using the original lecture audio. This is a study suggestion, not a claim that the professor promised it will be on an exam.`,
-    })),
+    possibleExamTopics: concepts.slice(0, 8).map((concept) => ({ topic: concept, note: `Review ${concept} and explain it using the original lecture audio. This is a study suggestion, not a claim that the professor promised it will be on an exam.` })),
     studyQuestions: concepts.slice(0, 8).map((concept, index) => ({
       type: index % 3 === 0 ? 'explain' : index % 3 === 1 ? 'apply' : 'compare',
-      question: index % 3 === 0
-        ? `How would you explain ${concept} in your own words using the lecture?`
-        : index % 3 === 1
-          ? `What is one situation where ${concept} would be applied, based on this lecture?`
-          : `What idea in this lecture is most closely related to ${concept}, and how are they different?`,
+      question: index % 3 === 0 ? `How would you explain ${concept} in your own words using the lecture?` : index % 3 === 1 ? `What is one situation where ${concept} would be applied, based on this lecture?` : `What idea in this lecture is most closely related to ${concept}, and how are they different?`,
     })),
     warning: null,
   };
@@ -141,13 +125,7 @@ export function generateStudyPack(lecture) {
 
 export function applyStudyPack(lecture) {
   const studyPack = generateStudyPack(lecture);
-  return {
-    ...lecture,
-    studyPack,
-    studyPackSourceVersion: studyPack.sourceVersion,
-    staleDerivedContent: false,
-    updatedAt: new Date().toISOString(),
-  };
+  return { ...lecture, studyPack, studyPackSourceVersion: studyPack.sourceVersion, staleDerivedContent: false, updatedAt: new Date().toISOString() };
 }
 
 export function derivedContentIsFresh(lecture) {
