@@ -17,11 +17,16 @@ assert.match(transcription, /const transcriptVersion = Number\(lecture\.transcri
 assert.match(transcription, /notesSourceVersion: transcriptVersion/);
 assert.match(transcription, /translationSourceVersion: englishTranslation\.length \|\| arabicTranslation\.length \? transcriptVersion : undefined/);
 
-// Manual note edits never magically make stale notes current; only regeneration from
-// the corrected transcript updates notesSourceVersion.
+// Manual note edits never magically make stale notes current. Delayed autosave must
+// merge into the latest lecture object, and only regeneration from that current
+// transcript updates notesSourceVersion.
+assert.match(notesEditor, /const lectureRef = useRef\(lecture\)/);
+assert.match(notesEditor, /const latest = lectureRef\.current/);
+assert.match(notesEditor, /onSave\(\{ \.\.\.latest, notesCurrent: html/);
 assert.match(notesEditor, /const notesFresh = !lecture\.segments\.length \|\| Number\(lecture\.notesSourceVersion \|\| 0\) === transcriptVersion/);
 assert.match(notesEditor, /The transcript changed after these notes were generated/);
-assert.match(notesEditor, /notesSourceVersion: transcriptVersion/);
+assert.match(notesEditor, /const sourceVersion = Number\(latest\.transcriptVersion \|\| 0\)/);
+assert.match(notesEditor, /notesSourceVersion: sourceVersion/);
 assert.match(notesEditor, /Your existing edits are preserved/);
 
-console.log('✓ transcript-derived note/translation freshness versioning safeguards are present');
+console.log('✓ transcript-derived freshness and race-safe note autosave safeguards are present');
