@@ -89,14 +89,13 @@ def transcribe_audio(
         hallucination_silence_threshold=2.0,
     )
 
+    detected_language = str(info.language or "unknown")
     output_segments: list[dict[str, Any]] = []
     for index, segment in enumerate(segments):
         spoken = segment.text.strip()
         avg_logprob = float(segment.avg_logprob)
         if not spoken:
             continue
-        # avg_logprob is an uncalibrated model score, not an accuracy percentage.
-        # Use it only as a conservative review heuristic.
         if avg_logprob < -0.87 and not spoken.startswith("[uncertain]"):
             spoken = f"[uncertain] {spoken}"
         output_segments.append({
@@ -104,11 +103,13 @@ def transcribe_audio(
             "start": round(segment.start, 3),
             "end": round(segment.end, 3),
             "text": spoken,
-            "language": "unknown",
+            # faster-whisper exposes a lecture-level detected language here. This is
+            # more informative than "unknown" but is deliberately not claimed as
+            # per-segment code-switch classification.
+            "language": detected_language,
+            "language_scope": "lecture",
             "avg_logprob": round(avg_logprob, 4),
             "no_speech_probability": round(segment.no_speech_prob, 4),
-            # faster-whisper ASR is not diarization. Label neutrally until a real
-            # speaker-separation stage can support professor/student attribution.
             "speaker": "Speaker",
             "words": [
                 {"start": word.start, "end": word.end, "word": word.word, "probability": round(word.probability, 3)}
@@ -124,7 +125,7 @@ def transcribe_audio(
         "model": model_name,
         "device": device,
         "compute_type": compute_type,
-        "detected_language": info.language,
+        "detected_language": detected_language,
         "language_probability": round(info.language_probability, 3),
         "duration": round(info.duration, 3),
         "segments": output_segments,
