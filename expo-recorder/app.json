@@ -5,7 +5,9 @@
     "version": "0.2.0",
     "orientation": "default",
     "userInterfaceStyle": "light",
-    "assetBundlePatterns": ["**/*"],
+    "assetBundlePatterns": [
+      "**/*"
+    ],
     "ios": {
       "supportsTablet": true,
       "requireFullScreen": false,
@@ -18,14 +20,18 @@
       [
         "expo-audio",
         {
-          "microphonePermission": "Allow LectureAI to record your lecture audio."
+          "microphonePermission": "Allow LectureAI to record your lecture audio.",
+          "enableBackgroundRecording": true
         }
       ]
     ],
     "extra": {
       "expoGoTarget": true,
-      "targetAppleDevices": ["iPhone", "iPad"],
-      "backgroundRecording": "not-guaranteed-in-expo-go"
+      "targetAppleDevices": [
+        "iPhone",
+        "iPad"
+      ],
+      "backgroundRecording": "enabled-in-native-build-expo-go-best-effort"
     }
   }
 }
