@@ -249,17 +249,27 @@ export async function preserveAudioFile(sourceUri, lectureId, title, extension =
   const filename = `${safeName(title)}-${lectureId.slice(0, 8)}.${String(extension || 'm4a').replace(/^\./, '')}`;
   const destination = new File(recordings, filename);
   if (destination.exists) destination.delete();
-  source.copy(destination);
 
-  const info = destination.info({ md5: true });
-  const destinationMd5 = info.md5 || destination.md5 || null;
-  if (!destination.exists || destination.size < 1024) throw new Error('LectureAI could not verify the preserved audio file after copying it into permanent storage.');
+  // SDK 57 File.copy() is asynchronous. Waiting for it is required before checking
+  // the destination; otherwise a fast verification can race the native copy and
+  // incorrectly report that a valid recording was not preserved.
+  await source.copy(destination);
+
+  // Re-open the destination and trust the fresh metadata snapshot rather than any
+  // properties cached on the pre-copy File instance.
+  const preserved = new File(destination.uri);
+  const info = preserved.info({ md5: true });
+  const destinationMd5 = info.md5 || preserved.md5 || null;
+  const destinationSize = Number(info.size ?? preserved.size ?? 0);
+  if (!info.exists || destinationSize < 1024) {
+    throw new Error('LectureAI could not verify the preserved audio file after copying it into permanent storage.');
+  }
   if (sourceMd5 && destinationMd5 && sourceMd5.toLowerCase() !== destinationMd5.toLowerCase()) {
-    try { destination.delete(); } catch { /* fail closed */ }
+    try { preserved.delete(); } catch { /* fail closed */ }
     throw new Error('The permanent audio copy did not match the recorder file. The source was not modified; retry preservation before trusting this lecture.');
   }
 
-  return { uri: destination.uri, size: destination.size, md5: destinationMd5, filename };
+  return { uri: preserved.uri, size: destinationSize, md5: destinationMd5, filename };
 }
 
 export function createLecture({ id, title, audio, durationMs, marks = [], source = 'recorded' }) {
