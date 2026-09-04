@@ -56,6 +56,9 @@ assert.match(storage, /new Directory\(root, 'Recordings'\)/);
 assert.match(storage, /writeLibraryBackup\(clean\);[\s\S]*Storage\.setItem\(LIBRARY_KEY/);
 assert.match(storage, /newestUpdate\(backup\) > newestUpdate\(parsed\)/);
 assert.match(storage, /source\.info\(\{ md5: true \}\)/);
+assert.match(storage, /await source\.copy\(destination\)/);
+assert.match(storage, /const preserved = new File\(destination\.uri\)/);
+assert.match(storage, /if \(!info\.exists \|\| destinationSize < 1024\)/);
 assert.match(storage, /sourceMd5\.toLowerCase\(\) !== destinationMd5\.toLowerCase\(\)/);
 assert.match(storage, /audioVerification: 'needs-listen-check'/);
 assert.match(storage, /audioPlaybackChecks/);
@@ -110,4 +113,4 @@ assert.match(pairing, /secrets\.compare_digest/);
 assert.match(pairing, /MAX_PAIRING_ATTEMPTS_PER_WINDOW/);
 assert.match(app, /not end-to-end encrypted/);
 
-console.log('✓ Expo SDK57 recording, unexpected-stop preservation, storage integrity, playback gate, imports/exports, secure Windows transcription, and study safeguards are present');
+console.log('✓ Expo SDK57 recording, unexpected-stop preservation, async storage integrity, playback gate, imports/exports, secure Windows transcription, and study safeguards are present');
