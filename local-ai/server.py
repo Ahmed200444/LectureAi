@@ -33,6 +33,9 @@ jobs_lock = threading.Lock()
 # clicks fight over the same model and make every job less reliable.
 transcription_slot = threading.Semaphore(1)
 JOB_RETENTION_SECONDS = 60 * 60
+# This is a denial-of-service ceiling for a deliberately paired LAN helper, not a
+# product minute quota. Eight GiB comfortably exceeds multi-hour AAC/WAV lectures.
+MAX_UPLOAD_BYTES = 8 * 1024 * 1024 * 1024
 helper_state: dict[str, str | None] = {"warm_status": "starting", "warm_model": None, "warm_error": None}
 LAN_MODE = os.getenv("LECTUREAI_LAN_MODE", "0").strip().lower() in {"1", "true", "yes", "on"}
 pairing_store = PairingStore(os.getenv("LECTUREAI_PAIRING_CODE") or None)
@@ -264,6 +267,8 @@ async def save_upload(audio: UploadFile, directory: Path, expected_md5: str | No
     with target.open("wb") as output:
         while chunk := await audio.read(1024 * 1024):
             total += len(chunk)
+            if total > MAX_UPLOAD_BYTES:
+                raise HTTPException(413, "The transferred recording exceeds the helper's 8 GiB safety limit. The phone original was not modified.")
             digest.update(chunk)
             if total % (64 * 1024 * 1024) < len(chunk):
                 ensure_upload_space(directory, max(512 * 1024 * 1024, total // 4))

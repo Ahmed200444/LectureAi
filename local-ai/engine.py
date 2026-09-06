@@ -20,6 +20,13 @@ MODEL_INFO = {
 _models: dict[tuple[str, str, str], WhisperModel] = {}
 
 
+def sanitize_transcript_text(value: Any) -> str:
+    """Remove Whisper control/timestamp tokens before any text leaves the helper."""
+    text = str(value or "")
+    text = re.sub(r"<\|(?:startoftranscript|endoftext|transcribe|translate|notimestamps|[a-z]{2}|\d+(?:\.\d+)?)\|>", "", text, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def select_runtime(model_name: str) -> tuple[str, str]:
     hardware = detect_hardware()
     if hardware.nvidia_gpu and (hardware.gpu_vram_gb or 0) >= 6:
@@ -71,7 +78,7 @@ def english_translation_prompt(glossary: Iterable[str]) -> str:
 
 
 def _segment_payload(segment: Any, index: int, language: str, *, translated: bool = False) -> dict[str, Any] | None:
-    spoken = str(segment.text or "").strip()
+    spoken = sanitize_transcript_text(segment.text)
     if not spoken:
         return None
     avg_logprob = float(segment.avg_logprob)

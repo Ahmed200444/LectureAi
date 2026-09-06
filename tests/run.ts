@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { addAttachment, deleteAudioChunks, deleteLectureData, finalizeAudio, getAttachment, getAudio, getAudioChunks, getDatabase, initializeDatabase, loadLibrary, saveAudioChunk, saveLecture } from '../lib/db.ts';
 import { formatBytes, formatTime, safeFilename } from '../lib/format.ts';
 import { generateNotesHtml } from '../lib/notes.ts';
-import { normalizeTranscript } from '../lib/transcript.ts';
+import { normalizeTranscript, sanitizeTranscriptText } from '../lib/transcript.ts';
 import { completeTranscription, transcribeWithWindowsHelper } from '../lib/transcription.ts';
 import { recordingFileExtension } from '../lib/device.ts';
 import type { Lecture } from '../lib/types.ts';
@@ -61,6 +61,12 @@ test('preserves technical English inside Arabic during transcript import', () =>
   assert.equal(segments[0].detectedLanguage, 'mixed');
   assert.equal(segments[0].confidence, .73);
   assert.match(segments[0].originalText, /pointer/);
+});
+
+test('strips Whisper control and timestamp tokens before persistence', () => {
+  assert.equal(sanitizeTranscriptText('<|startoftranscript|><|ar|> مرحبا <|0.00|> pointer <|endoftext|>'), 'مرحبا pointer');
+  const segment = normalizeTranscript({ segments: [{ start: 0, end: 1, text: '<|en|> clean text <|0.80|>' }] }, 'clean')[0];
+  assert.equal(segment.originalText, 'clean text');
 });
 
 test('detects Egyptian Arabic and MSA transcript text without translating it', () => {

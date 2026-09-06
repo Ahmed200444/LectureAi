@@ -242,13 +242,23 @@ export async function preserveAudioFile(sourceUri, lectureId, title, extension =
   const source = new File(sourceUri);
   if (!source.exists || source.size < 1024) throw new Error('The captured audio file is missing or too small to trust.');
 
+  const normalizedExtension = `.${String(extension || 'm4a').replace(/^\./, '').toLowerCase()}`;
+  if (!AUDIO_EXTENSIONS.has(normalizedExtension)) {
+    throw new Error('LectureAI can only preserve a supported audio format. The original file was not changed.');
+  }
+
   let sourceMd5 = null;
-  try { sourceMd5 = source.info({ md5: true }).md5 || source.md5 || null; } catch { /* hash may be unavailable */ }
+  let sourceSize = Number(source.size || 0);
+  try {
+    const sourceInfo = source.info({ md5: true });
+    sourceMd5 = sourceInfo.md5 || source.md5 || null;
+    sourceSize = Number(sourceInfo.size ?? sourceSize);
+  } catch { /* hash may be unavailable */ }
 
   const recordings = ensureRecordingDirectory();
-  const filename = `${safeName(title)}-${lectureId.slice(0, 8)}.${String(extension || 'm4a').replace(/^\./, '')}`;
+  const filename = `${safeName(title)}-${lectureId.slice(0, 8)}${normalizedExtension}`;
   const destination = new File(recordings, filename);
-  if (destination.exists) destination.delete();
+  if (destination.exists) throw new Error('LectureAI found an existing protected audio destination. It was not overwritten. Start a new save or recover the existing lecture first.');
 
   // SDK 57 File.copy() is asynchronous. Waiting for it is required before checking
   // the destination; otherwise a fast verification can race the native copy and
@@ -263,6 +273,9 @@ export async function preserveAudioFile(sourceUri, lectureId, title, extension =
   const destinationSize = Number(info.size ?? preserved.size ?? 0);
   if (!info.exists || destinationSize < 1024) {
     throw new Error('LectureAI could not verify the preserved audio file after copying it into permanent storage.');
+  }
+  if (!Number.isFinite(sourceSize) || sourceSize < 1024 || destinationSize !== sourceSize) {
+    throw new Error('The permanent audio copy size did not match the recorder file. The source was not modified; retry preservation before trusting this lecture.');
   }
   if (sourceMd5 && destinationMd5 && sourceMd5.toLowerCase() !== destinationMd5.toLowerCase()) {
     try { preserved.delete(); } catch { /* fail closed */ }
@@ -315,19 +328,21 @@ export async function upsertLecture(lecture) {
 }
 
 export async function removeLecture(lecture) {
-  try {
-    if (lecture?.audioUri) {
-      const file = new File(lecture.audioUri);
-      if (file.exists) file.delete();
+  if (lecture?.audioUri) {
+    const file = new File(lecture.audioUri);
+    if (file.exists) {
+      try { file.delete(); } catch (error) {
+        throw new Error(`LectureAI could not remove the protected original, so its metadata was kept: ${error instanceof Error ? error.message : 'file deletion failed.'}`);
+      }
+      if (file.exists) throw new Error('LectureAI could not confirm deletion of the protected original, so its metadata was kept.');
     }
-  } finally {
-    const library = await loadLibrary();
-    await saveLibrary(library.filter((item) => (
-      item.id !== lecture.id
-      && (!lecture.audioUri || item.audioUri !== lecture.audioUri)
-      && (!lecture.audioFilename || item.audioFilename !== lecture.audioFilename)
-    )));
   }
+  const library = await loadLibrary();
+  await saveLibrary(library.filter((item) => (
+    item.id !== lecture.id
+    && (!lecture.audioUri || item.audioUri !== lecture.audioUri)
+    && (!lecture.audioFilename || item.audioFilename !== lecture.audioFilename)
+  )));
 }
 
 export function markAudioPlaybackPoint(lecture, point) {
@@ -353,7 +368,7 @@ export function markAudioVerified(lecture) {
   };
 }
 
-export function replaceTranscript(lecture, segments, engine = 'import') {
+export function replaceTranscript(lecture, segments, engine = 'import', { clearSourceMetadata = false } = {}) {
   const version = Number(lecture.transcriptVersion || 0) + 1;
   return {
     ...lecture,
@@ -363,6 +378,15 @@ export function replaceTranscript(lecture, segments, engine = 'import') {
     transcriptEngine: engine,
     translations: { en: [], ar: [] },
     translationsSourceVersion: null,
+    ...(clearSourceMetadata ? {
+      sourceTranscript: [],
+      englishTranscript: [],
+      sourceLanguage: null,
+      sourceLanguageProbability: null,
+      englishTranscriptMethod: null,
+      transcriptionAccuracyNote: null,
+      transcriptionMetadata: null,
+    } : {}),
     staleDerivedContent: true,
     updatedAt: nowIso(),
   };

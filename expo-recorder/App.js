@@ -87,18 +87,34 @@ function recordingLevel(metering) {
   return Math.max(0, Math.min(1, (metering + 60) / 60));
 }
 
+function stripWhisperControlTokens(value) {
+  return String(value ?? '')
+    .replace(/<\|(?:startoftranscript|endoftext|transcribe|translate|notimestamps|[a-z]{2}|\d+(?:\.\d+)?)\|>/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function wait(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
 function normalizeTranscriptPayload(payload, lectureId) {
-  const rows = Array.isArray(payload) ? payload : payload?.segments;
+  const root = payload?.lecture && typeof payload.lecture === 'object' ? payload.lecture : payload;
+  const rows = Array.isArray(root) ? root : root?.segments || root?.currentEditableTranscript;
   if (!Array.isArray(rows)) throw new Error('Transcript data must contain a segments array.');
+  const ids = new Set();
   return rows.map((row, index) => {
     const start = Number(row.start ?? row.startTime ?? 0);
     const end = Number(row.end ?? row.endTime ?? start);
-    const text = String(row.editedText ?? row.originalText ?? row.text ?? '').trim();
+    const text = stripWhisperControlTokens(row.editedText ?? row.originalText ?? row.text);
     if (!text || !Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end < start) {
       throw new Error(`Transcript segment ${index + 1} has invalid text or timestamps.`);
     }
+    const id = String(row.id || `${lectureId}-segment-${index + 1}`);
+    if (ids.has(id)) throw new Error(`Transcript segment ${index + 1} has a duplicate ID.`);
+    ids.add(id);
     return {
-      id: String(row.id || `${lectureId}-segment-${index + 1}`),
+      id,
       startTime: start,
       endTime: end,
       originalText: text,
@@ -156,6 +172,8 @@ export default function App({ onOpenExports = () => {} }) {
   const recordingStartedAt = useRef(null);
   const journalSnapshot = useRef({});
   const finalizingRef = useRef(false);
+  const startingRef = useRef(false);
+  const pauseTransitionRef = useRef(false);
   const hadRecorderSignalRef = useRef(false);
   const unexpectedHandledRef = useRef(false);
   const importedDurationUpdatedRef = useRef(new Set());
@@ -305,7 +323,7 @@ export default function App({ onOpenExports = () => {} }) {
       hadRecorderSignalRef.current = true;
       return;
     }
-    if (!paused && hadRecorderSignalRef.current && !finalizingRef.current && !unexpectedHandledRef.current) {
+    if (!paused && !pauseTransitionRef.current && hadRecorderSignalRef.current && !finalizingRef.current && !unexpectedHandledRef.current) {
       unexpectedHandledRef.current = true;
       void (async () => {
         try {
@@ -350,7 +368,9 @@ export default function App({ onOpenExports = () => {} }) {
   }, [selectedLecture?.id, playerStatus.duration]);
 
   async function startRecording() {
-    if (recordingActive) return;
+    if (recordingActive || startingRef.current || finalizingRef.current) return;
+    startingRef.current = true;
+    let nativeStartRequested = false;
     try {
       setWarning('');
       if (Paths.availableDiskSpace < LOW_STORAGE_BYTES) {
@@ -376,22 +396,42 @@ export default function App({ onOpenExports = () => {} }) {
       recordingStartedAt.current = new Date().toISOString();
       hadRecorderSignalRef.current = false;
       unexpectedHandledRef.current = false;
+      nativeStartRequested = true;
       recorder.record();
+      saveActiveRecordingJournal({ title, startedAt: recordingStartedAt.current, sourceUri: recorder.uri || recorderState.url || null, durationMs: 0, marks: [], state: 'starting' });
+      let confirmedActive = false;
+      for (let attempt = 0; attempt < 10; attempt += 1) {
+        await wait(100);
+        try {
+          const recorderStatus = typeof recorder.getStatus === 'function' ? await recorder.getStatus() : null;
+          if (recorderStatus?.isRecording) { confirmedActive = true; break; }
+        } catch { /* Retry briefly while the native recorder settles. */ }
+      }
+      if (!confirmedActive) throw new Error('The microphone recorder did not confirm that it became active. LectureAI did not show this session as recording.');
       await activateKeepAwake();
       setMarks([]);
       setPaused(false);
       setRecordingActive(true);
       setLastSavedId('');
-      saveActiveRecordingJournal({ title, startedAt: recordingStartedAt.current, sourceUri: recorder.uri || recorderState.url || null, durationMs: 0, marks: [], state: 'recording' });
       setStatus('Recording on-device · keep LectureAI open');
     } catch (error) {
+      recordingStartedAt.current = null;
+      if (!nativeStartRequested) clearActiveRecordingJournal();
+      else {
+        try { await recorder.stop(); } catch { /* The retained journal is the safe fallback. */ }
+      }
+      setPaused(false);
+      setRecordingActive(false);
       setStatus('Recording did not start');
       setWarning(`Recorder start failed: ${error instanceof Error ? error.message : 'Could not start recording.'}`);
+    } finally {
+      startingRef.current = false;
     }
   }
 
   function pauseRecording() {
     if (!recordingActive || paused) return;
+    pauseTransitionRef.current = true;
     try {
       recorder.pause();
       setPaused(true);
@@ -399,6 +439,8 @@ export default function App({ onOpenExports = () => {} }) {
       setStatus('Paused · same recording session preserved');
     } catch {
       setWarning('LectureAI could not pause cleanly. Finish and verify the recording if anything looks wrong.');
+    } finally {
+      setTimeout(() => { pauseTransitionRef.current = false; }, 500);
     }
   }
 
@@ -443,17 +485,33 @@ export default function App({ onOpenExports = () => {} }) {
   }
 
   async function runPlaybackCheck(lecture, point) {
-    if (!lecture?.audioUri) return;
-    const duration = Math.max(Number(playerStatus.duration || 0), Number(lecture.durationMs || 0) / 1000);
-    const target = point === 'beginning' ? 0 : point === 'middle' ? Math.max(0, duration * 0.5) : Math.max(0, duration - Math.min(5, duration * 0.08));
-    player.seekTo(target);
-    player.play();
-    setStatus(`Playing ${point} verification sample…`);
-    await new Promise((resolve) => setTimeout(resolve, 2200));
-    const updated = markAudioPlaybackPoint(lecture, point);
-    await upsertLecture(updated);
-    await refresh();
-    setStatus(`${point[0].toUpperCase()}${point.slice(1)} playback sample completed`);
+    try {
+      if (!lecture?.audioUri) throw new Error('This lecture has no preserved audio file.');
+      const duration = Math.max(Number(playerStatus.duration || 0), Number(lecture.durationMs || 0) / 1000);
+      if (!Number.isFinite(duration) || duration <= 0) throw new Error('LectureAI could not determine the recording duration for playback verification. Play the original normally and try again.');
+      const target = point === 'beginning' ? 0 : point === 'middle' ? Math.max(0, duration * 0.5) : Math.max(0, duration - Math.min(5, duration * 0.08));
+      await Promise.resolve(player.seekTo(target));
+      const before = Number(player.currentTime ?? target);
+      player.play();
+      setStatus(`Playing ${point} verification sample…`);
+      let progressed = false;
+      for (let attempt = 0; attempt < 24; attempt += 1) {
+        await wait(125);
+        const current = Number(player.currentTime ?? 0);
+        if (Number.isFinite(current) && current > before + 0.25) { progressed = true; break; }
+      }
+      player.pause();
+      if (!progressed) throw new Error(`The ${point} playback sample did not advance. Check the audio route, volume, and original file; this verification point was not accepted.`);
+      const updated = markAudioPlaybackPoint(lecture, point);
+      await upsertLecture(updated);
+      await refresh();
+      setStatus(`${point[0].toUpperCase()}${point.slice(1)} playback sample completed`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'The playback sample could not be verified.';
+      setWarning(message);
+      setStatus('Playback verification incomplete');
+      Alert.alert('Playback verification incomplete', message);
+    }
   }
 
   async function verifyLecture(lecture) {
@@ -501,7 +559,7 @@ export default function App({ onOpenExports = () => {} }) {
       const file = new File(asset.uri);
       const payload = JSON.parse(await file.text());
       const segments = normalizeTranscriptPayload(payload, lecture.id);
-      const updated = replaceTranscript(lecture, segments, 'import');
+      const updated = replaceTranscript(lecture, segments, 'import', { clearSourceMetadata: true });
       await upsertLecture(updated);
       await refresh();
       setDetailTab('transcript');
@@ -511,9 +569,13 @@ export default function App({ onOpenExports = () => {} }) {
   }
 
   async function saveTranscriptEdit(lecture, segmentId, text) {
-    const updated = updateTranscriptSegment(lecture, segmentId, text);
-    await upsertLecture(updated);
-    await refresh();
+    try {
+      const updated = updateTranscriptSegment(lecture, segmentId, stripWhisperControlTokens(text));
+      await upsertLecture(updated);
+      await refresh();
+    } catch (error) {
+      Alert.alert('Transcript edit was not saved', error instanceof Error ? error.message : 'LectureAI could not durably save this edit.');
+    }
   }
 
   async function generateStudy(lecture) {
@@ -593,7 +655,7 @@ export default function App({ onOpenExports = () => {} }) {
             if (selectedId === lecture.id) setSelectedId('');
             if (lastSavedId === lecture.id) setLastSavedId('');
             await refresh();
-          });
+          }).catch((error) => Alert.alert('Delete did not finish', error instanceof Error ? error.message : 'LectureAI kept the lecture data because the original could not be removed.'));
         },
       },
     ]);
@@ -722,6 +784,12 @@ function PlaybackGate({ lecture, onPlaybackCheck, onVerify }) {
 }
 
 function RecordScreen({ title, setTitle, recorderState, recordingActive, paused, status, warning, level, marks, inputName, freeDisk, lastSaved, player, playerStatus, onStart, onPause, onResume, onMark, onFinish, onVerify, onPlaybackCheck, onOpen, onShare }) {
+  // The UI is deliberately conservative: an outdated state hook can never keep the
+  // red recording indication or old timer visible after the native recorder stops.
+  const liveRecorder = recordingActive && !paused && recorderState.isRecording;
+  const visibleSession = paused || liveRecorder;
+  const stateLabel = liveRecorder ? '● RECORDING' : paused ? 'PAUSED' : 'NOT RECORDING';
+  const displayedDuration = visibleSession ? recorderState.durationMillis : 0;
   return (
     <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
       <Text style={styles.eyebrow}>NATIVE AUDIO THROUGH EXPO GO</Text>
@@ -729,10 +797,10 @@ function RecordScreen({ title, setTitle, recorderState, recordingActive, paused,
       <Text style={styles.lead}>SDK 57 records into document storage, then LectureAI preserves a protected copy before transcription, notes, or study processing can touch anything.</Text>
       <View style={styles.card}>
         <TextInput style={styles.titleInput} value={title} onChangeText={setTitle} editable={!recordingActive} placeholder="Lecture title" />
-        <View style={styles.statusRow}><View style={[styles.statusDot, recordingActive && !paused && styles.statusDotLive]} /><Text style={styles.statusText}>{status}</Text></View>
+        <View style={styles.statusRow} accessibilityLiveRegion="polite"><View style={[styles.statusDot, recordingActive && !paused && styles.statusDotLive]} /><Text style={styles.statusText}>{stateLabel} · {status}</Text></View>
         {inputName ? <Text style={styles.meta}>Input: {inputName}</Text> : null}
-        <Text style={styles.timer}>{formatDuration(recorderState.durationMillis)}</Text>
-        <View style={styles.meter}><View style={[styles.meterFill, { width: `${Math.max(1, level * 100)}%` }]} /></View>
+        <Text style={styles.timer}>{formatDuration(displayedDuration)}</Text>
+        <View style={styles.meter}><View style={[styles.meterFill, { width: `${liveRecorder ? Math.max(1, level * 100) : 0}%` }]} /></View>
         <Text style={styles.meterLabel}>{paused ? 'Paused' : level < 0.08 && recordingActive ? 'Audio is quiet — recording continues' : level > 0.94 ? 'Very loud — clipping may be possible' : recordingActive ? 'Audio level active' : 'Microphone meter appears while recording'}</Text>
         {!recordingActive ? <PrimaryButton label="Start recording" onPress={onStart} /> : <><View style={styles.buttonRow}><SecondaryButton label={`Mark (${marks.length})`} onPress={onMark} />{paused ? <SecondaryButton label="Continue" onPress={onResume} /> : <SecondaryButton label="Pause" onPress={onPause} />}</View><DangerButton label="Finish & save" onPress={onFinish} /></>}
       </View>
@@ -868,7 +936,7 @@ function LectureDetail({ lecture, detailTab, setDetailTab, player, playerStatus,
         )}
         {detailTab === 'transcript' && (
           <>
-            <View style={styles.infoCard}><Text style={styles.infoTitle}>Timestamped transcript</Text><Text style={styles.infoText}>The original audio remains the source of truth. Correcting transcript text never modifies the recording.</Text></View>
+            <View style={styles.infoCard}><Text style={styles.infoTitle}>{lecture.englishTranscript?.length ? 'Editable English transcript' : 'Timestamped transcript'}</Text><Text style={styles.infoText}>The original audio remains the source of truth. Correcting transcript text never modifies the recording.</Text>{lecture.sourceLanguage ? <Text style={styles.infoText}>Detected source language: {lecture.sourceLanguage}{lecture.sourceLanguageProbability != null ? ` · detection probability ${Number(lecture.sourceLanguageProbability).toFixed(3)} (not transcription accuracy)` : ''}</Text> : null}{lecture.transcriptionAccuracyNote ? <Text style={styles.infoText}>{lecture.transcriptionAccuracyNote}</Text> : null}</View>
             {!lecture.transcript.length ? <Empty title="No transcript yet" body={computerPaired ? 'Use your paired Windows computer for local faster-whisper transcription, or import timestamped transcript JSON.' : 'Pair your Windows computer in Settings for free local faster-whisper transcription, or import timestamped transcript JSON.'} action={<><PrimaryButton label={transcriptionBusy ? 'Transcribing…' : 'Transcribe on paired computer'} onPress={onComputerTranscribe} disabled={transcriptionBusy} /><SecondaryButton label="Import transcript JSON" onPress={onImportTranscript} /></>} /> : lecture.transcript.map((segment) => (
               <View key={segment.id} style={[styles.transcriptRow, segment.uncertain && styles.uncertainRow]}>
                 <Pressable onPress={() => { player.seekTo(segment.startTime); player.play(); }}><Text style={styles.timestamp}>{formatTime(segment.startTime)} – {formatTime(segment.endTime)}</Text></Pressable>
@@ -877,6 +945,7 @@ function LectureDetail({ lecture, detailTab, setDetailTab, player, playerStatus,
               </View>
             ))}
             {lecture.transcript.length ? <View style={styles.buttonRow}><SecondaryButton label="Retranscribe on computer" onPress={onComputerTranscribe} disabled={transcriptionBusy} /><SecondaryButton label="Replace JSON transcript" onPress={onImportTranscript} /></View> : null}
+            {lecture.sourceTranscript?.length ? <View style={styles.infoCard}><Text style={styles.infoTitle}>Original-language transcript · read-only</Text><Text style={styles.infoText}>This is the preserved source-language recognition pass. It is separate from the editable English transcript.</Text>{lecture.sourceTranscript.map((segment) => <View key={`source-${segment.id}`} style={[styles.transcriptRow, segment.uncertain && styles.uncertainRow]}><Pressable accessibilityRole="button" accessibilityLabel={`Play source transcript at ${formatTime(segment.startTime)}`} onPress={() => { player.seekTo(segment.startTime); player.play(); }}><Text style={styles.timestamp}>{formatTime(segment.startTime)} – {formatTime(segment.endTime)}</Text></Pressable><Text style={styles.studyText}>{segment.editedText || segment.originalText}</Text><Text style={styles.meta}>{segment.uncertain ? 'Needs verification against audio' : 'Machine transcript'} · {segment.speaker || 'Speaker'}</Text></View>)}</View> : null}
           </>
         )}
         {detailTab === 'notes' && <StudyPackView lecture={lecture} mode="notes" fresh={fresh} onGenerate={onGenerateStudy} player={player} />}
@@ -913,15 +982,15 @@ function Empty({ title, body, action = null }) {
 }
 
 function PrimaryButton({ label, onPress, disabled = false }) {
-  return <Pressable disabled={disabled} style={({ pressed }) => [styles.primaryButton, disabled && styles.disabled, pressed && !disabled && styles.pressed]} onPress={onPress}><Text style={styles.primaryButtonText}>{label}</Text></Pressable>;
+  return <Pressable accessible accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ disabled }} disabled={disabled} style={({ pressed }) => [styles.primaryButton, disabled && styles.disabled, pressed && !disabled && styles.pressed]} onPress={onPress}><Text style={styles.primaryButtonText}>{label}</Text></Pressable>;
 }
 
 function SecondaryButton({ label, onPress, compact = false, disabled = false }) {
-  return <Pressable disabled={disabled} style={({ pressed }) => [styles.secondaryButton, compact && styles.compactButton, disabled && styles.disabled, pressed && !disabled && styles.pressed]} onPress={onPress}><Text style={styles.secondaryButtonText}>{label}</Text></Pressable>;
+  return <Pressable accessible accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ disabled }} disabled={disabled} style={({ pressed }) => [styles.secondaryButton, compact && styles.compactButton, disabled && styles.disabled, pressed && !disabled && styles.pressed]} onPress={onPress}><Text style={styles.secondaryButtonText}>{label}</Text></Pressable>;
 }
 
 function DangerButton({ label, onPress }) {
-  return <Pressable style={({ pressed }) => [styles.dangerButton, pressed && styles.pressed]} onPress={onPress}><Text style={styles.dangerButtonText}>{label}</Text></Pressable>;
+  return <Pressable accessible accessibilityRole="button" accessibilityLabel={label} style={({ pressed }) => [styles.dangerButton, pressed && styles.pressed]} onPress={onPress}><Text style={styles.dangerButtonText}>{label}</Text></Pressable>;
 }
 
 const styles = StyleSheet.create({
@@ -934,7 +1003,7 @@ const styles = StyleSheet.create({
   headerSub: { color: '#72867D', fontSize: 11, marginTop: 2 },
   freePill: { backgroundColor: '#E4EFE9', borderRadius: 999, paddingHorizontal: 9, paddingVertical: 5 },
   freePillText: { color: '#214F3D', fontWeight: '900', fontSize: 9, letterSpacing: .6 },
-  scroll: { padding: 20, paddingBottom: 42 },
+  scroll: { width: '100%', maxWidth: 900, alignSelf: 'center', padding: 20, paddingBottom: 42 },
   eyebrow: { color: '#527064', fontWeight: '900', fontSize: 10, letterSpacing: 1.1, marginBottom: 7 },
   hero: { color: '#173129', fontWeight: '900', fontSize: 32, lineHeight: 36, letterSpacing: -.8 },
   sectionTitle: { color: '#173129', fontWeight: '900', fontSize: 30, letterSpacing: -.6 },
