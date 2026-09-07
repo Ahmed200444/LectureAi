@@ -22,6 +22,7 @@ import {
 import * as KeepAwake from 'expo-keep-awake';
 import * as Sharing from 'expo-sharing';
 import * as DocumentPicker from 'expo-document-picker';
+import Constants from 'expo-constants';
 import { File, Paths } from 'expo-file-system';
 import {
   createLecture,
@@ -39,6 +40,7 @@ import {
 } from './src/storage';
 import { applyStudyPack, derivedContentIsFresh } from './src/study';
 import { computerHealth, pairWithComputer, transcribeOnComputer } from './src/computer';
+import { foregroundRecorderDecision } from './src/background-recording';
 import {
   clearActiveRecordingJournal,
   recoverInterruptedRecording,
@@ -47,6 +49,7 @@ import {
 
 const KEEP_AWAKE_TAG = 'lectureai-recording';
 const LOW_STORAGE_BYTES = 500 * 1024 * 1024;
+const RUNNING_IN_EXPO_GO = Constants.executionEnvironment === 'storeClient' || Constants.appOwnership === 'expo';
 const RECORDING_OPTIONS = {
   ...RecordingPresets.HIGH_QUALITY,
   directory: 'document',
@@ -169,13 +172,22 @@ export default function App({ onOpenExports = () => {} }) {
   const [inputName, setInputName] = useState('');
   const [lastSavedId, setLastSavedId] = useState('');
   const [computerProgress, setComputerProgress] = useState(null);
+  const [nativeRecordingConfirmed, setNativeRecordingConfirmed] = useState(false);
+  const [sessionDurationMs, setSessionDurationMs] = useState(0);
+  const [foregroundRecorderChecking, setForegroundRecorderChecking] = useState(false);
   const recordingStartedAt = useRef(null);
   const journalSnapshot = useRef({});
   const finalizingRef = useRef(false);
   const startingRef = useRef(false);
   const pauseTransitionRef = useRef(false);
+  const pausedRef = useRef(false);
+  const recordingActiveRef = useRef(false);
+  const unexpectedStopTimerRef = useRef(null);
   const hadRecorderSignalRef = useRef(false);
   const unexpectedHandledRef = useRef(false);
+  const appStateRef = useRef(AppState.currentState);
+  const foregroundReconcileRef = useRef(false);
+  const appBackgroundedAtRef = useRef(null);
   const importedDurationUpdatedRef = useRef(new Set());
 
   const selectedLecture = lectures.find((lecture) => lecture.id === selectedId) || null;
@@ -183,11 +195,20 @@ export default function App({ onOpenExports = () => {} }) {
   const freeDisk = Paths.availableDiskSpace;
   const level = recordingLevel(recorderState.metering);
 
+  pausedRef.current = paused;
+  recordingActiveRef.current = recordingActive;
+
+  useEffect(() => {
+    if (!recordingActive && !paused) return;
+    setSessionDurationMs((current) => Math.max(current, Number(recorderState.durationMillis || 0)));
+    if (appStateRef.current === 'active' && !foregroundReconcileRef.current && recorderState.isRecording) setNativeRecordingConfirmed(true);
+  }, [recordingActive, paused, recorderState.durationMillis, recorderState.isRecording]);
+
   journalSnapshot.current = {
     title,
     startedAt: recordingStartedAt.current,
     sourceUri: recorder.uri || recorderState.url || null,
-    durationMs: recorderState.durationMillis || 0,
+    durationMs: Math.max(sessionDurationMs || 0, recorderState.durationMillis || 0, journalSnapshot.current.durationMs || 0),
     marks,
     state: paused ? 'paused' : 'recording',
   };
@@ -215,7 +236,7 @@ export default function App({ onOpenExports = () => {} }) {
     saveActiveRecordingJournal({
       ...snapshot,
       sourceUri: recorder.uri || statusSnapshot?.url || snapshot.sourceUri || null,
-      durationMs: statusSnapshot?.durationMillis || snapshot.durationMs || 0,
+      durationMs: Math.max(Number(statusSnapshot?.durationMillis || 0), Number(snapshot.durationMs || 0)),
       state: stateOverride || snapshot.state,
     });
   }
@@ -241,7 +262,7 @@ export default function App({ onOpenExports = () => {} }) {
   }
 
   async function preserveRecorderOutput({ unexpected = false } = {}) {
-    const durationMs = Math.max(0, recorderState.durationMillis || Math.round((recorder.currentTime || 0) * 1000));
+    const durationMs = Math.max(0, sessionDurationMs, recorderState.durationMillis || 0, Math.round((recorder.currentTime || 0) * 1000), journalSnapshot.current.durationMs || 0);
     const uri = recorder.uri || recorderState.url || journalSnapshot.current.sourceUri;
     saveActiveRecordingJournal({
       title,
@@ -273,6 +294,25 @@ export default function App({ onOpenExports = () => {} }) {
     return lecture;
   }
 
+  async function preserveUnexpectedRecorderStop(reason) {
+    if (unexpectedHandledRef.current || finalizingRef.current || !recordingActiveRef.current || pausedRef.current) return;
+    unexpectedHandledRef.current = true;
+    setNativeRecordingConfirmed(false);
+    try {
+      await persistRecordingJournal('unexpected-stop');
+      await deactivateKeepAwake();
+      setRecordingActive(false);
+      setPaused(false);
+      await preserveRecorderOutput({ unexpected: true });
+      setWarning(`${reason} LectureAI preserved the available original; verify the beginning, middle, and end before relying on it.`);
+    } catch (error) {
+      setRecordingActive(false);
+      setPaused(false);
+      setStatus('Unexpected recording stop needs attention');
+      setWarning(error instanceof Error ? error.message : 'The recorder stopped unexpectedly and LectureAI could not preserve the file automatically. The recovery journal was retained.');
+    }
+  }
+
   useEffect(() => {
     let mounted = true;
     void (async () => {
@@ -297,50 +337,181 @@ export default function App({ onOpenExports = () => {} }) {
   }, []);
 
   useEffect(() => {
-    const subscription = AppState.addEventListener('change', (state) => {
-      if (state !== 'active' && recordingActive) {
-        void persistRecordingJournal('backgrounded');
-        setWarning('LectureAI left the foreground while recording. Expo Go cannot guarantee locked-screen/background recording; return to LectureAI and verify the saved audio afterward.');
+    let cancelled = false;
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      const previousState = appStateRef.current;
+      appStateRef.current = nextState;
+
+      if (nextState !== 'active') {
+        if (recordingActiveRef.current) {
+          appBackgroundedAtRef.current ||= Date.now();
+          setNativeRecordingConfirmed(false);
+          if (unexpectedStopTimerRef.current) {
+            clearTimeout(unexpectedStopTimerRef.current);
+            unexpectedStopTimerRef.current = null;
+          }
+          void persistRecordingJournal(pausedRef.current ? 'paused-backgrounded' : 'background-recording-expected');
+          setStatus(pausedRef.current ? 'Paused while LectureAI is in the background' : 'Recording continues in background-capable native builds');
+          if (RUNNING_IN_EXPO_GO) {
+            setWarning('Stock Expo Go cannot guarantee background recording because this project cannot change the Expo Go native binary. Return to LectureAI to verify the real recorder state.');
+          }
+        }
+        return;
       }
+
+      if (previousState === 'active' || !recordingActiveRef.current || cancelled) return;
+      foregroundReconcileRef.current = true;
+      setForegroundRecorderChecking(true);
+      setNativeRecordingConfirmed(false);
+      setStatus('Checking the native recorder after returning to LectureAI…');
+
+      void (async () => {
+        let nativeStatus = null;
+        let statusReadFailed = true;
+        for (let attempt = 0; attempt < 10; attempt += 1) {
+          try {
+            nativeStatus = typeof recorder.getStatus === 'function' ? await recorder.getStatus() : null;
+            statusReadFailed = false;
+            if (nativeStatus) break;
+          } catch {
+            statusReadFailed = true;
+          }
+          await wait(120);
+        }
+        if (cancelled || !recordingActiveRef.current) return;
+
+        if (nativeStatus) {
+          const duration = Math.max(0, Number(nativeStatus.durationMillis || 0));
+          setSessionDurationMs((current) => Math.max(current, duration));
+          journalSnapshot.current = {
+            ...journalSnapshot.current,
+            sourceUri: recorder.uri || nativeStatus.url || journalSnapshot.current.sourceUri || null,
+            durationMs: Math.max(duration, journalSnapshot.current.durationMs || 0),
+          };
+        }
+
+        const decision = foregroundRecorderDecision({
+          sessionActive: recordingActiveRef.current,
+          paused: pausedRef.current,
+          statusAvailable: Boolean(nativeStatus),
+          isRecording: Boolean(nativeStatus?.isRecording),
+        });
+
+        if (decision === 'paused') {
+          setStatus('Paused · same recording session preserved');
+          await persistRecordingJournal('paused-after-foreground');
+        } else if (decision === 'recording') {
+          hadRecorderSignalRef.current = true;
+          setNativeRecordingConfirmed(true);
+          setRecordingActive(true);
+          setPaused(false);
+          setStatus('Recording · native recorder confirmed after app switch');
+          await persistRecordingJournal('recording-after-foreground');
+        } else if (decision === 'stopped') {
+          await preserveUnexpectedRecorderStop('iOS interrupted or stopped the microphone while LectureAI was away.');
+        } else if (decision === 'unconfirmed' && statusReadFailed) {
+          setStatus('Native recorder state could not be confirmed');
+          setWarning('LectureAI could not read the native recorder state after returning. It has not discarded or overwritten the recording. Keep the app open and use Finish & save to preserve any file iOS exposes.');
+        }
+      })().finally(() => {
+        foregroundReconcileRef.current = false;
+        setForegroundRecorderChecking(false);
+        appBackgroundedAtRef.current = null;
+      });
     });
-    return () => subscription.remove();
+    return () => {
+      cancelled = true;
+      subscription.remove();
+    };
   }, [recordingActive]);
 
   useEffect(() => {
     if (recorderState.mediaServicesDidReset && recordingActive) {
       void persistRecordingJournal('media-services-reset');
+      setNativeRecordingConfirmed(false);
       setWarning('iOS audio services were reset during this lecture. LectureAI will preserve any stopped file it can access; verify the result carefully.');
     }
   }, [recorderState.mediaServicesDidReset, recordingActive]);
 
   useEffect(() => {
+    function clearPendingUnexpectedStop() {
+      if (unexpectedStopTimerRef.current) {
+        clearTimeout(unexpectedStopTimerRef.current);
+        unexpectedStopTimerRef.current = null;
+      }
+    }
+
     if (!recordingActive) {
       hadRecorderSignalRef.current = false;
       unexpectedHandledRef.current = false;
-      return;
+      clearPendingUnexpectedStop();
+      return clearPendingUnexpectedStop;
     }
+
     if (recorderState.isRecording) {
       hadRecorderSignalRef.current = true;
-      return;
+      clearPendingUnexpectedStop();
+      return clearPendingUnexpectedStop;
     }
-    if (!paused && !pauseTransitionRef.current && hadRecorderSignalRef.current && !finalizingRef.current && !unexpectedHandledRef.current) {
-      unexpectedHandledRef.current = true;
-      void (async () => {
-        try {
-          await persistRecordingJournal('unexpected-stop');
-          await deactivateKeepAwake();
-          setRecordingActive(false);
-          setPaused(false);
-          await preserveRecorderOutput({ unexpected: true });
-          setWarning('Recording stopped unexpectedly. LectureAI preserved the available original; verify beginning, middle, and end before relying on it.');
-        } catch (error) {
-          setRecordingActive(false);
-          setPaused(false);
-          setStatus('Unexpected recording stop needs attention');
-          setWarning(error instanceof Error ? error.message : 'The recorder stopped unexpectedly and LectureAI could not preserve the file automatically.');
-        }
-      })();
+
+    if (
+      paused
+      || appStateRef.current !== 'active'
+      || foregroundReconcileRef.current
+      || pauseTransitionRef.current
+      || !hadRecorderSignalRef.current
+      || finalizingRef.current
+      || unexpectedHandledRef.current
+    ) {
+      clearPendingUnexpectedStop();
+      return clearPendingUnexpectedStop;
     }
+
+    if (!unexpectedStopTimerRef.current) {
+      unexpectedStopTimerRef.current = setTimeout(() => {
+        unexpectedStopTimerRef.current = null;
+
+        void (async () => {
+          if (
+            !recordingActiveRef.current
+            || pausedRef.current
+            || appStateRef.current !== 'active'
+            || foregroundReconcileRef.current
+            || pauseTransitionRef.current
+            || finalizingRef.current
+            || unexpectedHandledRef.current
+          ) return;
+
+          try {
+            const nativeStatus =
+              typeof recorder.getStatus === 'function'
+                ? await recorder.getStatus()
+                : null;
+
+            if (nativeStatus?.isRecording) {
+              hadRecorderSignalRef.current = true;
+              return;
+            }
+          } catch {
+            // Continue with fail-safe preservation only after the grace period.
+          }
+
+          if (
+            !recordingActiveRef.current
+            || pausedRef.current
+            || appStateRef.current !== 'active'
+            || foregroundReconcileRef.current
+            || pauseTransitionRef.current
+            || finalizingRef.current
+            || unexpectedHandledRef.current
+          ) return;
+
+          await preserveUnexpectedRecorderStop('Recording stopped unexpectedly, possibly because another app took exclusive microphone control.');
+        })();
+      }, 800);
+    }
+
+    return clearPendingUnexpectedStop;
   }, [recordingActive, paused, recorderState.isRecording]);
 
   useEffect(() => {
@@ -384,7 +555,7 @@ export default function App({ onOpenExports = () => {} }) {
       }
 
       setStatus('Preparing native audio…');
-      await setAudioModeAsync({ playsInSilentMode: true, allowsRecording: true, interruptionMode: 'doNotMix' });
+      await setAudioModeAsync({ playsInSilentMode: true, allowsRecording: true, allowsBackgroundRecording: true, interruptionMode: 'doNotMix' });
       await recorder.prepareToRecordAsync();
       let input = null;
       try {
@@ -394,8 +565,14 @@ export default function App({ onOpenExports = () => {} }) {
       }
       setInputName(input?.name || input?.type || 'Built-in microphone');
       recordingStartedAt.current = new Date().toISOString();
+      setSessionDurationMs(0);
+      setNativeRecordingConfirmed(false);
       hadRecorderSignalRef.current = false;
       unexpectedHandledRef.current = false;
+      if (unexpectedStopTimerRef.current) {
+        clearTimeout(unexpectedStopTimerRef.current);
+        unexpectedStopTimerRef.current = null;
+      }
       nativeStartRequested = true;
       recorder.record();
       saveActiveRecordingJournal({ title, startedAt: recordingStartedAt.current, sourceUri: recorder.uri || recorderState.url || null, durationMs: 0, marks: [], state: 'starting' });
@@ -404,7 +581,11 @@ export default function App({ onOpenExports = () => {} }) {
         await wait(100);
         try {
           const recorderStatus = typeof recorder.getStatus === 'function' ? await recorder.getStatus() : null;
-          if (recorderStatus?.isRecording) { confirmedActive = true; break; }
+          if (recorderStatus?.isRecording) {
+            confirmedActive = true;
+            setSessionDurationMs(Math.max(0, Number(recorderStatus.durationMillis || 0)));
+            break;
+          }
         } catch { /* Retry briefly while the native recorder settles. */ }
       }
       if (!confirmedActive) throw new Error('The microphone recorder did not confirm that it became active. LectureAI did not show this session as recording.');
@@ -412,8 +593,9 @@ export default function App({ onOpenExports = () => {} }) {
       setMarks([]);
       setPaused(false);
       setRecordingActive(true);
+      setNativeRecordingConfirmed(true);
       setLastSavedId('');
-      setStatus('Recording on-device · keep LectureAI open');
+      setStatus(RUNNING_IN_EXPO_GO ? 'Recording on-device · Expo Go background is best effort' : 'Recording · native background mode enabled');
     } catch (error) {
       recordingStartedAt.current = null;
       if (!nativeStartRequested) clearActiveRecordingJournal();
@@ -422,6 +604,7 @@ export default function App({ onOpenExports = () => {} }) {
       }
       setPaused(false);
       setRecordingActive(false);
+      setNativeRecordingConfirmed(false);
       setStatus('Recording did not start');
       setWarning(`Recorder start failed: ${error instanceof Error ? error.message : 'Could not start recording.'}`);
     } finally {
@@ -429,36 +612,103 @@ export default function App({ onOpenExports = () => {} }) {
     }
   }
 
-  function pauseRecording() {
-    if (!recordingActive || paused) return;
+  async function pauseRecording() {
+    if (!recordingActive || paused || finalizingRef.current) return;
+
     pauseTransitionRef.current = true;
+    setWarning('');
+
     try {
       recorder.pause();
       setPaused(true);
-      void persistRecordingJournal('paused');
-      setStatus('Paused · same recording session preserved');
-    } catch {
-      setWarning('LectureAI could not pause cleanly. Finish and verify the recording if anything looks wrong.');
+      setNativeRecordingConfirmed(false);
+      await persistRecordingJournal('paused');
+      setStatus('Paused - same recording session preserved');
+    } catch (error) {
+      setWarning(
+        error instanceof Error
+          ? `LectureAI could not pause cleanly: ${error.message}`
+          : 'LectureAI could not pause cleanly. Finish and verify the recording if anything looks wrong.'
+      );
     } finally {
-      setTimeout(() => { pauseTransitionRef.current = false; }, 500);
+      setTimeout(() => {
+        pauseTransitionRef.current = false;
+      }, 250);
     }
   }
 
-  function resumeRecording() {
-    if (!recordingActive || !paused) return;
+  async function resumeRecording() {
+    if (!recordingActive || !paused || finalizingRef.current) return;
+
+    // If Continue is tapped immediately after Pause, wait briefly for the
+    // native pause transition instead of silently ignoring the tap.
+    for (let attempt = 0; attempt < 12 && pauseTransitionRef.current; attempt += 1) {
+      await wait(50);
+    }
+
+    if (
+      !recordingActiveRef.current
+      || !pausedRef.current
+      || finalizingRef.current
+    ) return;
+
+    pauseTransitionRef.current = true;
+    setWarning('');
+    setStatus('Continuing recording...');
+
     try {
       recorder.record();
+
+      let confirmedActive = false;
+
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        await wait(100);
+
+        try {
+          const nativeStatus =
+            typeof recorder.getStatus === 'function'
+              ? await recorder.getStatus()
+              : null;
+
+          if (nativeStatus?.isRecording) {
+            confirmedActive = true;
+            break;
+          }
+        } catch {
+          // Give the native recorder a short opportunity to settle.
+        }
+      }
+
+      if (!confirmedActive) {
+        throw new Error(
+          'The native recorder did not confirm that the paused session resumed.'
+        );
+      }
+
+      hadRecorderSignalRef.current = true;
       setPaused(false);
-      void persistRecordingJournal('recording');
-      setStatus('Recording continued');
-    } catch {
-      setWarning('LectureAI could not resume the same recording. Finish and verify what was captured.');
+      setNativeRecordingConfirmed(true);
+      await persistRecordingJournal('recording');
+      setStatus('Recording continued - same lecture');
+    } catch (error) {
+      setPaused(true);
+      setStatus('Paused - recording was not resumed');
+      setWarning(
+        `${error instanceof Error ? error.message : 'LectureAI could not resume the recording.'} ` +
+        'The lecture was not intentionally finished. Try Continue again, or use Finish & save to preserve what was recorded.'
+      );
+    } finally {
+      // Allow the 200 ms React Native recorder-state hook to catch up before
+      // unexpected-stop detection becomes active again.
+      setTimeout(() => {
+        pauseTransitionRef.current = false;
+      }, 600);
     }
   }
 
   function markMoment() {
     if (!recordingActive) return;
-    const timeMs = Math.max(0, recorderState.durationMillis || Math.round((recorder.currentTime || 0) * 1000));
+    const timeMs = Math.max(0, sessionDurationMs || 0, recorderState.durationMillis || 0, Math.round((recorder.currentTime || 0) * 1000));
     setMarks((current) => [...current, { id: newId(), timeMs, label: `Important moment ${current.length + 1}` }]);
   }
 
@@ -472,6 +722,7 @@ export default function App({ onOpenExports = () => {} }) {
       await deactivateKeepAwake();
       setRecordingActive(false);
       setPaused(false);
+      setNativeRecordingConfirmed(false);
       await preserveRecorderOutput({ unexpected: false });
     } catch (error) {
       await deactivateKeepAwake();
@@ -700,6 +951,9 @@ export default function App({ onOpenExports = () => {} }) {
               title={title}
               setTitle={setTitle}
               recorderState={recorderState}
+              nativeRecordingConfirmed={nativeRecordingConfirmed}
+              foregroundRecorderChecking={foregroundRecorderChecking}
+              sessionDurationMs={sessionDurationMs}
               recordingActive={recordingActive}
               paused={paused}
               status={status}
@@ -783,13 +1037,13 @@ function PlaybackGate({ lecture, onPlaybackCheck, onVerify }) {
   );
 }
 
-function RecordScreen({ title, setTitle, recorderState, recordingActive, paused, status, warning, level, marks, inputName, freeDisk, lastSaved, player, playerStatus, onStart, onPause, onResume, onMark, onFinish, onVerify, onPlaybackCheck, onOpen, onShare }) {
+function RecordScreen({ title, setTitle, recorderState, nativeRecordingConfirmed, foregroundRecorderChecking, sessionDurationMs, recordingActive, paused, status, warning, level, marks, inputName, freeDisk, lastSaved, player, playerStatus, onStart, onPause, onResume, onMark, onFinish, onVerify, onPlaybackCheck, onOpen, onShare }) {
   // The UI is deliberately conservative: an outdated state hook can never keep the
   // red recording indication or old timer visible after the native recorder stops.
-  const liveRecorder = recordingActive && !paused && recorderState.isRecording;
-  const visibleSession = paused || liveRecorder;
-  const stateLabel = liveRecorder ? '● RECORDING' : paused ? 'PAUSED' : 'NOT RECORDING';
-  const displayedDuration = visibleSession ? recorderState.durationMillis : 0;
+  const liveRecorder = recordingActive && !paused && !foregroundRecorderChecking && (recorderState.isRecording || nativeRecordingConfirmed);
+  const visibleSession = paused || liveRecorder || (recordingActive && foregroundRecorderChecking);
+  const stateLabel = foregroundRecorderChecking ? 'CHECKING RECORDER' : liveRecorder ? '● RECORDING' : paused ? 'PAUSED' : 'NOT RECORDING';
+  const displayedDuration = visibleSession ? Math.max(sessionDurationMs || 0, recorderState.durationMillis || 0) : 0;
   return (
     <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
       <Text style={styles.eyebrow}>NATIVE AUDIO THROUGH EXPO GO</Text>
@@ -797,7 +1051,7 @@ function RecordScreen({ title, setTitle, recorderState, recordingActive, paused,
       <Text style={styles.lead}>SDK 57 records into document storage, then LectureAI preserves a protected copy before transcription, notes, or study processing can touch anything.</Text>
       <View style={styles.card}>
         <TextInput style={styles.titleInput} value={title} onChangeText={setTitle} editable={!recordingActive} placeholder="Lecture title" />
-        <View style={styles.statusRow} accessibilityLiveRegion="polite"><View style={[styles.statusDot, recordingActive && !paused && styles.statusDotLive]} /><Text style={styles.statusText}>{stateLabel} · {status}</Text></View>
+        <View style={styles.statusRow} accessibilityLiveRegion="polite"><View style={[styles.statusDot, liveRecorder && styles.statusDotLive]} /><Text style={styles.statusText}>{stateLabel} · {status}</Text></View>
         {inputName ? <Text style={styles.meta}>Input: {inputName}</Text> : null}
         <Text style={styles.timer}>{formatDuration(displayedDuration)}</Text>
         <View style={styles.meter}><View style={[styles.meterFill, { width: `${liveRecorder ? Math.max(1, level * 100) : 0}%` }]} /></View>
@@ -808,7 +1062,9 @@ function RecordScreen({ title, setTitle, recorderState, recordingActive, paused,
         <Text style={styles.infoTitle}>Recording safety</Text>
         <Text style={styles.infoText}>• Native Expo audio with 48 kHz / mono / 192 kbps preferences and SDK 57 document recording.</Text>
         <Text style={styles.infoText}>• Active-session recovery journal updates while recording, and unexpected recorder stops are detected and preserved when a file is available.</Text>
-        <Text style={styles.infoText}>• Keep Expo Go open during important lectures. Stock Expo Go cannot guarantee locked-screen/background recording.</Text>
+        <Text style={styles.infoText}>• Standalone/development/production LectureAI native builds enable iOS background audio recording. Switching to ordinary non-microphone apps should not pause or recreate this recording.</Text>
+        <Text style={styles.infoText}>• Stock Expo Go remains best-effort because this project cannot add native background capabilities to the Expo Go binary.</Text>
+        <Text style={styles.infoText}>• Calls, voice notes/calls, and camera video may take exclusive microphone control; LectureAI checks the native recorder on return and preserves any exposed original safely.</Text>
         <Text style={styles.infoText}>• Free device storage: {formatBytes(freeDisk)}.</Text>
       </View>
       {warning ? <View style={styles.warningCard}><Text style={styles.warningTitle}>Check this</Text><Text style={styles.warningText}>{warning}</Text></View> : null}

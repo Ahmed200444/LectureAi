@@ -8,6 +8,7 @@ const study = readFileSync(new URL('../expo-recorder/src/study.js', import.meta.
 const exportsSource = readFileSync(new URL('../expo-recorder/src/exports.js', import.meta.url), 'utf8');
 const journal = readFileSync(new URL('../expo-recorder/src/recording-journal.js', import.meta.url), 'utf8');
 const computer = readFileSync(new URL('../expo-recorder/src/computer.js', import.meta.url), 'utf8');
+const backgroundRecording = readFileSync(new URL('../expo-recorder/src/background-recording.js', import.meta.url), 'utf8');
 const engine = readFileSync(new URL('../local-ai/engine.py', import.meta.url), 'utf8');
 const server = readFileSync(new URL('../local-ai/server.py', import.meta.url), 'utf8');
 const pairing = readFileSync(new URL('../local-ai/pairing.py', import.meta.url), 'utf8');
@@ -27,7 +28,9 @@ assert.match(appJson, /"supportsTablet"\s*:\s*true/);
 assert.match(appJson, /"requireFullScreen"\s*:\s*false/);
 assert.match(appJson, /"targetAppleDevices"\s*:\s*\["iPhone",\s*"iPad"\]/);
 assert.match(appJson, /"enableBackgroundRecording"\s*:\s*true/);
+assert.match(appJson, /"UIBackgroundModes"\s*:\s*\["audio"\]/);
 assert.match(root, /allowsBackgroundRecording:\s*true/);
+assert.match(app, /allowsBackgroundRecording:\s*true/);
 assert.match(packageJson.scripts?.['build:ios:preview'] || '', /eas-cli@latest build --platform ios --profile preview/);
 
 // SDK 57 records into document storage rather than relying on a cache recording.
@@ -44,10 +47,19 @@ assert.match(app, /recorder\.record\(\)/);
 assert.match(app, /mediaServicesDidReset/);
 assert.match(app, /hadRecorderSignalRef/);
 assert.match(app, /unexpectedHandledRef/);
+assert.match(app, /unexpectedStopTimerRef/);
+assert.match(app, /appStateRef\.current !== 'active'/);
+assert.match(app, /foregroundReconcileRef\.current/);
+assert.match(app, /Recording · native recorder confirmed after app switch/);
+assert.match(backgroundRecording, /return isRecording \? 'recording' : 'stopped'/);
+assert.match(app, /recordingActiveRef\.current/);
+assert.match(app, /pausedRef\.current/);
+assert.match(app, /liveRecorder && styles\.statusDotLive/);
+assert.match(app, /The native recorder did not confirm that the paused session resumed/);
 assert.match(app, /unexpected-recorder-stop/);
 assert.match(app, /preserveRecorderOutput\(\{ unexpected: true \}\)/);
-assert.doesNotMatch(app, /allowsBackgroundRecording:\s*true/);
-assert.match(app, /Expo Go cannot guarantee locked-screen\/background recording/);
+assert.match(app, /allowsBackgroundRecording:\s*true/);
+assert.match(app, /Stock Expo Go cannot guarantee background recording/);
 
 // SDK57 optional APIs must never block microphone start.
 assert.match(app, /typeof recorder\.getCurrentInput === 'function'/);
