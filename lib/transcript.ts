@@ -9,6 +9,14 @@ function guessLanguage(text: string): TranscriptSegment['detectedLanguage'] {
   return 'unknown';
 }
 
+/** Remove model protocol/control markers before transcript text reaches storage or notes. */
+export function sanitizeTranscriptText(value: unknown) {
+  return String(value ?? '')
+    .replace(/<\|(?:startoftranscript|endoftext|transcribe|translate|notimestamps|[a-z]{2}|\d+(?:\.\d+)?)\|>/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 type ImportedSegment = {
   id?: unknown;
   start?: unknown;
@@ -34,7 +42,7 @@ export function normalizeTranscript(input: unknown, lectureId: string): Transcri
   // Extremely large transcripts are limited only by the browser/device resources available.
   const normalized = root.segments.map((raw, index) => {
     const segment = raw as ImportedSegment;
-    const originalText = String(segment.text ?? segment.originalText ?? '').trim();
+    const originalText = sanitizeTranscriptText(segment.text ?? segment.originalText);
     const startTime = Number(segment.start ?? segment.startTime);
     const endTime = Number(segment.end ?? segment.endTime);
     if (!originalText || !Number.isFinite(startTime) || !Number.isFinite(endTime) || startTime < 0 || endTime < startTime) {
@@ -61,7 +69,10 @@ export function normalizeTranscript(input: unknown, lectureId: string): Transcri
       detectedLanguage,
       confidence,
       manuallyReviewed: segment.manuallyReviewed === true,
-      speaker: typeof segment.speaker === 'string' ? segment.speaker.slice(0, 50) : 'Professor',
+      // A timestamped ASR/import transcript is not speaker diarization. Preserve an
+      // explicit imported label, otherwise use a neutral label instead of claiming
+      // the professor spoke every segment (student questions may be present).
+      speaker: typeof segment.speaker === 'string' && segment.speaker.trim() ? segment.speaker.slice(0, 50) : 'Speaker',
     } satisfies TranscriptSegment;
   });
 

@@ -14,6 +14,7 @@ const MODELS: Record<Direction, string> = {
   'en-ar': 'Xenova/opus-mt-en-ar',
   'ar-en': 'Xenova/opus-mt-ar-en',
 };
+const BATCH_SIZE = 12;
 
 env.allowLocalModels = false;
 env.allowRemoteModels = true;
@@ -55,15 +56,33 @@ function translationText(value: unknown): string {
   return '';
 }
 
+async function translateInBatches(translator: Translator, texts: string[]) {
+  const translations: string[] = [];
+  for (let start = 0; start < texts.length; start += BATCH_SIZE) {
+    const batch = texts.slice(start, start + BATCH_SIZE);
+    const output = await translator(batch) as unknown;
+    const list = Array.isArray(output) ? output : [output];
+    translations.push(...batch.map((original, index) => translationText(list[index]) || original));
+    const done = Math.min(texts.length, start + batch.length);
+    workerScope.postMessage({
+      type: 'translation-progress',
+      progress: Math.round((done / texts.length) * 100),
+      message: `Translated ${done} of ${texts.length} language spans locally…`,
+    });
+    // Yield briefly between batches so long lectures do not monopolize the worker
+    // event loop and keep temporary model output alive longer than necessary.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  return translations;
+}
+
 workerScope.addEventListener('message', async (event: MessageEvent<WorkerRequest>) => {
   const { id, direction, texts } = event.data;
   try {
     if (!Array.isArray(texts) || !texts.length) throw new Error('No transcript text was provided for translation.');
     const translator = await getTranslator(direction);
     workerScope.postMessage({ type: 'model-ready', model: MODELS[direction] });
-    const output = await translator(texts) as unknown;
-    const list = Array.isArray(output) ? output : [output];
-    const translations = texts.map((original, index) => translationText(list[index]) || original);
+    const translations = await translateInBatches(translator, texts);
     workerScope.postMessage({ type: 'result', id, payload: { translations, model: MODELS[direction] } });
   } catch (error) {
     workerScope.postMessage({ type: 'error', id, message: error instanceof Error ? error.message : 'Local translation failed.' });

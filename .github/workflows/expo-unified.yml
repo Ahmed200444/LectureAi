@@ -1,0 +1,89 @@
+name: LectureAI Expo Go CI
+
+on:
+  push:
+    branches: [expo-unified-lectureai]
+    paths:
+      - 'expo-recorder/**'
+      - 'tests/expo-unified-safeguards.ts'
+      - '.github/workflows/expo-unified.yml'
+  pull_request:
+    paths:
+      - 'expo-recorder/**'
+      - 'tests/expo-unified-safeguards.ts'
+      - '.github/workflows/expo-unified.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  expo-go-ios:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: expo-recorder
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: expo-recorder/package.json
+
+      - name: Install Expo project dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Verify Expo SDK dependency compatibility
+        run: npx expo install --check
+
+      - name: Run Expo project doctor
+        run: npm run doctor
+
+      - name: Bundle iOS project
+        run: npx expo export --platform ios --output-dir dist-ios
+
+      - name: Verify iOS bundle output
+        run: test -d dist-ios && test -f dist-ios/metadata.json
+
+  expo-go-android:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: expo-recorder
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Expo project dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Verify Expo SDK dependency compatibility
+        run: npx expo install --check
+
+      - name: Bundle Android project
+        run: npx expo export --platform android --output-dir dist-android
+
+      - name: Verify Android bundle output
+        run: test -d dist-android && test -f dist-android/metadata.json
+
+  source-zip:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Upload final LectureAI source ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: LectureAI-final-expo-unified
+          path: |
+            .
+            !.git/**
+            !node_modules/**
+            !expo-recorder/node_modules/**
+            !dist/**
+            !expo-recorder/dist-ios/**
+            !expo-recorder/dist-android/**
+          include-hidden-files: true
+          if-no-files-found: error
+          compression-level: 9

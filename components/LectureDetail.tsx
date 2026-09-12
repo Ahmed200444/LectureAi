@@ -7,6 +7,7 @@ import { downloadBlob, exportDocx, exportMarkdown, exportTranscriptText, printPd
 import { detectDirection, formatBytes, formatDuration, formatTime, friendlyDate } from '../lib/format';
 import { transcribeOnPhone } from '../lib/phone-transcription';
 import { normalizeTranscript } from '../lib/transcript';
+import { translateTranscriptView } from '../lib/translation';
 import { completeTranscription, phoneTranscriptionSupported, transcribeWithWindowsHelper, windowsHelperAvailable } from '../lib/transcription';
 import type { AppSettings, Course, Lecture, TranscriptSegment } from '../lib/types';
 import { detectDeviceKind, deviceLabel, recordingFileExtension } from '../lib/device';
@@ -77,7 +78,13 @@ export function LectureDetail({ lecture, course, settings, onSettingsChange, fol
     return () => { cancelled = true; window.clearInterval(timer); };
   }, []);
 
-  const currentSegments = useMemo(() => tab === 'english' ? lecture.englishTranslation : tab === 'arabic' ? lecture.arabicTranslation : lecture.segments, [lecture, tab]);
+  const transcriptVersion = Number(lecture.transcriptVersion || 0);
+  const translationsFresh = Boolean(lecture.translationSourceVersion) && Number(lecture.translationSourceVersion) === transcriptVersion;
+  const currentSegments = useMemo(() => {
+    if (tab === 'english') return translationsFresh ? lecture.englishTranslation : [];
+    if (tab === 'arabic') return translationsFresh ? lecture.arabicTranslation : [];
+    return lecture.segments;
+  }, [lecture.arabicTranslation, lecture.englishTranslation, lecture.segments, tab, translationsFresh]);
   const activeSegment = useMemo(() => currentSegments.find((segment) => currentTime >= segment.startTime && currentTime < segment.endTime) || null, [currentSegments, currentTime]);
   const uncertain = useMemo(() => lecture.segments.filter(needsReview), [lecture.segments]);
 
@@ -96,8 +103,29 @@ export function LectureDetail({ lecture, course, settings, onSettingsChange, fol
   function nudge(delta: number) { seek(Math.max(0, Math.min(lecture.duration || 0, currentTime + delta))); }
 
   async function updateSegment(segmentId: string, patch: Partial<TranscriptSegment>) {
-    const segments = lecture.segments.map((segment) => segment.id === segmentId ? { ...segment, ...patch } : segment);
-    await onChange({ ...lecture, segments, statusMessage: 'Transcript edit saved locally', updatedAt: new Date().toISOString() });
+    const existing = lecture.segments.find((segment) => segment.id === segmentId);
+    const currentText = (existing?.editedText || existing?.originalText || '').trim();
+    const nextText = typeof patch.editedText === 'string' ? patch.editedText.trim() : currentText;
+    const textChanged = typeof patch.editedText === 'string' && nextText !== currentText;
+    const segments = lecture.segments.map((segment) => segment.id === segmentId ? { ...segment, ...patch, ...(typeof patch.editedText === 'string' ? { editedText: nextText } : {}) } : segment);
+    if (!textChanged) {
+      await onChange({ ...lecture, segments, statusMessage: 'Transcript review saved locally', updatedAt: new Date().toISOString() });
+      return;
+    }
+
+    const nextVersion = transcriptVersion + 1;
+    await onChange({
+      ...lecture,
+      segments,
+      transcriptVersion: nextVersion,
+      englishTranslation: [],
+      arabicTranslation: [],
+      translationSourceVersion: undefined,
+      derivedContentStale: true,
+      statusMessage: 'Transcript correction saved · generated translations and notes need updating',
+      updatedAt: new Date().toISOString(),
+    });
+    onToast('Transcript corrected. Existing notes are preserved but marked stale; translations were cleared so old text cannot be mistaken for current output.', 'success');
   }
 
   async function importTranscript(file: File) {
@@ -115,6 +143,30 @@ export function LectureDetail({ lecture, course, settings, onSettingsChange, fol
     } catch (error) {
       onToast(error instanceof Error ? error.message : 'Could not import transcript.', 'warning');
     } finally { setProcessing(''); }
+  }
+
+  async function generateTranslation(target: 'en' | 'ar') {
+    if (!lecture.segments.length) return onToast('A transcript is required before translation.', 'warning');
+    const label = target === 'en' ? 'English' : 'Arabic';
+    try {
+      setProcessing(`Preparing local ${label} translation…`);
+      const translated = await translateTranscriptView(lecture.segments, target, ({ message }) => setProcessing(message));
+      const currentVersion = Number(lecture.transcriptVersion || 0);
+      await onChange({
+        ...lecture,
+        ...(target === 'en' ? { englishTranslation: translated } : { arabicTranslation: translated }),
+        translationSourceVersion: currentVersion,
+        derivedContentStale: Number(lecture.notesSourceVersion || 0) !== currentVersion,
+        statusMessage: `${label} translation generated locally from transcript version ${currentVersion}`,
+        updatedAt: new Date().toISOString(),
+      });
+      setTab(target === 'en' ? 'english' : 'arabic');
+      onToast(`${label} translation generated locally. The original multilingual transcript is unchanged.`, 'success');
+    } catch (error) {
+      onToast(error instanceof Error ? error.message : `Could not generate the ${label} translation.`, 'warning');
+    } finally {
+      setProcessing('');
+    }
   }
 
   async function runComputerTranscription() {
@@ -235,12 +287,13 @@ export function LectureDetail({ lecture, course, settings, onSettingsChange, fol
         </div>
         <div className={`processing-strip status-${lecture.status}`}><span>{processing || lecture.statusMessage || lecture.status}</span>{typeof lecture.processingProgress === 'number' && lecture.processingProgress < 100 && <div className="processing-progress" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={lecture.processingProgress}><i style={{ width: `${lecture.processingProgress}%` }} /></div>}{lecture.status === 'interrupted' && <button onClick={recoverRecording}><RotateCcw size={14} /> Recover recording</button>}</div>
         {detectDeviceKind() === 'windows' && <div className={`helper-status ${helperReady ? 'ready' : helperReady === false ? 'offline' : 'checking'}`}><span>Computer Transcription Engine</span><strong>{helperReady ? 'Ready' : helperReady === false ? `Not connected — run ${window.location.hostname.endsWith('chatgpt.site') ? 'start-helper-for-hosted-site.bat' : 'start-lectureai.bat'}` : 'Checking…'}</strong>{helperReady === false && <button className="text-button" onClick={() => { setHelperReady(null); void windowsHelperAvailable().then(setHelperReady); }}>Check again</button>}</div>}
+        {lecture.derivedContentStale && <div className="inline-warning"><RotateCcw size={16} /><span>The transcript changed. Existing generated notes are preserved but marked stale, and old translations are hidden until regenerated from the corrected text.</span></div>}
         <div className="lecture-tabs" role="tablist">{tabs.map((item) => <button key={item.id} role="tab" aria-selected={tab === item.id} className={tab === item.id ? 'active' : ''} onClick={() => setTab(item.id)}>{item.label}{item.id === 'review' && uncertain.length > 0 && <b>{uncertain.length}</b>}</button>)}</div>
       </header>
 
       <section className="lecture-content">
         {(tab === 'english' || tab === 'arabic') && lecture.segments.length > 0 && currentSegments.length === 0
-          ? <section className="empty-state translation-empty"><Languages size={34} /><h2>{tab === 'english' ? 'English translation not generated yet' : 'الترجمة العربية غير مُنشأة بعد'}</h2><p>{tab === 'english' ? 'Your original English/Egyptian Arabic/MSA transcript is preserved. This build does not silently invent a translation without a verified local translation model.' : 'النص الأصلي بالإنجليزية والمصرية والعربية الفصحى محفوظ. هذا الإصدار لا ينشئ ترجمة غير موثوقة تلقائيًا.'}</p><button className="secondary-button" onClick={() => setTab('original')}>View original transcript</button></section>
+          ? <section className="empty-state translation-empty"><Languages size={34} /><h2>{!translationsFresh ? (tab === 'english' ? 'English translation needs updating' : 'الترجمة العربية تحتاج إلى تحديث') : (tab === 'english' ? 'English translation not generated yet' : 'الترجمة العربية غير مُنشأة بعد')}</h2><p>{tab === 'english' ? 'The original English/Egyptian Arabic/MSA transcript is preserved. Generate a local translation from the current corrected transcript; mixed technical English terms are preserved span-by-span where possible.' : 'النص الأصلي بالإنجليزية والمصرية والعربية الفصحى محفوظ. يمكنك إنشاء ترجمة محلية من النسخة المصححة الحالية دون تغيير النص الأصلي.'}</p><div className="button-row"><button className="primary-button" onClick={() => void generateTranslation(tab === 'english' ? 'en' : 'ar')}><Languages size={16} /> {tab === 'english' ? 'Generate English translation' : 'إنشاء الترجمة العربية'}</button><button className="secondary-button" onClick={() => setTab('original')}>View original transcript</button></div></section>
           : (tab === 'original' || tab === 'corrected' || tab === 'english' || tab === 'arabic') && <TranscriptView segments={currentSegments} editable={tab === 'corrected'} activeId={activeSegment?.id} activeRef={activeRef} onSeek={seek} onEdit={updateSegment} lecture={lecture} onComputer={runComputerTranscription} onPhone={runPhoneTranscription} onImport={() => importRef.current?.click()} />}
         {tab === 'notes' && <NotesEditor lecture={lecture} onSave={onChange} onSeek={seek} />}
         {tab === 'review' && <ReviewPanel segments={uncertain} onSeek={seek} onEdit={updateSegment} />}
@@ -281,7 +334,7 @@ function TranscriptView({ segments, editable, activeId, activeRef, onSeek, onEdi
     return <div key={segment.id} ref={active ? activeRef : undefined} className={`transcript-row ${active ? 'active' : ''} ${uncertain ? 'uncertain' : ''}`}>
       <button className="timestamp" onClick={() => onSeek(segment.startTime, true)}><span>{formatTime(segment.startTime)}</span><small>{formatTime(segment.endTime)}</small></button>
       <div className="segment-copy" onClick={!editable ? () => onSeek(segment.startTime, true) : undefined} role={!editable ? 'button' : undefined} tabIndex={!editable ? 0 : undefined} onKeyDown={!editable ? (event) => { if (event.key === 'Enter' || event.key === ' ') onSeek(segment.startTime, true); } : undefined}>
-        <div className="speaker-line"><strong>{segment.speaker || 'Professor'}</strong><span>{segment.detectedLanguage === 'mixed' ? 'EN + مصري' : segment.detectedLanguage.toUpperCase()}</span>{uncertain && <span className="confidence-low"><AlertTriangle size={12} /> {confidence === undefined ? 'Verify against audio' : `${Math.round(confidence * 100)}% · verify`}</span>}{segment.manuallyReviewed && <span className="reviewed"><Check size={12} /> Reviewed</span>}</div>
+        <div className="speaker-line"><strong>{segment.speaker || 'Speaker'}</strong><span>{segment.detectedLanguage === 'mixed' ? 'EN + مصري' : segment.detectedLanguage.toUpperCase()}</span>{uncertain && <span className="confidence-low"><AlertTriangle size={12} /> {confidence === undefined ? 'Verify against audio' : `${Math.round(confidence * 100)}% · verify`}</span>}{segment.manuallyReviewed && <span className="reviewed"><Check size={12} /> Reviewed</span>}</div>
         {editable ? <textarea dir={detectDirection(segment.editedText)} defaultValue={segment.editedText} onBlur={(event) => onEdit(segment.id, { editedText: event.target.value })} aria-label={`Edit transcript at ${formatTime(segment.startTime)}`} /> : <p dir="auto">{segment.originalText}</p>}
       </div>
     </div>;

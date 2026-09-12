@@ -17,16 +17,8 @@ jobs:
         with:
           node-version: 22
 
-      - name: Install dependencies
-        shell: bash
-        run: |
-          set -euo pipefail
-          for attempt in 1 2 3; do
-            if npm install --include=dev --no-audit --no-fund && npm install --no-save @vitejs/plugin-react@6.0.2 --no-audit --no-fund; then exit 0; fi
-            if [ "$attempt" = 3 ]; then exit 1; fi
-            rm -rf node_modules
-            sleep 5
-          done
+      - name: Install locked dependencies
+        run: npm ci --include=dev --no-audit --no-fund
 
       - run: npm run typecheck
       - run: npm run lint
@@ -36,8 +28,12 @@ jobs:
       - name: Verify production output
         run: test -f dist/client/index.html && test -f dist/client/manifest.webmanifest && test -f dist/client/sw.js
 
-      - name: Check Windows helper Python syntax
-        run: python -m py_compile local-ai/*.py benchmarks/evaluate.py
+      - name: Check Windows helper and benchmark Python
+        run: |
+          python -m py_compile local-ai/*.py benchmarks/evaluate.py benchmarks/test_evaluate.py
+          python benchmarks/test_evaluate.py
+          (cd local-ai && python test_pairing.py)
+          (cd local-ai && python test_audio_enhancement.py)
 
       - name: Smoke test built site
         shell: bash

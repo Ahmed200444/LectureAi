@@ -129,20 +129,27 @@ export async function verifyMicrophoneCapture(stream: MediaStream, timeoutMs = 1
 
 type PlaybackProbeResult = { duration?: number; browserDecoded: boolean };
 
-async function probePlayableAudioUrl(url: string, timeoutMs: number): Promise<PlaybackProbeResult> {
+/**
+ * Reload one Blob URL in a fresh media element and force decoding at a requested
+ * relative location. Seeking matters for long lectures: a playable header/start does
+ * not prove that media near the middle/end was assembled correctly.
+ */
+async function probePlayableAudioUrl(url: string, timeoutMs: number, positionFraction = 0.02): Promise<PlaybackProbeResult> {
   const audio = new Audio();
   audio.preload = 'auto';
 
   return new Promise<PlaybackProbeResult>((resolve, reject) => {
     let settled = false;
     let verificationTimer: number | undefined;
+    let targetSeekRequested = false;
+    let targetSeekReached = false;
 
     const cleanUp = () => {
       if (verificationTimer !== undefined) window.clearTimeout(verificationTimer);
       audio.removeEventListener('loadedmetadata', onMetadata);
       audio.removeEventListener('loadeddata', onDecodeReady);
       audio.removeEventListener('canplay', onDecodeReady);
-      audio.removeEventListener('seeked', onDecodeReady);
+      audio.removeEventListener('seeked', onSeeked);
       audio.removeEventListener('error', onError);
     };
 
@@ -154,7 +161,7 @@ async function probePlayableAudioUrl(url: string, timeoutMs: number): Promise<Pl
     };
 
     const finishIfStillPlayable = () => {
-      if (settled) return;
+      if (settled || (targetSeekRequested && !targetSeekReached)) return;
       verificationTimer = window.setTimeout(() => {
         if (settled) return;
         if (audio.error || audio.networkState === HTMLMediaElement.NETWORK_NO_SOURCE || audio.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
@@ -169,19 +176,34 @@ async function probePlayableAudioUrl(url: string, timeoutMs: number): Promise<Pl
     };
 
     const onMetadata = () => {
-      // Metadata alone is not proof that Safari can decode the media. Nudge the
-      // decoder with a tiny seek when possible, then wait for decoded media data.
-      if (Number.isFinite(audio.duration) && audio.duration > 0.08) {
-        try { audio.currentTime = Math.min(0.05, audio.duration / 4); } catch { /* canplay/loadeddata remain authoritative */ }
+      if (!Number.isFinite(audio.duration) || audio.duration <= 0) return;
+      const safeDuration = audio.duration;
+      const target = safeDuration > 0.25
+        ? Math.min(Math.max(0.05, safeDuration * Math.max(0, Math.min(0.98, positionFraction))), Math.max(0.05, safeDuration - 0.08))
+        : 0;
+      if (target > 0.02) {
+        targetSeekRequested = true;
+        try {
+          audio.currentTime = target;
+        } catch {
+          fail('The saved recording could not seek to a verification point.');
+        }
+      } else {
+        targetSeekReached = true;
+        finishIfStillPlayable();
       }
     };
     const onDecodeReady = () => finishIfStillPlayable();
+    const onSeeked = () => {
+      targetSeekReached = true;
+      finishIfStillPlayable();
+    };
     const onError = () => fail('The saved recording format could not be decoded on this device.');
 
     audio.addEventListener('loadedmetadata', onMetadata);
     audio.addEventListener('loadeddata', onDecodeReady);
     audio.addEventListener('canplay', onDecodeReady);
-    audio.addEventListener('seeked', onDecodeReady);
+    audio.addEventListener('seeked', onSeeked);
     audio.addEventListener('error', onError, { once: true });
 
     window.setTimeout(() => fail('The saved recording could not be reloaded for playback.'), timeoutMs);
@@ -196,11 +218,16 @@ export async function validatePlayableAudio(blob: Blob, timeoutMs = 9000) {
   const isWindowsImportedFile = typeof File !== 'undefined' && blob instanceof File && detectDeviceKind() === 'windows';
   try {
     try {
-      const firstProbe = await probePlayableAudioUrl(url, timeoutMs);
-      // Safari has shown cases where metadata/canplay succeeds once but a fresh media
-      // element immediately reports a source/decode error. Verify with a second fresh
-      // element before deleting checkpoint chunks and calling the lecture safely saved.
-      if (!isWindowsImportedFile) await probePlayableAudioUrl(url, Math.min(timeoutMs, 6000));
+      const firstProbe = await probePlayableAudioUrl(url, timeoutMs, 0.02);
+      if (!isWindowsImportedFile) {
+        // Use fresh media elements for independent decode/seek checks. For a long
+        // lecture, verify start, middle, and near-end before recovery checkpoints are
+        // allowed to be deleted by the recorder.
+        await probePlayableAudioUrl(url, Math.min(timeoutMs, 6000), 0.5);
+        if ((firstProbe.duration || 0) >= 20) {
+          await probePlayableAudioUrl(url, Math.min(timeoutMs, 6000), 0.92);
+        }
+      }
       return firstProbe;
     } catch (error) {
       // Chrome/Edge can reject a transferred iPhone container that FFmpeg can still

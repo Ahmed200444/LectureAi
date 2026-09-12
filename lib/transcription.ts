@@ -124,12 +124,16 @@ export function completeTranscription(lecture: Lecture, payload: unknown, engine
   const translationWarnings = Array.isArray(payloadRecord.translationWarnings)
     ? payloadRecord.translationWarnings.filter((value): value is string => typeof value === 'string' && Boolean(value.trim()))
     : [];
+  const transcriptVersion = Number(lecture.transcriptVersion || 0) + 1;
 
   const withTranscript: Lecture = {
     ...lecture,
     segments,
     englishTranslation,
     arabicTranslation,
+    transcriptVersion,
+    translationSourceVersion: englishTranslation.length || arabicTranslation.length ? transcriptVersion : undefined,
+    derivedContentStale: false,
     duration: Math.max(lecture.duration, segments.at(-1)?.endTime || 0),
     status: 'generating-notes',
     statusMessage: 'Transcript complete · generating editable lecture notes',
@@ -145,6 +149,8 @@ export function completeTranscription(lecture: Lecture, payload: unknown, engine
     ...withTranscript,
     notesOriginal: notes,
     notesCurrent: notes,
+    notesSourceVersion: transcriptVersion,
+    derivedContentStale: false,
     noteVersions: [...withTranscript.noteVersions, { id: crypto.randomUUID(), html: notes, createdAt: new Date().toISOString(), label: 'Original generated notes' }],
     status: 'done' as const,
     statusMessage: `${segments.length} timestamped segment${segments.length === 1 ? '' : 's'} ready${translationStatus} · editable notes generated · model: ${actualModel}`,

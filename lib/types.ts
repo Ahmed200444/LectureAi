@@ -70,6 +70,14 @@ export interface Lecture {
   processingProgress?: number;
   transcriptionEngine?: 'windows' | 'phone' | 'import';
   transcriptionModel?: string;
+  /** Increments whenever the source transcript text is replaced or corrected. */
+  transcriptVersion?: number;
+  /** Transcript version used to build the currently stored translation view(s). */
+  translationSourceVersion?: number;
+  /** Transcript version used to build the current generated notes. */
+  notesSourceVersion?: number;
+  /** True when transcript corrections make generated notes/derived views stale. */
+  derivedContentStale?: boolean;
   segments: TranscriptSegment[];
   englishTranslation: TranscriptSegment[];
   arabicTranslation: TranscriptSegment[];

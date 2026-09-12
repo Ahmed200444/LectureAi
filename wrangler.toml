@@ -1,0 +1,4 @@
+name = "lecture-ai"
+pages_build_output_dir = "./dist/client"
+compatibility_date = "2026-09-03"
+send_metrics = false

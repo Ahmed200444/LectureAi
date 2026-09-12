@@ -2,6 +2,9 @@ import type { TranscriptSegment } from './types.ts';
 import type { TranscriptionProgress } from './transcription.ts';
 
 type TargetLanguage = 'en' | 'ar';
+type Script = TargetLanguage | 'neutral';
+type TranslationPiece = { text: string; script: Script; translationIndex?: number };
+type TranslationPlan = { segmentIndex: number; pieces: TranslationPiece[] };
 type WorkerMessage = {
   type: 'model-progress' | 'model-ready' | 'result' | 'error';
   id?: string;
@@ -18,6 +21,80 @@ function shouldTranslate(segment: TranscriptSegment, target: TargetLanguage) {
   return segment.detectedLanguage === 'en' || segment.detectedLanguage === 'mixed';
 }
 
+function charScript(character: string): Script {
+  if (/[\u0600-\u06FF]/.test(character)) return 'ar';
+  if (/[A-Za-z]/.test(character)) return 'en';
+  return 'neutral';
+}
+
+function splitScriptRuns(value: string): TranslationPiece[] {
+  const pieces: TranslationPiece[] = [];
+  let currentScript: Exclude<Script, 'neutral'> | null = null;
+  let buffer = '';
+  const flush = () => {
+    if (!buffer) return;
+    pieces.push({ text: buffer, script: currentScript || 'neutral' });
+    buffer = '';
+  };
+  for (const character of value) {
+    const script = charScript(character);
+    if (script !== 'neutral' && currentScript && script !== currentScript) {
+      flush();
+      currentScript = script;
+    } else if (script !== 'neutral' && !currentScript) {
+      currentScript = script;
+    }
+    buffer += character;
+  }
+  flush();
+  return pieces;
+}
+
+function translationCore(value: string) {
+  const leading = value.match(/^\s*/)?.[0] || '';
+  const trailing = value.match(/\s*$/)?.[0] || '';
+  const core = value.slice(leading.length, value.length - trailing.length || undefined).trim();
+  return { leading, core, trailing };
+}
+
+function createPlans(segments: TranscriptSegment[], target: TargetLanguage) {
+  const texts: string[] = [];
+  const plans: TranslationPlan[] = [];
+
+  segments.forEach((segment, segmentIndex) => {
+    if (!shouldTranslate(segment, target)) return;
+    const source = (segment.editedText || segment.originalText).trim();
+    const pieces = splitScriptRuns(source);
+    const preserveMixedEnglish = target === 'ar' && segment.detectedLanguage === 'mixed';
+
+    for (const piece of pieces) {
+      if (piece.script === 'neutral' || piece.script === target) continue;
+      // In Arabic lecture speech, English spans are often the professor's actual
+      // technical terminology (API, gradient, pointer, transformer, etc.). For a
+      // code-switched segment, preserve those spoken English spans in the Arabic
+      // convenience view instead of silently translating terminology the lecturer
+      // deliberately said in English.
+      if (preserveMixedEnglish && piece.script === 'en') continue;
+      const { core } = translationCore(piece.text);
+      if (!core) continue;
+      piece.translationIndex = texts.length;
+      texts.push(core);
+    }
+    if (pieces.some((piece) => piece.translationIndex !== undefined)) plans.push({ segmentIndex, pieces });
+  });
+
+  return { texts, plans };
+}
+
+function rebuildPlan(plan: TranslationPlan, translations: string[]) {
+  return plan.pieces.map((piece) => {
+    if (piece.translationIndex === undefined) return piece.text;
+    const { leading, core, trailing } = translationCore(piece.text);
+    const translated = String(translations[piece.translationIndex] || core).trim();
+    return `${leading}${translated}${trailing}`;
+  }).join('').replace(/\s+([,.;:!?،؛؟])/g, '$1').replace(/\s{2,}/g, ' ').trim();
+}
+
 export async function translateTranscriptView(
   segments: TranscriptSegment[],
   target: TargetLanguage,
@@ -25,11 +102,8 @@ export async function translateTranscriptView(
 ) {
   if (!segments.length) return [];
 
-  const candidates = segments
-    .map((segment, index) => ({ segment, index }))
-    .filter(({ segment }) => shouldTranslate(segment, target));
-
-  if (!candidates.length) {
+  const { texts, plans } = createPlans(segments, target);
+  if (!texts.length) {
     return segments.map((segment) => ({
       ...segment,
       id: `${segment.id}-translation-${target}`,
@@ -41,7 +115,6 @@ export async function translateTranscriptView(
   const id = `translate-${target}-${crypto.randomUUID()}`;
   const worker = new Worker(new URL('./translation.worker.ts', import.meta.url), { type: 'module', name: `lectureai-${target}-translation` });
   const direction = target === 'en' ? 'ar-en' : 'en-ar';
-  const texts = candidates.map(({ segment }) => (segment.editedText || segment.originalText).trim());
 
   const translations = await new Promise<string[]>((resolve, reject) => {
     const cleanUp = () => {
@@ -62,7 +135,7 @@ export async function translateTranscriptView(
         const downloaded = message.total ? ` · ${Math.round((message.loaded || 0) / 1024 / 1024)} of ${Math.round(message.total / 1024 / 1024)} MB` : '';
         onProgress({ progress: Math.max(5, Math.min(70, Math.round((message.progress || 0) * .65) + 5)), message: `Loading local ${target === 'en' ? 'Arabic → English' : 'English → Arabic'} translation model${downloaded}…` });
       } else if (message.type === 'model-ready') {
-        onProgress({ progress: 74, message: `Local translation model ready · translating ${candidates.length} segment${candidates.length === 1 ? '' : 's'}…` });
+        onProgress({ progress: 74, message: `Local translation model ready · translating ${texts.length} language span${texts.length === 1 ? '' : 's'} while preserving code-switched source terminology…` });
       } else if (message.id === id && message.type === 'result') {
         const result = message.payload?.translations;
         if (!Array.isArray(result) || result.length !== texts.length) {
@@ -81,16 +154,16 @@ export async function translateTranscriptView(
     worker.postMessage({ id, direction, texts });
   });
 
-  onProgress({ progress: 96, message: `Assembling ${target === 'en' ? 'English' : 'Arabic'} translation…` });
-  const translatedByIndex = new Map(candidates.map((candidate, index) => [candidate.index, translations[index]]));
+  onProgress({ progress: 96, message: `Assembling ${target === 'en' ? 'English' : 'Arabic'} translation while preserving code-switched source spans…` });
+  const translatedByIndex = new Map(plans.map((plan) => [plan.segmentIndex, rebuildPlan(plan, translations)]));
 
   return segments.map((segment, index) => {
-    const text = translatedByIndex.get(index) || (segment.editedText || segment.originalText);
+    const translatedText = translatedByIndex.get(index) || (segment.editedText || segment.originalText);
     return {
       ...segment,
       id: `${segment.id}-translation-${target}`,
-      originalText: text,
-      editedText: text,
+      originalText: translatedText,
+      editedText: translatedText,
       detectedLanguage: target,
       confidence: undefined,
       manuallyReviewed: false,

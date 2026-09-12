@@ -74,7 +74,8 @@ assert.match(recorder, /delayed a recording checkpoint/);
 assert.match(recorder, /did not mark this lecture as safely saved/);
 assert.doesNotMatch(app, /8 GB local safety limit/);
 assert.match(app, /no artificial recording-duration, transcript-length, segment-count, or monthly-minute quota/);
-assert.doesNotMatch(helper, /MAX_UPLOAD_BYTES|8 GB local safety limit/);
+assert.match(helper, /MAX_UPLOAD_BYTES = 8 \* 1024 \* 1024 \* 1024/);
+assert.match(helper, /total > MAX_UPLOAD_BYTES/);
 assert.match(helper, /ensure_upload_space/);
 
 // Multilingual browser transcription keeps automatic language handling and the existing
