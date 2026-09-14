@@ -8,7 +8,10 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-import numpy as np
+try:
+    import numpy as np
+except ModuleNotFoundError:  # The legacy whole-file integrity API does not need NumPy.
+    np = None
 
 
 SAMPLE_RATE = 16_000
@@ -359,6 +362,8 @@ def _bounded_speech_gain(samples: np.ndarray, mode: str, noise_rms: float) -> tu
 
 def enhance_speech_pcm(samples: np.ndarray, mode: str) -> tuple[np.ndarray, dict[str, Any]]:
     """Prioritize intelligible speech on a derived PCM copy only."""
+    if np is None:
+        raise RuntimeError("NumPy is required for bounded speech enhancement.")
     requested_mode = str(mode or "balanced").strip().lower()
     if requested_mode not in {"balanced", "strong"}:
         raise ValueError("Speech enhancement mode must be balanced or strong.")
