@@ -17,6 +17,49 @@ export function sanitizeTranscriptText(value: unknown) {
     .trim();
 }
 
+function comparisonText(value: string) {
+  return value.toLocaleLowerCase().replace(/[^\p{L}\p{N}+#.]+/gu, ' ').trim();
+}
+
+function overlapRatio(left: TranscriptSegment, right: TranscriptSegment) {
+  const overlap = Math.max(0, Math.min(left.endTime, right.endTime) - Math.max(left.startTime, right.startTime));
+  const shorter = Math.min(left.endTime - left.startTime, right.endTime - right.startTime);
+  return shorter > 0 ? overlap / shorter : 0;
+}
+
+/**
+ * Remove only high-certainty duplicate rows produced by overlapping ASR windows.
+ * Different wording is always retained, even when timestamps overlap, so a merge
+ * can never silently discard professor speech near a chunk boundary.
+ */
+export function reconcileTranscriptSegments(segments: TranscriptSegment[]) {
+  const reconciled: TranscriptSegment[] = [];
+  for (const segment of [...segments].sort((a, b) => a.startTime - b.startTime || a.endTime - b.endTime)) {
+    const previous = reconciled.at(-1);
+    const duplicate = previous
+      && comparisonText(previous.originalText) === comparisonText(segment.originalText)
+      && overlapRatio(previous, segment) >= 0.65;
+    if (!duplicate) {
+      reconciled.push(segment);
+      continue;
+    }
+    previous.startTime = Math.min(previous.startTime, segment.startTime);
+    previous.endTime = Math.max(previous.endTime, segment.endTime);
+    previous.manuallyReviewed ||= segment.manuallyReviewed;
+  }
+  return reconciled;
+}
+
+/** Keep ASR seek targets inside the verified media duration without rewriting text. */
+export function boundTranscriptToAudioDuration(segments: TranscriptSegment[], durationSeconds: number) {
+  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) return segments;
+  return segments.map((segment) => {
+    const startTime = Math.min(durationSeconds, Math.max(0, segment.startTime));
+    const endTime = Math.min(durationSeconds, Math.max(startTime, segment.endTime));
+    return { ...segment, startTime, endTime };
+  });
+}
+
 type ImportedSegment = {
   id?: unknown;
   start?: unknown;
@@ -40,6 +83,7 @@ export function normalizeTranscript(input: unknown, lectureId: string): Transcri
 
   // Do not impose an artificial transcript-length or segment-count quota.
   // Extremely large transcripts are limited only by the browser/device resources available.
+  const ids = new Set<string>();
   const normalized = root.segments.map((raw, index) => {
     const segment = raw as ImportedSegment;
     const originalText = sanitizeTranscriptText(segment.text ?? segment.originalText);
@@ -59,8 +103,11 @@ export function normalizeTranscript(input: unknown, lectureId: string): Transcri
     const detectedLanguage = ['en', 'ar', 'mixed'].includes(importedLanguage)
       ? importedLanguage as TranscriptSegment['detectedLanguage']
       : guessLanguage(originalText);
+    const id = typeof segment.id === 'string' ? segment.id : `${lectureId}-segment-${index + 1}`;
+    if (ids.has(id)) throw new Error(`Segment ${index + 1} has a duplicate ID.`);
+    ids.add(id);
     return {
-      id: typeof segment.id === 'string' ? segment.id : `${lectureId}-segment-${index + 1}`,
+      id,
       lectureId,
       startTime,
       endTime,
@@ -76,7 +123,7 @@ export function normalizeTranscript(input: unknown, lectureId: string): Transcri
     } satisfies TranscriptSegment;
   });
 
-  return normalized.sort((a, b) => a.startTime - b.startTime);
+  return reconcileTranscriptSegments(normalized);
 }
 
 export function toTranscriptJson(segments: TranscriptSegment[]) {

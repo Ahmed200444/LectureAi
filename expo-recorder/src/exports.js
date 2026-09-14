@@ -1,14 +1,6 @@
 import { File, Paths } from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
-
-function safeName(value) {
-  return String(value || 'Lecture')
-    .normalize('NFKC')
-    .replace(/[\\/:*?"<>|\u0000-\u001f]/g, '-')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 80) || 'Lecture';
-}
+import { lectureDisplayTitle, lectureExportFilename } from './lecture-metadata';
 
 function formatTime(seconds = 0) {
   const total = Math.max(0, Math.floor(Number(seconds) || 0));
@@ -61,14 +53,14 @@ function buildRows(segments, { includeSpeaker = true } = {}) {
 export function buildTranscriptText(lecture) {
   const rows = buildRows(lecture?.transcript || []);
   if (!rows.length) throw new Error('This lecture does not have a transcript to export.');
-  return `${safeName(lecture.title)}\n\n${rows.join('\n\n')}\n`;
+  return `${lectureDisplayTitle(lecture.title, lecture.createdAt)}\n\n${rows.join('\n\n')}\n`;
 }
 
 export function buildEnglishTranscriptText(lecture) {
   const rows = buildRows(lecture?.englishTranscript || []);
   if (!rows.length) throw new Error('This lecture does not have a preserved English transcript yet. Run Windows transcription first.');
   return [
-    `${safeName(lecture.title)} — English transcript`,
+    `${lectureDisplayTitle(lecture.title, lecture.createdAt)} — English transcript`,
     '',
     `Source language: ${String(lecture?.sourceLanguage || 'unknown')}`,
     `Method: ${String(lecture?.englishTranscriptMethod || 'faster-whisper')}`,
@@ -83,7 +75,7 @@ export function buildSourceTranscriptText(lecture) {
   const rows = buildRows(lecture?.sourceTranscript || []);
   if (!rows.length) throw new Error('This lecture does not have a preserved source-language transcript yet. Run Windows transcription first.');
   return [
-    `${safeName(lecture.title)} — Original-language transcript`,
+    `${lectureDisplayTitle(lecture.title, lecture.createdAt)} — Original-language transcript`,
     '',
     `Detected source language: ${String(lecture?.sourceLanguage || 'unknown')}`,
     lecture?.sourceLanguageProbability != null ? `Language detection probability: ${Number(lecture.sourceLanguageProbability).toFixed(3)}` : null,
@@ -100,7 +92,7 @@ export function buildNotesMarkdown(lecture) {
   }
   const pack = lecture.studyPack;
   return [
-    `# ${safeName(lecture.title)} — Notes`,
+    `# ${lectureDisplayTitle(lecture.title, lecture.createdAt)} — Notes`,
     '',
     'Generated from the current timestamped transcript. Original audio remains the source of truth.',
     '',
@@ -134,7 +126,7 @@ export function buildStudyMarkdown(lecture) {
   }
   const pack = lecture.studyPack;
   return [
-    `# ${safeName(lecture.title)} — Study Guide`,
+    `# ${lectureDisplayTitle(lecture.title, lecture.createdAt)} — Study Guide`,
     '',
     'Possible exam topics are review suggestions only; they are not claims about what will appear on an exam.',
     '',
@@ -192,16 +184,16 @@ export function buildLectureJson(lecture) {
   }, null, 2);
 }
 
-async function writeAndShare(lecture, suffix, extension, content, mimeType, UTI) {
+async function writeAndShare(lecture, label, extension, content, mimeType, UTI) {
   const available = await Sharing.isAvailableAsync();
   if (!available) throw new Error('The system share sheet is not available on this device.');
-  const filename = `${safeName(lecture?.title)}-${suffix}.${extension}`;
+  const filename = lectureExportFilename(lecture?.title, label, extension);
   const file = new File(Paths.cache, filename);
   if (file.exists) file.delete();
   file.create();
   file.write(content);
   await Sharing.shareAsync(file.uri, {
-    dialogTitle: `Export ${safeName(lecture?.title)}`,
+    dialogTitle: `Export ${lectureDisplayTitle(lecture?.title, lecture?.createdAt)}`,
     mimeType,
     UTI,
   });
@@ -209,25 +201,25 @@ async function writeAndShare(lecture, suffix, extension, content, mimeType, UTI)
 }
 
 export async function exportTranscript(lecture) {
-  return writeAndShare(lecture, 'transcript-current', 'txt', buildTranscriptText(lecture), 'text/plain', 'public.plain-text');
+  return writeAndShare(lecture, 'Transcript', 'txt', buildTranscriptText(lecture), 'text/plain', 'public.plain-text');
 }
 
 export async function exportEnglishTranscript(lecture) {
-  return writeAndShare(lecture, 'transcript-english', 'txt', buildEnglishTranscriptText(lecture), 'text/plain', 'public.plain-text');
+  return writeAndShare(lecture, 'English Transcript', 'txt', buildEnglishTranscriptText(lecture), 'text/plain', 'public.plain-text');
 }
 
 export async function exportSourceTranscript(lecture) {
-  return writeAndShare(lecture, 'transcript-source-language', 'txt', buildSourceTranscriptText(lecture), 'text/plain', 'public.plain-text');
+  return writeAndShare(lecture, 'Original Language Transcript', 'txt', buildSourceTranscriptText(lecture), 'text/plain', 'public.plain-text');
 }
 
 export async function exportNotes(lecture) {
-  return writeAndShare(lecture, 'notes', 'md', buildNotesMarkdown(lecture), 'text/markdown', 'net.daringfireball.markdown');
+  return writeAndShare(lecture, 'Notes', 'md', buildNotesMarkdown(lecture), 'text/markdown', 'net.daringfireball.markdown');
 }
 
 export async function exportStudyGuide(lecture) {
-  return writeAndShare(lecture, 'study-guide', 'md', buildStudyMarkdown(lecture), 'text/markdown', 'net.daringfireball.markdown');
+  return writeAndShare(lecture, 'Study Guide', 'md', buildStudyMarkdown(lecture), 'text/markdown', 'net.daringfireball.markdown');
 }
 
 export async function exportLectureData(lecture) {
-  return writeAndShare(lecture, 'lecture-data', 'json', buildLectureJson(lecture), 'application/json', 'public.json');
+  return writeAndShare(lecture, 'LectureAI Data', 'json', buildLectureJson(lecture), 'application/json', 'public.json');
 }

@@ -120,7 +120,33 @@ The local helper supports faster-whisper `small`, `medium`, and `large-v3` model
 
 The prompt tells the model to expect university English, Egyptian Arabic, MSA, and English technical terms inside Arabic, while preserving the original spoken language instead of translating the source transcript.
 
-The helper is intentionally loopback-only. Do **not** expose it to the LAN merely to make Expo-to-Windows transfer convenient. A future wireless workflow must add explicit authenticated pairing and request authorization first.
+The automatic Windows transcription path reads the original file only to verify its hash and decode one bounded section at a time. It plans 300-second sections with 5-second overlap, writes an atomic checkpoint after every completed section, and can cancel, retry the current unfinished section, or resume without restarting at 0:00. It does not create a full-length decoded WAV unless the user explicitly chooses **Generate Enhanced** for retained A/B playback.
+
+Derived transcription audio offers three cleanup modes:
+
+- **Off**: mono/16 kHz bounded format conversion only;
+- **Balanced** (default): local speech-aware spectral suppression with a 72 Hz rumble roll-off, a conservative speech-band gain floor, soft activity guidance that never cuts the timeline, bounded speech gain, isolated-background-transient handling, and a restrained -1 dBFS soft limiter;
+- **Strong**: the same speech-preserving pipeline with a 78 Hz rumble roll-off and stronger non-speech spectral attenuation, plus an explicit warning for difficult or overlapping speech.
+
+The original is never rewritten. The enhancer estimates stationary noise from a bounded sample of low-energy frames, then applies frequency-bin and speech-presence floors rather than deleting quiet frames. Isolated taps are attenuated only when surrounding energy does not look like sustained speech; taps, paper, footsteps, or chair noise beside speech are deliberately preserved rather than risking consonants or plosives. Automatic transcription section files are disposable and transcript timestamps continue to seek into the original recording.
+
+This deterministic NumPy implementation was chosen instead of adding a neural-denoiser model. It has no new download or runtime dependency, works on CPU, processes spectral frames in bounded batches, and avoids making a 4 GB RTX 2050 or a large model download mandatory. DeepFilterNet/RNNoise can be reconsidered only after real classroom A/B evidence shows that their extra compute and artifact risk improve transcription rather than merely changing how the audio sounds.
+
+Each Windows section has a strict quality-retry budget. LectureAI checks average log probability, word probability, no-speech probability, compression ratio, repeated text/word loops, uncertainty density, and timestamp order. A suspicious Strong section retries as Balanced and then Off; Balanced retries as Off; Off gets one quieter-speech decoding retry with a lower VAD threshold and slightly wider beam. The best bounded attempt is retained, unresolved text is marked `[uncertain]`, and completed earlier sections are never restarted.
+
+### Protected original and retained enhanced copy
+
+Every Expo recording and import is stored as a protected original. Older lecture rows that predate enhanced-audio metadata remain readable without a destructive migration and simply show **Enhanced audio: Not generated**.
+
+Older rows that predate Lecture Name metadata are also migrated non-destructively to a date/time-based **Untitled Lecture** display name. The library searches and identifies lectures by that persistent name, and **Edit Lecture Name** changes metadata only: it never renames the protected original, changes its hash, invalidates transcript timestamps, discards an enhanced copy, or detaches a saved Windows job. New recordings can be named before or during capture and can always be renamed later. Transcript, notes, study, and data exports use a filesystem-safe form of the current Lecture Name without changing source storage identity.
+
+When the user chooses **Generate Enhanced**, the paired Windows helper verifies the uploaded source hash, processes the recording in bounded 30-second sections, verifies the source hash again, and streams a separate mono 16 kHz WAV back to the device. LectureAI verifies the phone original before and after installing that file under private `LectureAI/DerivedAudio` document storage. The lecture metadata records the cleanup level, derived hash, protected source hash/size, and `timestampReference: original`.
+
+The Audio workspace exposes **Play Original**, **Play Enhanced**, **Generate/Regenerate Enhanced**, and **Delete Enhanced Copy**. Regeneration installs and records the new verified derived file before deleting the older derived file. Derived deletion is restricted to the managed derived-audio directory; it never targets the original path. Original and Enhanced are explicit transcription inputs, but timestamp, marked-moment, transcript, note-source, and study-source seeking always reopens the protected original.
+
+Short movement sounds, paper, taps, footsteps, and overlapping voices are preserved when they cannot be distinguished safely from speech. Only isolated non-speech-like peaks receive conservative attenuation. LectureAI prioritizes consonants, plosives, quiet speech, Arabic phonemes, and technical terms over aggressive silence or voice isolation.
+
+Loopback remains the web helper default. The Expo iPhone/iPad workflow enables a listener only on one concrete private IPv4 address, requires temporary QR/manual pairing plus bearer authentication, rejects public/wildcard addresses and non-private clients, and warns that trusted-LAN HTTP is authenticated but not end-to-end encrypted.
 
 ## Sharing from iPhone/iPad
 
@@ -141,7 +167,14 @@ WhatsApp, Gmail, AirDrop, Messages, Save to Files, and other destinations are co
 
 An iPhone/iPad cannot directly access a Windows helper at `127.0.0.1`; localhost always means the device running the client.
 
-Current stable workflow:
+Expo iPhone/iPad workflow:
+
+1. Run **Start LectureAI.bat** on the trusted Windows laptop.
+2. In LectureAI, open **Settings → Windows transcription → Scan laptop QR**.
+3. After pairing and health verification, open the saved lecture and choose **Transcribe on paired computer**.
+4. Once the verified upload has a durable Windows job ID, the phone may disconnect or Expo Go may close; reopen the lecture to check, cancel, retry the current section, or resume without uploading again.
+
+Manual transfer remains a fallback for the web client or if local-network pairing is unavailable:
 
 1. On iPhone/iPad, share/export **Original audio**.
 2. Transfer the file with AirDrop/Files/Gmail/WhatsApp/USB/another user-controlled method as appropriate.
@@ -152,7 +185,7 @@ Current stable workflow:
 
 Transferred `.m4a`, `.mp4`, `.aac`, `.wav`, `.webm`, `.mp3`, `.ogg`, and `.flac` recordings are preserved locally. If Chrome/Edge cannot preview-decode a valid transferred iPhone container, LectureAI allows the local FFmpeg/faster-whisper helper to perform the authoritative decode instead of rejecting the original file.
 
-The helper has no fixed LectureAI upload-size ceiling; it checks available disk space while receiving the recording.
+The helper checks free disk space while receiving the recording. Its 8 GiB request ceiling is an abuse/safety guard, not a normal lecture-duration quota.
 
 ## Delete lectures to reclaim storage
 
@@ -229,10 +262,13 @@ Initial setup:
 setup-windows.bat
 ```
 
-Normal local use:
+Normal local use starts/reuses hidden detached Metro and Laptop AI processes, writes PID/state/log files only under the ignored `.lectureai-runtime/` directory, and exits the visible launcher:
 
 ```text
-start-lectureai.bat
+Start LectureAI.bat
+Show LectureAI QR.bat
+LectureAI Status.bat
+Stop LectureAI.bat
 ```
 
 Using the hosted Vercel interface with the private local helper:
@@ -247,7 +283,7 @@ The hosted production UI is currently configured for:
 https://lecture-ai-blush.vercel.app
 ```
 
-The helper remains loopback-only and does not expose lecture audio to the LAN.
+`Start LectureAI.bat` uses LAN mode, waits for healthy services, and opens the combined Expo Go and Laptop AI QR page automatically. `Stop LectureAI.bat` validates the saved LectureAI ownership state and stops only those recorded process trees. Closing launcher or QR windows does not stop either background service.
 
 ## Local models
 
@@ -257,7 +293,7 @@ The Windows setup can use:
 |---|---|---:|---|
 | Fast | `small` multilingual | ~500 MB | 4+ GB RAM |
 | Balanced | `medium` multilingual | ~1.5 GB | 8+ GB RAM or suitable GPU VRAM |
-| Large | `large-v3` multilingual | ~3.1 GB | 16+ GB RAM or higher VRAM preferred |
+| Most Accurate | `large-v3` multilingual | ~3.1 GB | 16+ GB RAM or higher VRAM preferred |
 
 These are local model choices, not separate LectureAI product modes. Benchmark them with real classroom audio instead of assuming a larger model guarantees a particular accuracy percentage.
 

@@ -1,0 +1,87 @@
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+
+const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
+const runtime = read('windows/lectureai-runtime.ps1');
+const start = read('Start LectureAI.bat');
+const show = read('Show LectureAI QR.bat');
+const stop = read('Stop LectureAI.bat');
+const status = read('LectureAI Status.bat');
+const expoCompat = read('start-expo-go.bat');
+const helperCompat = read('Start LectureAI Laptop AI.bat');
+const server = read('local-ai/server.py');
+const ignore = read('.gitignore');
+const expoPackage = JSON.parse(read('expo-recorder/package.json'));
+
+for (const launcher of [start, show, stop, status, expoCompat, helperCompat]) {
+  assert.doesNotMatch(launcher, /cmd\s+\/k/i, 'launchers must not depend on a persistent command window');
+  assert.match(launcher, /lectureai-runtime\.ps1/i);
+}
+
+assert.match(runtime, /\.lectureai-runtime/);
+assert.match(runtime, /Start-Process[^\n]*-WindowStyle Hidden[^\n]*-RedirectStandardInput[^\n]*-RedirectStandardOutput[^\n]*-RedirectStandardError/);
+assert.match(runtime, /Get-ValidState 'metro'/);
+assert.match(runtime, /Get-ValidState 'helper'/);
+assert.match(runtime, /Get-ValidState 'launcher'/);
+assert.match(runtime, /Removed stale \$Kind PID state/);
+assert.match(runtime, /Find-OwnedProcess/);
+assert.match(runtime, /Port \$Port is already in use by a process that is not owned/);
+assert.match(runtime, /System\.Threading\.Mutex/);
+assert.match(runtime, /\[string\]\$MetroMode = 'lan'/);
+assert.match(start, /-MetroMode lan/i);
+assert.match(start, /-Action Launch/i);
+assert.match(expoCompat, /-MetroMode lan/i);
+assert.equal(expoPackage.scripts.start, 'expo start --lan');
+assert.match(runtime, /http:\/\/127\.0\.0\.1:8081\/status/);
+assert.match(runtime, /packager-status:running/);
+assert.match(runtime, /HttpClientHandler/);
+assert.match(runtime, /Add-Type -AssemblyName System\.Net\.Http/);
+assert.match(runtime, /UseProxy = \$false/);
+assert.match(runtime, /Wait-ForMetroHealth/);
+assert.match(runtime, /Wait-ForHelperHealth/);
+assert.match(runtime, /\$sameMode = \[string\]\$state\.mode -eq \$MetroMode/);
+assert.match(runtime, /\$observedModeMatches/);
+assert.match(runtime, /Test-MetroConnectionMode/);
+assert.match(runtime, /Stop-OwnedTree 'helper'\s*\r?\n\s*throw "Laptop AI did not become healthy/);
+assert.match(runtime, /Show-QrPage -AllowMissingMetro/);
+assert.match(runtime, /Start-DetachedCoordinator/);
+assert.match(runtime, /StartCoordinator/);
+assert.match(runtime, /if \(\$Action -eq 'StartCoordinator'\)[\s\S]*highest-ranked adapter/);
+assert.match(runtime, /if \(\$address\) \{ \$arguments \+= @\('-LanAddress', \$address\) \}/);
+assert.match(runtime, /startup: IN PROGRESS/);
+assert.match(runtime, /Stop-OwnedTree 'launcher'/);
+assert.match(runtime, /'StartCoordinator' \{ Start-Helper[\s\S]*Start-Metro/);
+assert.doesNotMatch(runtime, /Metro QR is still preparing/);
+assert.match(runtime, /Metro did not become healthy within 60 seconds/);
+assert.doesNotMatch(runtime, /\$env:CI\s*=\s*'1'/, 'Metro watch/reload must not be disabled in the background process');
+assert.match(runtime, /Stop-OwnedTree 'helper'[\s\S]*Stop-OwnedTree 'metro'/);
+assert.match(runtime, /Test-CommandOwnership \$cimProcess \$Kind/);
+assert.match(runtime, /Get-CimInstance Win32_Process/);
+assert.match(runtime, /processStartedAt/);
+assert.match(runtime, /processStartTicksUtc/);
+assert.match(runtime, /ParseExact\([^\n]*InvariantCulture/);
+assert.match(runtime, /executablePath/);
+assert.match(runtime, /taskkill\.exe \/PID \$rootId \/T \/F/);
+assert.doesNotMatch(runtime, /taskkill\.exe \/IM/i, 'Stop must never target a broad executable name');
+assert.match(runtime, /Persistent logs/);
+assert.match(runtime, /It is safe to close the QR page/);
+assert.match(runtime, /Metro is already healthy in the background/);
+assert.match(runtime, /Laptop AI is already running in the background/);
+assert.match(runtime, /\$sameAddress/);
+assert.match(runtime, /replacing only its validated process tree/);
+assert.match(runtime, /Stop-OwnedTree 'helper'/);
+assert.match(runtime, /no validated PID state exists/);
+assert.match(runtime, /Get-InstalledModel 'medium'/);
+assert.match(runtime, /faster-whisper Medium: INSTALLED/);
+assert.match(ignore, /\.lectureai-runtime\//);
+assert.match(ignore, /expo-recorder\/dist\//);
+assert.match(ignore, /LectureAI-Pairing-QR\.png/);
+
+assert.doesNotMatch(server, /print\(f?["']Pairing code:/);
+assert.doesNotMatch(server, /print\(f?["']Pairing QR payload:/);
+assert.match(server, /--pairing-qr-path/);
+assert.doesNotMatch(server, /os\.startfile\(qr_file\)/);
+assert.match(server, /valid_lan_bind_host/);
+assert.match(server, /host=address/);
+
+console.log('✓ detached Windows launcher lifecycle, PID ownership, persistent logs, QR separation, and LAN safeguards are present');

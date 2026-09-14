@@ -37,6 +37,44 @@ export interface TranscriptSegment {
   speaker?: string;
 }
 
+export interface TranscriptCorrectionSnapshot {
+  transcriptVersion: number;
+  archivedAt: string;
+  engine?: string;
+  segments: TranscriptSegment[];
+}
+
+export interface WindowsTranscriptionJob {
+  id: string;
+  status: string;
+  progress: number;
+  message: string;
+  completedAudioSeconds?: number;
+  totalAudioSeconds?: number;
+  updatedAt: string;
+  baseTranscriptVersion?: number;
+  resumeAvailable?: boolean;
+  stage?: string;
+  elapsedSeconds?: number;
+  etaSeconds?: number | null;
+  model?: string;
+  device?: string;
+  computeType?: string;
+}
+
+export interface PhoneTranscriptionCheckpoint {
+  schemaVersion: number;
+  engine: 'transformers.js-browser-worker';
+  audioIdentity: string;
+  completedWindow: number;
+  completedAudioSeconds: number;
+  totalAudioSeconds: number;
+  segments: Array<{ start: number; end: number; text: string; speaker?: string }>;
+  model?: string;
+  precision?: string;
+  updatedAt: string;
+}
+
 export interface Bookmark {
   id: string;
   time: number;
@@ -78,6 +116,17 @@ export interface Lecture {
   notesSourceVersion?: number;
   /** True when transcript corrections make generated notes/derived views stale. */
   derivedContentStale?: boolean;
+  /** Explicit state of the editable transcript currently shown to the user. */
+  transcriptState?: 'raw-machine' | 'imported' | 'user-corrected';
+  transcriptGeneratedAt?: string;
+  /** Machine/import text before edits; segment editedText stores the current view. */
+  rawTranscript?: TranscriptSegment[];
+  /** Manual work archived before an explicitly confirmed replacement/rerun. */
+  transcriptCorrectionHistory?: TranscriptCorrectionSnapshot[];
+  /** Durable identity/progress for a Windows-owned job; never contains its bearer token. */
+  windowsTranscriptionJob?: WindowsTranscriptionJob;
+  /** Browser fallback checkpoint; original audio remains in the audio store. */
+  phoneTranscriptionCheckpoint?: PhoneTranscriptionCheckpoint;
   segments: TranscriptSegment[];
   englishTranslation: TranscriptSegment[];
   arabicTranslation: TranscriptSegment[];

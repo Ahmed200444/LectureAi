@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 
 const validation = readFileSync(new URL('../lib/audio-validation.ts', import.meta.url), 'utf8');
 const recorder = readFileSync(new URL('../hooks/use-recorder.ts', import.meta.url), 'utf8');
+const flow = readFileSync(new URL('../components/RecordingFlow.tsx', import.meta.url), 'utf8');
 
 // A Safari recording must not be declared safe from metadata alone. The validator
 // must wait for decoded media data/canplay and reject media-element source errors.
@@ -27,9 +28,11 @@ assert.match(validation, /350/);
 // Recorder safety remains fail-closed: only delete checkpoints after playback
 // validation succeeds, and keep them when validation throws.
 const validationPosition = recorder.indexOf('await validatePlayableAudio(blob)');
-const deletionPosition = recorder.indexOf('await deleteAudioChunks(lectureIdRef.current)');
+const metadataSavePosition = flow.indexOf('await saveLecture(updated)');
+const deletionPosition = flow.indexOf('await deleteAudioChunks(lecture.id)');
 assert.ok(validationPosition >= 0, 'recorder must validate assembled audio');
-assert.ok(deletionPosition > validationPosition, 'checkpoint deletion must happen only after playback validation');
+assert.ok(metadataSavePosition >= 0, 'finished lecture metadata must be durably saved');
+assert.ok(deletionPosition > metadataSavePosition, 'checkpoint deletion must happen only after durable metadata save');
 assert.match(recorder, /Recording checkpoints were kept for recovery/);
 
 console.log('Safari saved-audio start/middle/end safeguards passed.');

@@ -2,7 +2,7 @@
 
 import { AlertTriangle, Bookmark, Check, ChevronLeft, CircleStop, Download, FilePlus2, HardDrive, Mic, Pause, Play, ShieldCheck, Star } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
-import { getAudio, saveLecture } from '../lib/db';
+import { deleteAudioChunks, getAudio, saveLecture } from '../lib/db';
 import { downloadBlob } from '../lib/export';
 import { formatBytes, formatTime } from '../lib/format';
 import type { Course, Lecture } from '../lib/types';
@@ -187,6 +187,12 @@ export function RecordingFlow({ courses, onClose, onSaved, onOpenLecture }: Reco
       setLecture(updated);
       await saveLecture(updated);
       onSaved(updated);
+      // The validated assembled original is now durably linked from its metadata.
+      // Cleanup failure only leaves redundant recovery checkpoints; it cannot make
+      // the successfully saved recording invalid.
+      await deleteAudioChunks(lecture.id).catch(() => {
+        setStorageWarning('The original recording is safe, but redundant recovery checkpoints could not be cleaned up yet.');
+      });
       if (startAnother) prepareNewRecording();
       else setStage('saved');
     } catch (error) {

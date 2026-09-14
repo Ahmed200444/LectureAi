@@ -29,11 +29,16 @@ Each record supports:
 - `model`: model/build identifier, for example `large-v3` or an Expo/on-device model name;
 - `language`: benchmark language bucket such as `en`, `msa`, `egyptian-ar`, or `en-egyptian-ar-code-switch`;
 - `condition`: placement/noise condition such as `row-1-3`, `row-4-5`, `hvac`, or `professor-facing-away`;
+- `device` and `compute_type`: the actual faster-whisper runtime reported in the LectureAI JSON, such as `cpu` / `int8` or `cuda` / `float16`;
+- `audio_duration_seconds` and `processing_duration_seconds`: measured durations for the same run; the evaluator calculates RTF from these values;
+- `real_time_factor`: optional measured RTF when raw durations are unavailable. Prefer supplying both durations;
+- `enhancement`: identify the exact transcription input (`original`, the previous cleanup, `speech-focused-balanced`, or `speech-focused-strong`) so A/B/C results never get averaged together;
 - `reference`: human-verified transcript from the original audio;
 - `hypothesis`: the **real** model transcript for the same clip;
 - `technical_terms`: optional list of exact important terms that should be preserved, such as `pointer`, `Dijkstra`, `eigenvalue`, or `memory address`;
 - `manual_review_seconds`: optional measured time needed to turn the model output into a trusted transcript;
 - `hallucination_count`: optional manually counted unsupported/invented spans for the clip;
+- `uncertain_segment_count` and `segment_count`: optional counts used to report the uncertain-segment rate;
 - `notes`: optional private testing notes.
 
 Example structure:
@@ -60,7 +65,8 @@ Example structure:
 3. Run every selected model/configuration on the **same file**.
 4. Put the real reference and model hypothesis into a private manifest based on `sample-manifest.json`.
 5. Record technical terms that matter for the class. Where practical, time how long manual correction takes and count obvious hallucinated spans.
-6. Run:
+6. For a genuine A/B/C comparison, transcribe the same source clip with `original`, the previous cleanup build, and the current `speech-focused-balanced`/`speech-focused-strong` build. Give each row the same condition and a distinct `enhancement` value; never compare different spoken clips as though processing alone caused the result.
+7. Run:
 
 ```text
 python benchmarks/evaluate.py path-to-private-manifest.json
@@ -80,8 +86,12 @@ The evaluator reports:
 - **ArabicNormWER / ArabicNormCER** — a second Arabic-friendly view that removes Arabic diacritics/tatweel, normalizes common Alef/Ya variants, and normalizes Arabic/Persian digits before scoring;
 - **TechTermRecall** — fraction of explicitly listed technical terms found in the hypothesis;
 - **NumberRecall** — fraction of numeric expressions from the reference preserved in the hypothesis;
+- **UncertainRate** — fraction of returned segments marked uncertain when both segment counts are supplied;
 - **AvgReviewSec** — average manual correction/review time when supplied;
 - **AvgHallucinations** — average manually counted hallucinated spans when supplied.
+- **AudioSec / ProcessingSec / RTF** — average audio duration, wall-clock processing duration, and real-time factor (`processing / audio`) grouped by model, device, compute type, language, and condition.
+
+The Windows helper and direct CLI include `audio_duration`, `processing_seconds`, `real_time_factor`, `model`, `device`, and `compute_type` in each result. Copy those measured values into the private manifest; never estimate them from a progress bar.
 
 The Arabic-normalized metrics are **additional diagnostics**, not a replacement for strict WER/CER. They help distinguish meaningful recognition errors from some orthographic variation. They also do not prove semantic correctness.
 

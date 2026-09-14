@@ -26,20 +26,40 @@ import Constants from 'expo-constants';
 import { File, Paths } from 'expo-file-system';
 import {
   createLecture,
+  deleteEnhancedAudioCopy,
   defaultSettings,
+  installEnhancedAudioFile,
+  inspectProtectedOriginal,
   loadLibrary,
   loadSettings,
   markAudioPlaybackPoint,
   markAudioVerified,
+  prepareTranscriptionAudio,
   preserveAudioFile,
+  removeReplacedEnhancedAudio,
   removeLecture,
   replaceTranscript,
+  saveLibrary,
   saveSettings,
   updateTranscriptSegment,
   upsertLecture,
 } from './src/storage';
 import { applyStudyPack, derivedContentIsFresh } from './src/study';
-import { computerHealth, pairWithComputer, transcribeOnComputer } from './src/computer';
+import {
+  cancelComputerJob,
+  computerHealth,
+  computerJobStatus,
+  downloadEnhancedFromComputer,
+  generateEnhancedOnComputer,
+  pairWithComputer,
+  releaseComputerEnhancement,
+  transcribeOnComputer,
+} from './src/computer';
+import { currentEnhancedAudio } from './src/audio-derivatives';
+import { exportEnglishTranscript, exportSourceTranscript, exportTranscript } from './src/exports';
+import { lectureDisplayTitle, renameLectureTitle, untitledLectureTitle } from './src/lecture-metadata';
+import { parseLaptopPairingQr } from './src/qr-pairing';
+import PairingScanner from './src/PairingScanner';
 import { foregroundRecorderDecision } from './src/background-recording';
 import {
   clearActiveRecordingJournal,
@@ -99,6 +119,30 @@ function stripWhisperControlTokens(value) {
 
 function wait(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function windowsJobSnapshot(job, previous = null, transcriptVersion = 0) {
+  return {
+    id: String(job?.id || job?.job_id || previous?.id || ''),
+    status: String(job?.status || previous?.status || 'queued'),
+    progress: Math.max(0, Math.min(100, Number(job?.progress ?? previous?.progress ?? 0))),
+    message: String(job?.message || previous?.message || 'Windows transcription job saved.'),
+    completedAudioSeconds: Number(job?.completed_audio_seconds ?? previous?.completedAudioSeconds ?? 0),
+    totalAudioSeconds: Number(job?.total_audio_seconds ?? previous?.totalAudioSeconds ?? 0),
+    lastProgressAt: Number(job?.last_progress_at ?? previous?.lastProgressAt ?? 0) || null,
+    updatedAt: new Date().toISOString(),
+    baseTranscriptVersion: Number(previous?.baseTranscriptVersion ?? transcriptVersion ?? 0),
+    resumeAvailable: Boolean(job?.resume_available),
+    stage: String(job?.stage || previous?.stage || ''),
+    elapsedSeconds: Number(job?.elapsed_seconds ?? previous?.elapsedSeconds ?? 0),
+    etaSeconds: typeof job?.eta_seconds === 'number' && Number.isFinite(job.eta_seconds)
+      ? job.eta_seconds
+      : job && Object.prototype.hasOwnProperty.call(job, 'eta_seconds') ? null : (previous?.etaSeconds ?? null),
+    model: String(job?.model || previous?.model || ''),
+    device: String(job?.device || previous?.device || ''),
+    computeType: String(job?.compute_type || previous?.computeType || ''),
+    audioInputSource: String(job?.audio_input_source || previous?.audioInputSource || 'original') === 'enhanced' ? 'enhanced' : 'original',
+  };
 }
 
 function normalizeTranscriptPayload(payload, lectureId) {
@@ -163,7 +207,7 @@ export default function App({ onOpenExports = () => {} }) {
   const [settings, setSettingsState] = useState(defaultSettings);
   const [selectedId, setSelectedId] = useState('');
   const [detailTab, setDetailTab] = useState('audio');
-  const [title, setTitle] = useState(`Lecture ${new Date().toLocaleDateString()}`);
+  const [title, setTitle] = useState(() => untitledLectureTitle());
   const [paused, setPaused] = useState(false);
   const [recordingActive, setRecordingActive] = useState(false);
   const [marks, setMarks] = useState([]);
@@ -172,6 +216,9 @@ export default function App({ onOpenExports = () => {} }) {
   const [inputName, setInputName] = useState('');
   const [lastSavedId, setLastSavedId] = useState('');
   const [computerProgress, setComputerProgress] = useState(null);
+  const [enhancementProgress, setEnhancementProgress] = useState(null);
+  const [cleanupMode, setCleanupMode] = useState('balanced');
+  const [playbackSource, setPlaybackSource] = useState('original');
   const [nativeRecordingConfirmed, setNativeRecordingConfirmed] = useState(false);
   const [sessionDurationMs, setSessionDurationMs] = useState(0);
   const [foregroundRecorderChecking, setForegroundRecorderChecking] = useState(false);
@@ -189,6 +236,7 @@ export default function App({ onOpenExports = () => {} }) {
   const foregroundReconcileRef = useRef(false);
   const appBackgroundedAtRef = useRef(null);
   const importedDurationUpdatedRef = useRef(new Set());
+  const computerAbortRef = useRef(null);
 
   const selectedLecture = lectures.find((lecture) => lecture.id === selectedId) || null;
   const lastSaved = lectures.find((lecture) => lecture.id === lastSavedId) || null;
@@ -264,8 +312,9 @@ export default function App({ onOpenExports = () => {} }) {
   async function preserveRecorderOutput({ unexpected = false } = {}) {
     const durationMs = Math.max(0, sessionDurationMs, recorderState.durationMillis || 0, Math.round((recorder.currentTime || 0) * 1000), journalSnapshot.current.durationMs || 0);
     const uri = recorder.uri || recorderState.url || journalSnapshot.current.sourceUri;
+    const savedTitle = lectureDisplayTitle(title, recordingStartedAt.current || new Date());
     saveActiveRecordingJournal({
-      title,
+      title: savedTitle,
       startedAt: recordingStartedAt.current,
       sourceUri: uri || null,
       durationMs,
@@ -275,8 +324,8 @@ export default function App({ onOpenExports = () => {} }) {
     if (!uri) throw new Error('The recorder stopped but did not expose an audio file path. The recovery journal was kept so LectureAI can retry if Expo later exposes the file.');
 
     const id = newId();
-    const preserved = await preserveAudioFile(uri, id, title, 'm4a');
-    let lecture = createLecture({ id, title, audio: preserved, durationMs, marks, source: unexpected ? 'unexpected-recorder-stop' : 'recorded' });
+    const preserved = await preserveAudioFile(uri, id, savedTitle, 'm4a');
+    let lecture = createLecture({ id, title: savedTitle, audio: preserved, durationMs, marks, source: unexpected ? 'unexpected-recorder-stop' : 'recorded' });
     if (unexpected) {
       lecture = {
         ...lecture,
@@ -288,6 +337,7 @@ export default function App({ onOpenExports = () => {} }) {
     recordingStartedAt.current = null;
     await refresh();
     setLastSavedId(id);
+    setTitle(untitledLectureTitle());
     player.replace({ uri: preserved.uri });
     setStatus(unexpected ? 'Unexpected stop preserved · verify the original carefully' : 'Original audio preserved in LectureAI document storage · verify playback');
     if (!unexpected && settings.autoOpenShareSheet) void shareAudio(lecture).catch(() => undefined);
@@ -318,9 +368,35 @@ export default function App({ onOpenExports = () => {} }) {
     void (async () => {
       const loadedSettings = await loadSettings();
       const recovery = await recoverInterruptedRecording();
-      const library = await loadLibrary();
+      let library = await loadLibrary();
       if (!mounted) return;
       setSettingsState(loadedSettings);
+      let helperConnected = false;
+      if (loadedSettings.computerAddress && loadedSettings.computerToken && (!loadedSettings.computerTokenExpiresAt || Date.now() / 1000 < Number(loadedSettings.computerTokenExpiresAt))) {
+        try {
+          await computerHealth(loadedSettings.computerAddress, loadedSettings.computerToken);
+          helperConnected = true;
+          if (mounted) setSettingsState(await saveSettings({ ...loadedSettings, computerLastConnectedAt: new Date().toISOString() }));
+        } catch { /* Offline does not erase a secure pairing; Settings offers Retry. */ }
+      }
+      if (helperConnected) {
+        let changed = false;
+        const reconciled = [];
+        for (const lecture of library) {
+          const savedJob = lecture.windowsTranscriptionJob;
+          if (!savedJob?.id || savedJob.status === 'applied') { reconciled.push(lecture); continue; }
+          try {
+            const job = await computerJobStatus({ address: loadedSettings.computerAddress, token: loadedSettings.computerToken, jobId: savedJob.id });
+            reconciled.push({ ...lecture, windowsTranscriptionJob: windowsJobSnapshot(job, savedJob, lecture.transcriptVersion), transcriptStatus: job.status === 'complete' ? 'ready-to-apply' : job.status });
+            changed = true;
+          } catch {
+            reconciled.push(lecture);
+          }
+        }
+        if (changed) {
+          library = await saveLibrary(reconciled);
+        }
+      }
       setLectures(library);
       if (recovery.recovered) {
         setWarning('LectureAI recovered an audio file from an interrupted recording session. Open it from Lectures and verify the beginning, middle, and end before relying on it.');
@@ -738,6 +814,10 @@ export default function App({ onOpenExports = () => {} }) {
   async function runPlaybackCheck(lecture, point) {
     try {
       if (!lecture?.audioUri) throw new Error('This lecture has no preserved audio file.');
+      if (playbackSource !== 'original') {
+        loadPlaybackSource(lecture, 'original');
+        await wait(100);
+      }
       const duration = Math.max(Number(playerStatus.duration || 0), Number(lecture.durationMs || 0) / 1000);
       if (!Number.isFinite(duration) || duration <= 0) throw new Error('LectureAI could not determine the recording duration for playback verification. Play the original normally and try again.');
       const target = point === 'beginning' ? 0 : point === 'middle' ? Math.max(0, duration * 0.5) : Math.max(0, duration - Math.min(5, duration * 0.08));
@@ -775,10 +855,54 @@ export default function App({ onOpenExports = () => {} }) {
     }
   }
 
+  function loadPlaybackSource(lecture, source = 'original') {
+    const enhanced = currentEnhancedAudio(lecture);
+    const useEnhanced = source === 'enhanced' && enhanced?.uri;
+    const uri = useEnhanced ? enhanced.uri : lecture.audioUri;
+    if (!uri) throw new Error('The selected audio file is unavailable.');
+    player.pause();
+    player.replace({ uri });
+    setPlaybackSource(useEnhanced ? 'enhanced' : 'original');
+    return useEnhanced ? 'enhanced' : 'original';
+  }
+
+  function playLectureAudio(lecture, source) {
+    try {
+      loadPlaybackSource(lecture, source);
+      player.play();
+    } catch (error) {
+      Alert.alert('Audio unavailable', error instanceof Error ? error.message : 'The selected audio could not be opened.');
+    }
+  }
+
+  function seekOriginalAudio(lecture, seconds, shouldPlay = true) {
+    try {
+      if (playbackSource !== 'original') loadPlaybackSource(lecture, 'original');
+      player.seekTo(Math.max(0, Number(seconds || 0)));
+      if (shouldPlay) player.play();
+    } catch (error) {
+      Alert.alert('Original audio unavailable', error instanceof Error ? error.message : 'The protected original could not be opened.');
+    }
+  }
+
   function openLecture(lecture, nextTab = 'audio') {
     setSelectedId(lecture.id);
     setDetailTab(nextTab);
+    setPlaybackSource('original');
     if (lecture.audioUri) player.replace({ uri: lecture.audioUri });
+  }
+
+  async function renameLecture(lecture, requestedTitle) {
+    try {
+      const updated = renameLectureTitle(lecture, requestedTitle);
+      await upsertLecture(updated);
+      await refresh();
+      setStatus('Lecture Name saved · original audio and transcript unchanged');
+      return true;
+    } catch (error) {
+      Alert.alert('Lecture Name was not saved', error instanceof Error ? error.message : 'The existing name and original audio were not changed.');
+      return false;
+    }
   }
 
   async function importAudio() {
@@ -839,61 +963,225 @@ export default function App({ onOpenExports = () => {} }) {
   async function pairComputer(address, code) {
     const paired = await pairWithComputer(address, code);
     const health = await computerHealth(paired.baseUrl, paired.token);
-    await persistSettings({ computerAddress: paired.baseUrl, computerToken: paired.token, computerTokenExpiresAt: paired.expiresAt });
+    await persistSettings({ computerAddress: paired.baseUrl, computerToken: paired.token, computerTokenExpiresAt: paired.expiresAt, computerLastConnectedAt: new Date().toISOString() });
     return health;
   }
 
   async function testComputer() {
     if (!settings.computerAddress || !settings.computerToken) throw new Error('Pair this device with your Windows helper first.');
-    return computerHealth(settings.computerAddress, settings.computerToken);
+    const health = await computerHealth(settings.computerAddress, settings.computerToken);
+    await persistSettings({ computerLastConnectedAt: new Date().toISOString() });
+    return health;
   }
 
   async function forgetComputer() {
-    await persistSettings({ computerAddress: '', computerToken: '', computerTokenExpiresAt: null });
+    await persistSettings({ computerAddress: '', computerToken: '', computerTokenExpiresAt: null, computerLastConnectedAt: null });
   }
 
-  async function runComputerTranscription(lecture) {
+  async function generateEnhancedAudio(lecture) {
     if (!settings.computerAddress || !settings.computerToken) {
-      Alert.alert('Pair your computer first', 'Open Settings in LectureAI, then enter the address and pairing code shown by start-helper-for-phone.bat on your Windows computer.');
+      Alert.alert('Laptop AI is offline', 'Pair the private Windows helper in Settings before generating an enhanced copy. The protected original remains available.');
+      return;
+    }
+    let temporary = null;
+    let jobId = '';
+    try {
+      inspectProtectedOriginal(lecture);
+      setEnhancementProgress({ lectureId: lecture.id, progress: 1, message: 'Checking protected original integrity…' });
+      const job = await generateEnhancedOnComputer({
+        address: settings.computerAddress,
+        token: settings.computerToken,
+        lecture,
+        cleanupMode,
+        onProgress: ({ progress, message }) => setEnhancementProgress({ lectureId: lecture.id, progress, message }),
+      });
+      jobId = String(job.job_id || job.id || '');
+      const enhancedSize = Number(job.result?.enhanced_size || 0);
+      if (enhancedSize > 0 && enhancedSize + 50 * 1024 * 1024 > Paths.availableDiskSpace) {
+        throw new Error(`The enhanced WAV needs about ${formatBytes(enhancedSize)}, but the device does not have enough safe free space. Delete other files or use Transcribe Original.`);
+      }
+      temporary = new File(Paths.cache, `lectureai-enhanced-${lecture.id}-${Date.now().toString(36)}.wav`);
+      setEnhancementProgress({ lectureId: lecture.id, progress: 96, message: 'Downloading the verified enhanced copy into private LectureAI storage…' });
+      const downloaded = await downloadEnhancedFromComputer({
+        address: settings.computerAddress,
+        token: settings.computerToken,
+        jobId,
+        destination: temporary,
+      });
+      const installed = await installEnhancedAudioFile(lecture, downloaded.uri, cleanupMode, job.result || {});
+      const saved = await upsertLecture(installed.lecture);
+      try { removeReplacedEnhancedAudio(installed.previousEnhancedUri, saved.enhancedAudio?.uri); } catch { /* New verified copy remains authoritative; old derived cleanup can be retried later. */ }
+      await refresh();
+      setEnhancementProgress(null);
+      Alert.alert('Enhanced copy ready', `${cleanupMode[0].toUpperCase()}${cleanupMode.slice(1)} cleanup was saved as a separate private WAV. The original recording and its timeline are unchanged.`);
+    } catch (error) {
+      setEnhancementProgress(null);
+      Alert.alert('Enhanced copy not created', `${error instanceof Error ? error.message : 'Enhancement failed.'}\n\nThe protected original recording was not modified or deleted.`);
+    } finally {
+      try { if (temporary?.exists) temporary.delete(); } catch { /* Cache cleanup only. */ }
+      if (jobId) {
+        try { await releaseComputerEnhancement({ address: settings.computerAddress, token: settings.computerToken, jobId }); } catch { /* Windows retention cleanup remains a fallback. */ }
+      }
+    }
+  }
+
+  function confirmDeleteEnhancedAudio(lecture) {
+    Alert.alert('Delete enhanced copy?', 'Only the derived enhanced-for-transcription file will be deleted. The protected original, transcript, notes, and timestamps remain unchanged.', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete Enhanced Copy',
+        style: 'destructive',
+        onPress: () => void (async () => {
+          try {
+            if (playbackSource === 'enhanced') loadPlaybackSource(lecture, 'original');
+            const updated = deleteEnhancedAudioCopy(lecture);
+            await upsertLecture(updated);
+            await refresh();
+          } catch (error) {
+            Alert.alert('Enhanced copy not deleted', `${error instanceof Error ? error.message : 'Deletion failed.'}\n\nThe protected original remains unchanged.`);
+          }
+        })(),
+      },
+    ]);
+  }
+
+  async function runComputerTranscription(lecture, replacementConfirmed = false, retryCurrent = false, requestedSource = 'original') {
+    if (!settings.computerAddress || !settings.computerToken) {
+      Alert.alert('Laptop AI is offline', 'Your recording is safe. Start LectureAI Laptop AI on Windows, then scan its QR code from Settings and Retry.');
       return;
     }
     if (settings.computerTokenExpiresAt && Date.now() / 1000 >= Number(settings.computerTokenExpiresAt)) {
       Alert.alert('Pairing expired', 'The local pairing token expired. Pair again from Settings before transcription.');
       return;
     }
+    const savedJob = lecture.windowsTranscriptionJob;
+    const existingJob = savedJob?.id && savedJob.status !== 'applied' ? savedJob : null;
+    const effectiveSource = existingJob?.audioInputSource === 'enhanced' ? 'enhanced' : requestedSource === 'enhanced' ? 'enhanced' : 'original';
+    if (!existingJob && lecture.transcript?.length && !replacementConfirmed) {
+      Alert.alert('Retranscribe this lecture?', `The existing transcript will remain visible while Windows transcribes the ${effectiveSource} audio. When the new result is applied, manual corrections are archived and the protected original is never changed.`, [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Continue', onPress: () => void runComputerTranscription(lecture, true, false, effectiveSource) },
+      ]);
+      return;
+    }
+    const controller = new AbortController();
+    computerAbortRef.current = controller;
     try {
       setComputerProgress({ lectureId: lecture.id, progress: 1, message: 'Checking paired Windows computer…' });
       await computerHealth(settings.computerAddress, settings.computerToken);
+      let working = lecture;
+      const audioInput = existingJob ? null : prepareTranscriptionAudio(working, effectiveSource);
+      let lastPersistedAt = 0;
+      let lastPersistedSignature = '';
+      const persistJob = async (job) => {
+        const previous = working.windowsTranscriptionJob;
+        const snapshot = windowsJobSnapshot({ ...job, audio_input_source: effectiveSource }, previous, working.transcriptVersion);
+        working = { ...working, windowsTranscriptionJob: snapshot, transcriptStatus: snapshot.status, updatedAt: new Date().toISOString() };
+        const signature = `${snapshot.id}:${snapshot.status}:${snapshot.completedAudioSeconds}`;
+        const terminal = ['complete', 'failed', 'interrupted', 'stalled', 'cancelled'].includes(snapshot.status);
+        if (!previous?.id || terminal || signature !== lastPersistedSignature || Date.now() - lastPersistedAt >= 5_000) {
+          await upsertLecture(working);
+          lastPersistedAt = Date.now();
+          lastPersistedSignature = signature;
+        }
+      };
       const result = await transcribeOnComputer({
         address: settings.computerAddress,
         token: settings.computerToken,
-        lecture,
+        lecture: working,
+        audioInput,
         glossary: [],
+        // When the protected original is the upload, Windows creates disposable
+        // per-section cleanup copies and can fall back Strong → Balanced → Off.
+        // A retained enhanced upload is already derived, so no second cleanup is applied.
+        enhancement: effectiveSource === 'original' ? cleanupMode : 'off',
+        existingJobId: existingJob?.id || '',
+        resume: Boolean(existingJob && !retryCurrent && ['failed', 'interrupted', 'stalled', 'cancelled'].includes(existingJob.status)),
+        retryCurrent: Boolean(existingJob && retryCurrent),
         onProgress: (update) => setComputerProgress({ lectureId: lecture.id, ...update }),
+        onJobUpdate: persistJob,
+        signal: controller.signal,
       });
+      if (result.pending) {
+        await persistJob(result.job || { id: result.job_id, status: 'transcribing', message: result.message });
+        await refresh();
+        Alert.alert('Windows job is safe', `${result.message}\n\nYou may close LectureAI or Expo Go. Reopen this lecture later and tap Check / Resume Windows transcription.`);
+        setComputerProgress(null);
+        return;
+      }
       const segments = normalizeTranscriptPayload(result, lecture.id);
       if (!segments.length) throw new Error('The computer returned an empty transcript. The original audio is unchanged.');
-      let updated = replaceTranscript(lecture, segments, `windows:${result.model || 'configured'}`);
+      let updated = replaceTranscript(working, segments, `windows:${result.model || 'configured'}`);
       updated = {
         ...updated,
         transcriptStatus: 'ready',
+        windowsTranscriptionJob: { ...working.windowsTranscriptionJob, id: result.job_id || working.windowsTranscriptionJob?.id, status: 'applied', progress: 100, message: 'Source transcript applied', updatedAt: new Date().toISOString() },
         transcriptionMetadata: {
           engine: result.engine || 'faster-whisper',
           model: result.model || 'configured',
           detectedLanguage: result.detected_language || null,
           languageProbability: result.language_probability ?? null,
           duration: result.duration ?? null,
+          languageScope: result.language_scope || null,
+          detectedLanguages: result.detected_languages || [],
+          device: result.device || null,
+          computeType: result.compute_type || null,
+          processingSeconds: result.processing_seconds ?? null,
+          realTimeFactor: result.real_time_factor ?? null,
+          enhancement: result.cleanup_mode || (effectiveSource === 'enhanced' ? currentEnhancedAudio(lecture)?.cleanupMode || 'enhanced' : cleanupMode),
+          audioInputSource: effectiveSource,
+          timestampReference: 'original',
         },
       };
-      updated = applyStudyPack(updated);
       await upsertLecture(updated);
       await refresh();
       setDetailTab('transcript');
-      setComputerProgress({ lectureId: lecture.id, progress: 100, message: 'Transcript and source-grounded study pack ready.' });
+      setComputerProgress({ lectureId: lecture.id, progress: 96, message: 'SOURCE TRANSCRIPT READY · saved locally · preparing source-grounded study pack…' });
+      await wait(0);
+      try {
+        updated = applyStudyPack(updated);
+        await upsertLecture(updated);
+        await refresh();
+        setComputerProgress({ lectureId: lecture.id, progress: 100, message: 'SOURCE TRANSCRIPT READY · source-grounded study pack ready.' });
+      } catch (studyError) {
+        setComputerProgress({ lectureId: lecture.id, progress: 100, message: 'SOURCE TRANSCRIPT READY · study pack can be retried.' });
+        Alert.alert('Transcript ready', `${studyError instanceof Error ? studyError.message : 'The study pack did not finish.'}\n\nThe source transcript and original audio are safe.`);
+      }
     } catch (error) {
+      if (controller.signal.aborted) {
+        setComputerProgress(null);
+        await refresh();
+        Alert.alert('Windows transcription cancelled', 'Windows stopped scheduling new sections. The original audio and every completed transcript section remain safe. Resume or Retry current section when ready.');
+        return;
+      }
       const message = error instanceof Error ? error.message : 'Computer transcription failed.';
       setComputerProgress({ lectureId: lecture.id, progress: 0, message });
-      Alert.alert('Transcription did not finish', `${message}\n\nYour original recording is still preserved.`);
+      const latest = (await loadLibrary()).find((item) => item.id === lecture.id) || lecture;
+      await upsertLecture({ ...latest, transcriptStatus: latest.windowsTranscriptionJob?.id ? 'interrupted' : latest.transcriptStatus, statusMessage: latest.windowsTranscriptionJob?.id ? 'Windows connection interrupted · job identity and completed sections remain saved' : latest.statusMessage });
+      await refresh();
+      Alert.alert('Transcription connection closed', `${message}\n\nYour original recording is still preserved. If a Windows job ID was created, the computer continues independently and completed sections remain checkpointed.`);
+    } finally {
+      if (computerAbortRef.current === controller) computerAbortRef.current = null;
+    }
+  }
+
+  async function cancelComputerTranscription(lecture) {
+    const jobId = lecture.windowsTranscriptionJob?.id;
+    if (!jobId) return;
+    try {
+      const job = await cancelComputerJob({ address: settings.computerAddress, token: settings.computerToken, jobId });
+      const snapshot = windowsJobSnapshot(job, lecture.windowsTranscriptionJob, lecture.transcriptVersion);
+      await upsertLecture({ ...lecture, windowsTranscriptionJob: snapshot, transcriptStatus: snapshot.status === 'complete' ? 'ready-to-apply' : snapshot.status, updatedAt: new Date().toISOString() });
+      if (snapshot.status === 'complete') {
+        setComputerProgress({ lectureId: lecture.id, progress: 100, message: 'Windows finished before cancellation. Tap Check Windows transcription to apply the saved source transcript.' });
+        await refresh();
+        return;
+      }
+      computerAbortRef.current?.abort();
+      setComputerProgress({ lectureId: lecture.id, progress: snapshot.progress, message: snapshot.message });
+      await refresh();
+    } catch (error) {
+      Alert.alert('Cancel did not finish', `${error instanceof Error ? error.message : 'Windows did not confirm cancellation.'}\n\nThe original audio and completed transcript sections remain safe.`);
     }
   }
 
@@ -926,13 +1214,28 @@ export default function App({ onOpenExports = () => {} }) {
           player={player}
           playerStatus={playerStatus}
           computerProgress={computerProgress?.lectureId === selectedLecture.id ? computerProgress : null}
+          enhancementProgress={enhancementProgress?.lectureId === selectedLecture.id ? enhancementProgress : null}
           computerPaired={Boolean(settings.computerAddress && settings.computerToken)}
+          cleanupMode={cleanupMode}
+          playbackSource={playbackSource}
+          onCleanupModeChange={setCleanupMode}
+          onRename={(value) => renameLecture(selectedLecture, value)}
           onBack={() => { player.pause(); setSelectedId(''); }}
+          onPlayAudio={(source) => playLectureAudio(selectedLecture, source)}
+          onSeekOriginal={(seconds) => seekOriginalAudio(selectedLecture, seconds)}
+          onGenerateEnhanced={() => void generateEnhancedAudio(selectedLecture)}
+          onDeleteEnhanced={() => confirmDeleteEnhancedAudio(selectedLecture)}
           onVerify={() => void verifyLecture(selectedLecture)}
           onPlaybackCheck={(point) => void runPlaybackCheck(selectedLecture, point)}
           onShare={() => void shareAudio(selectedLecture).catch((error) => Alert.alert('Share failed', error.message))}
+          onShareTranscript={(kind) => {
+            const action = kind === 'english' ? exportEnglishTranscript : kind === 'source' ? exportSourceTranscript : exportTranscript;
+            void action(selectedLecture).catch((error) => Alert.alert('Transcript sharing did not finish', `${error instanceof Error ? error.message : 'The share sheet could not be opened.'}\n\nYour transcript and original audio are unchanged.`));
+          }}
           onImportTranscript={() => void importTranscript(selectedLecture)}
-          onComputerTranscribe={() => void runComputerTranscription(selectedLecture)}
+          onComputerTranscribe={(source = 'original') => void runComputerTranscription(selectedLecture, false, false, source)}
+          onRetryCurrent={() => void runComputerTranscription(selectedLecture, true, true)}
+          onCancelTranscription={() => void cancelComputerTranscription(selectedLecture)}
           onSaveTranscriptEdit={(id, value) => void saveTranscriptEdit(selectedLecture, id, value)}
           onGenerateStudy={() => void generateStudy(selectedLecture)}
           onDelete={() => deleteLecture(selectedLecture)}
@@ -986,6 +1289,10 @@ export default function App({ onOpenExports = () => {} }) {
               onPair={pairComputer}
               onTest={testComputer}
               onForget={forgetComputer}
+              onPairQr={async (rawQr) => {
+                const parsed = parseLaptopPairingQr(rawQr);
+                return pairComputer(parsed.address, parsed.code);
+              }}
               onOpenExports={onOpenExports}
             />
           )}
@@ -1050,7 +1357,9 @@ function RecordScreen({ title, setTitle, recorderState, nativeRecordingConfirmed
       <Text style={styles.hero}>Record the lecture. Keep the original.</Text>
       <Text style={styles.lead}>SDK 57 records into document storage, then LectureAI preserves a protected copy before transcription, notes, or study processing can touch anything.</Text>
       <View style={styles.card}>
-        <TextInput style={styles.titleInput} value={title} onChangeText={setTitle} editable={!recordingActive} placeholder="Lecture title" />
+        <Text style={styles.fieldLabel}>Lecture Name (optional)</Text>
+        <TextInput style={styles.titleInput} value={title} onChangeText={setTitle} maxLength={180} placeholder="Untitled Lecture" accessibilityLabel="Lecture Name" />
+        <Text style={styles.meta}>You can name it before or during recording, or rename it later. This never changes the audio file.</Text>
         <View style={styles.statusRow} accessibilityLiveRegion="polite"><View style={[styles.statusDot, liveRecorder && styles.statusDotLive]} /><Text style={styles.statusText}>{stateLabel} · {status}</Text></View>
         {inputName ? <Text style={styles.meta}>Input: {inputName}</Text> : null}
         <Text style={styles.timer}>{formatDuration(displayedDuration)}</Text>
@@ -1083,10 +1392,16 @@ function RecordScreen({ title, setTitle, recorderState, nativeRecordingConfirmed
 }
 
 function Library({ lectures, onOpen, onImport }) {
+  const [query, setQuery] = useState('');
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  const visibleLectures = normalizedQuery
+    ? lectures.filter((lecture) => `${lecture.title || ''} ${lecture.course || ''}`.toLocaleLowerCase().includes(normalizedQuery))
+    : lectures;
   return (
     <ScrollView contentContainerStyle={styles.scroll}>
       <View style={styles.sectionHead}><View><Text style={styles.eyebrow}>LOCAL LIBRARY</Text><Text style={styles.sectionTitle}>Lectures</Text></View><SecondaryButton label="Import audio" onPress={onImport} compact /></View>
-      {!lectures.length ? <Empty title="No lectures yet" body="Record a lecture or import an existing audio file. LectureAI keeps a separate original in document storage." /> : lectures.map((lecture) => (
+      {lectures.length ? <TextInput style={styles.textField} value={query} onChangeText={setQuery} placeholder="Find by Lecture Name" accessibilityLabel="Find lectures by name" /> : null}
+      {!lectures.length ? <Empty title="No lectures yet" body="Record a lecture or import an existing audio file. LectureAI keeps a separate original in document storage." /> : !visibleLectures.length ? <Empty title="No matching lectures" body="Try another Lecture Name or course." /> : visibleLectures.map((lecture) => (
         <Pressable key={lecture.id} style={styles.listCard} onPress={() => onOpen(lecture)}>
           <View style={styles.listCardTop}><Text style={styles.listTitle}>{lecture.title}</Text><Text style={styles.chevron}>›</Text></View>
           <Text style={styles.meta}>{new Date(lecture.createdAt).toLocaleString()} · {formatDuration(lecture.durationMs)} · {formatBytes(lecture.size)}</Text>
@@ -1115,11 +1430,13 @@ function StudyHome({ lectures, onOpen }) {
   );
 }
 
-function SettingsScreen({ settings, onChange, freeDisk, onPair, onTest, onForget, onOpenExports }) {
+function SettingsScreen({ settings, onChange, freeDisk, onPair, onPairQr, onTest, onForget, onOpenExports }) {
   const [address, setAddress] = useState(settings.computerAddress || '');
   const [code, setCode] = useState('');
   const [computerMessage, setComputerMessage] = useState('');
   const [busy, setBusy] = useState(false);
+  const [scannerOpen, setScannerOpen] = useState(false);
+  const [advanced, setAdvanced] = useState(false);
   useEffect(() => { setAddress(settings.computerAddress || ''); }, [settings.computerAddress]);
 
   async function pair() {
@@ -1139,6 +1456,20 @@ function SettingsScreen({ settings, onChange, freeDisk, onPair, onTest, onForget
     } catch (error) { setComputerMessage(error instanceof Error ? error.message : 'Could not reach the paired computer.'); } finally { setBusy(false); }
   }
 
+  async function scan(rawQr) {
+    try {
+      setBusy(true); setComputerMessage('Validating QR and pairing with your private laptop…');
+      const health = await onPairQr(rawQr);
+      setScannerOpen(false);
+      setComputerMessage(`Connected · ${health.computer_name || 'Windows computer'} · ${health.configured_model || 'Whisper'} · ${health.warm_status || 'helper running'}.`);
+      return true;
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'This QR code could not be paired.';
+      setComputerMessage(`QR read successfully, but it is not a usable LectureAI pairing code: ${detail}`);
+      return false;
+    } finally { setBusy(false); }
+  }
+
   return (
     <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
       <Text style={styles.eyebrow}>LECTUREAI</Text><Text style={styles.sectionTitle}>Settings</Text>
@@ -1147,14 +1478,16 @@ function SettingsScreen({ settings, onChange, freeDisk, onPair, onTest, onForget
       <SettingRow title="Open share sheet after save" description="Optional. The original is already preserved locally before sharing." value={settings.autoOpenShareSheet} onToggle={() => onChange({ autoOpenShareSheet: !settings.autoOpenShareSheet })} />
       <View style={styles.card}>
         <Text style={styles.cardTitle}>Windows transcription</Text>
-        <Text style={styles.infoText}>On your Windows laptop, double-click <Text style={styles.inlineCode}>start-helper-for-phone.bat</Text>. Use this only on trusted private/home Wi-Fi; the current local transfer uses authenticated HTTP and is not end-to-end encrypted.</Text>
-        <TextInput style={styles.textField} autoCapitalize="none" autoCorrect={false} value={address} onChangeText={setAddress} placeholder="http://192.168.1.20:8765" />
-        <TextInput style={styles.textField} autoCapitalize="characters" autoCorrect={false} value={code} onChangeText={setCode} placeholder="Pairing code" />
-        <PrimaryButton label={busy ? 'Please wait…' : 'Pair this iPhone/iPad'} onPress={pair} disabled={busy} />
-        {settings.computerToken ? <View style={styles.buttonRow}><SecondaryButton label="Test connection" onPress={test} disabled={busy} /><SecondaryButton label="Forget computer" onPress={() => void onForget().then(() => setComputerMessage('Pairing removed from this device.'))} disabled={busy} /></View> : null}
+        <Text style={styles.infoText}>On Windows, double-click <Text style={styles.inlineCode}>Start LectureAI Laptop AI.bat</Text>, then scan its QR code. Use only trusted private/home Wi-Fi; this authenticated local HTTP transfer is not end-to-end encrypted.</Text>
+        <PrimaryButton label={busy ? 'Please wait…' : 'Scan laptop QR'} onPress={() => setScannerOpen(true)} disabled={busy} />
+        {settings.computerToken ? <View style={styles.buttonRow}><SecondaryButton label="Retry connection" onPress={test} disabled={busy} /><SecondaryButton label="Pair another" onPress={() => setScannerOpen(true)} disabled={busy} /><SecondaryButton label="Forget computer" onPress={() => void onForget().then(() => setComputerMessage('Pairing removed from this device.'))} disabled={busy} /></View> : null}
         {computerMessage ? <Text style={styles.connectionMessage}>{computerMessage}</Text> : null}
+        {settings.computerLastConnectedAt ? <Text style={styles.meta}>Last connected: {new Date(settings.computerLastConnectedAt).toLocaleString()}</Text> : null}
+        <Pressable onPress={() => setAdvanced((value) => !value)}><Text style={styles.linkText}>{advanced ? 'Hide advanced manual pairing' : 'Advanced: enter address and code manually'}</Text></Pressable>
+        {advanced ? <><TextInput style={styles.textField} autoCapitalize="none" autoCorrect={false} value={address} onChangeText={setAddress} placeholder="http://192.168.1.20:8765" /><TextInput style={styles.textField} autoCapitalize="characters" autoCorrect={false} value={code} onChangeText={setCode} placeholder="Pairing code" /><PrimaryButton label={busy ? 'Please wait…' : 'Pair manually'} onPress={pair} disabled={busy} /></> : null}
         <Text style={styles.meta}>If the phone cannot reach the PC, make sure Expo Go has Local Network permission, both devices are on the same private Wi-Fi, and Windows Firewall allows Python on Private networks only.</Text>
       </View>
+      <PairingScanner visible={scannerOpen} message={computerMessage} onClose={() => setScannerOpen(false)} onScanned={scan} />
       <View style={styles.infoCard}><Text style={styles.infoTitle}>Device storage</Text><Text style={styles.infoText}>{formatBytes(freeDisk)} available. LectureAI imposes no minute quota; storage, battery, and OS behavior remain real limits.</Text></View>
       <View style={styles.infoCard}><Text style={styles.infoTitle}>On-device transcription</Text><Text style={styles.infoText}>This Expo Go build does not pretend the browser Whisper worker is a native React Native engine. Free transcription is available through your paired Windows faster-whisper helper; timestamped JSON import remains a fallback.</Text></View>
       <View style={styles.infoCard}><Text style={styles.infoTitle}>Privacy & recovery</Text><Text style={styles.infoText}>Original recordings and metadata stay local by default. A secondary metadata backup plus orphan-file scan can rediscover preserved audio, and the active-session journal may recover an interrupted Expo recorder file when iOS leaves one available.</Text></View>
@@ -1162,60 +1495,100 @@ function SettingsScreen({ settings, onChange, freeDisk, onPair, onTest, onForget
   );
 }
 
-function LectureDetail({ lecture, detailTab, setDetailTab, player, playerStatus, computerProgress, computerPaired, onBack, onVerify, onPlaybackCheck, onShare, onImportTranscript, onComputerTranscribe, onSaveTranscriptEdit, onGenerateStudy, onDelete }) {
+function LectureDetail({ lecture, detailTab, setDetailTab, player, playerStatus, computerProgress, enhancementProgress, computerPaired, cleanupMode, playbackSource, onCleanupModeChange, onRename, onBack, onPlayAudio, onSeekOriginal, onGenerateEnhanced, onDeleteEnhanced, onVerify, onPlaybackCheck, onShare, onShareTranscript, onImportTranscript, onComputerTranscribe, onRetryCurrent, onCancelTranscription, onSaveTranscriptEdit, onGenerateStudy, onDelete }) {
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState(lecture.title);
+  const [titleBusy, setTitleBusy] = useState(false);
+  useEffect(() => {
+    setTitleDraft(lecture.title);
+    setEditingTitle(false);
+  }, [lecture.id, lecture.title]);
+  async function saveTitle() {
+    setTitleBusy(true);
+    try {
+      if (await onRename(titleDraft)) setEditingTitle(false);
+    } finally {
+      setTitleBusy(false);
+    }
+  }
   const fresh = derivedContentIsFresh(lecture);
-  const transcriptionBusy = computerProgress && computerProgress.progress > 0 && computerProgress.progress < 100;
+  const savedJob = lecture.windowsTranscriptionJob;
+  const enhanced = currentEnhancedAudio(lecture);
+  const shownProgress = computerProgress || (savedJob?.id && savedJob.status !== 'applied' ? { progress: savedJob.progress, message: savedJob.message } : null);
+  // A retained Windows job can always be checked again. Disable only while this
+  // screen currently owns an active request; after it yields, Check stays usable.
+  const transcriptionBusy = Boolean(computerProgress && computerProgress.progress > 0 && computerProgress.progress < 100);
+  const enhancementBusy = Boolean(enhancementProgress && enhancementProgress.progress >= 0 && enhancementProgress.progress < 100);
+  const windowsJobRunning = Boolean(savedJob?.id && ['queued', 'loading-model', 'transcribing'].includes(savedJob.status));
+  const jobActionLabel = savedJob?.id
+    ? ['failed', 'interrupted', 'stalled', 'cancelled'].includes(savedJob.status) ? 'Resume Windows transcription' : 'Check Windows transcription'
+    : 'Transcribe on paired computer';
   return (
     <View style={styles.app}>
       <View style={styles.detailHeader}>
         <Pressable onPress={onBack}><Text style={styles.back}>‹ Lectures</Text></Pressable>
-        <Text style={styles.detailTitle}>{lecture.title}</Text>
+        {editingTitle ? <View style={styles.renameCard}><Text style={styles.fieldLabel}>Lecture Name</Text><TextInput style={styles.titleInput} value={titleDraft} onChangeText={setTitleDraft} maxLength={180} autoFocus accessibilityLabel="Edit Lecture Name" /><View style={styles.buttonRow}><SecondaryButton label="Cancel" onPress={() => { setTitleDraft(lecture.title); setEditingTitle(false); }} disabled={titleBusy} /><PrimaryButton label={titleBusy ? 'Saving…' : 'Save Lecture Name'} onPress={saveTitle} disabled={titleBusy} /></View><Text style={styles.meta}>Metadata only — the protected original path, hash, transcript, timestamps, enhanced copy, and Windows job stay unchanged.</Text></View> : <><Text style={styles.detailTitle}>{lecture.title}</Text><SecondaryButton label="Edit Lecture Name" onPress={() => setEditingTitle(true)} compact /></>}
         <Text style={styles.meta}>{formatDuration(lecture.durationMs)} · {formatBytes(lecture.size)}</Text>
       </View>
       <View style={styles.detailTabs}>{['audio','transcript','notes','study'].map((id) => <Pressable key={id} onPress={() => setDetailTab(id)} style={[styles.detailTab, detailTab === id && styles.detailTabActive]}><Text style={[styles.detailTabText, detailTab === id && styles.detailTabTextActive]}>{id === 'audio' ? 'Audio' : id === 'transcript' ? 'Transcript' : id === 'notes' ? 'Notes' : 'Study'}</Text></Pressable>)}</View>
       <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
-        {computerProgress ? <View style={styles.progressCard}><Text style={styles.progressText}>{computerProgress.message}</Text>{computerProgress.progress > 0 ? <View style={styles.progressTrack}><View style={[styles.progressFill, { width: `${Math.min(100, computerProgress.progress)}%` }]} /></View> : null}</View> : null}
+        {shownProgress ? <View style={styles.progressCard}><Text style={styles.progressText}>{shownProgress.message}</Text>{shownProgress.progress > 0 ? <View style={styles.progressTrack}><View style={[styles.progressFill, { width: `${Math.min(100, shownProgress.progress)}%` }]} /></View> : null}{savedJob?.totalAudioSeconds > 0 ? <Text style={styles.meta}>{formatTime(savedJob.completedAudioSeconds)} / {formatTime(savedJob.totalAudioSeconds)} transcribed · job saved on Windows</Text> : null}{windowsJobRunning ? <SecondaryButton label="Cancel safely" onPress={onCancelTranscription} /> : null}{savedJob?.id && ['failed', 'interrupted', 'stalled', 'cancelled'].includes(savedJob.status) ? <SecondaryButton label="Retry current section" onPress={onRetryCurrent} disabled={transcriptionBusy} /> : null}</View> : null}
         {detailTab === 'audio' && (
           <>
             {lecture.recoveryNotice ? <View style={styles.warningCard}><Text style={styles.warningTitle}>Recovered / interrupted original audio</Text><Text style={styles.warningText}>{lecture.recoveryNotice}</Text></View> : null}
             <View style={styles.card}>
-              <Text style={styles.cardTitle}>Original recording</Text>
+              <Text style={styles.cardTitle}>ORIGINAL RECORDING</Text>
+              <Text style={styles.protectedLabel}>Protected — never modified</Text>
               <Text style={styles.meta}>{lecture.audioFilename} · {lecture.audioMd5 ? `MD5 ${lecture.audioMd5.slice(0, 10)}…` : 'file hash unavailable'}</Text>
-              <Text style={styles.playTime}>{formatTime(playerStatus.currentTime)} / {formatTime(playerStatus.duration || lecture.durationMs / 1000)}</Text>
-              <View style={styles.buttonRow}><SecondaryButton label={playerStatus.playing ? 'Pause' : 'Play'} onPress={() => playerStatus.playing ? player.pause() : player.play()} /><SecondaryButton label="Back 10s" onPress={() => player.seekTo(Math.max(0, playerStatus.currentTime - 10))} /><SecondaryButton label="+10s" onPress={() => player.seekTo(Math.min(playerStatus.duration || 1e9, playerStatus.currentTime + 10))} /></View>
+              {playbackSource === 'original' ? <Text style={styles.playTime}>{formatTime(playerStatus.currentTime)} / {formatTime(playerStatus.duration || lecture.durationMs / 1000)}</Text> : null}
+              <View style={styles.buttonRow}><SecondaryButton label={playerStatus.playing && playbackSource === 'original' ? 'Pause Original' : 'Play Original'} onPress={() => playerStatus.playing && playbackSource === 'original' ? player.pause() : onPlayAudio('original')} /><SecondaryButton label="Back 10s" onPress={() => onSeekOriginal(Math.max(0, playbackSource === 'original' ? playerStatus.currentTime - 10 : 0))} /><SecondaryButton label="+10s" onPress={() => onSeekOriginal(Math.min(lecture.durationMs / 1000 || 1e9, playbackSource === 'original' ? playerStatus.currentTime + 10 : 10))} /></View>
               <SecondaryButton label="Share / Save to Files" onPress={onShare} />
             </View>
             <PlaybackGate lecture={lecture} onPlaybackCheck={onPlaybackCheck} onVerify={onVerify} />
-            {lecture.marks.length ? <View style={styles.infoCard}><Text style={styles.infoTitle}>Marked moments</Text>{lecture.marks.map((mark) => <Pressable key={mark.id} onPress={() => player.seekTo(mark.timeMs / 1000)}><Text style={styles.sourceLink}>{formatDuration(mark.timeMs)} · {mark.label}</Text></Pressable>)}</View> : null}
+            <View style={styles.card}>
+              <Text style={styles.cardTitle}>ENHANCED FOR TRANSCRIPTION</Text>
+              <Text style={styles.derivedLabel}>Derived copy — safe to regenerate or delete</Text>
+              <Text style={styles.meta}>{enhanced ? `${enhanced.cleanupMode[0].toUpperCase()}${enhanced.cleanupMode.slice(1)} · ${formatBytes(enhanced.size)} · generated ${new Date(enhanced.generatedAt).toLocaleString()}` : 'Enhanced audio: Not generated'}</Text>
+              <Text style={styles.infoText}>Balanced is recommended: speech-aware stationary-noise reduction with conservative quiet-word protection. Strong suppresses more background noise but can affect difficult or overlapping speech. Off makes only the separate transcription-format copy. No mode trims the timeline; transcript timestamps always seek in the protected original recording.</Text>
+              <View style={styles.buttonRow}>{['off', 'balanced', 'strong'].map((mode) => <Pressable key={mode} onPress={() => onCleanupModeChange(mode)} style={[styles.secondaryButton, cleanupMode === mode && styles.primaryButton]} disabled={enhancementBusy}><Text style={cleanupMode === mode ? styles.primaryButtonText : styles.secondaryButtonText}>{mode[0].toUpperCase() + mode.slice(1)}</Text></Pressable>)}</View>
+              {cleanupMode === 'strong' ? <Text style={styles.warningText}>Strong cleanup can affect difficult or overlapping speech. It never edits the protected original and automatically falls back to Balanced or Off when transcription quality signals regress.</Text> : null}
+              {enhancementProgress ? <View style={styles.progressCard}><Text style={styles.progressText}>{enhancementProgress.message}</Text><View style={styles.progressTrack}><View style={[styles.progressFill, { width: `${Math.min(100, enhancementProgress.progress)}%` }]} /></View></View> : null}
+              <PrimaryButton label={enhancementBusy ? 'Generating enhanced copy…' : enhanced ? 'Regenerate Enhanced' : 'Generate Enhanced'} onPress={onGenerateEnhanced} disabled={enhancementBusy || !computerPaired} />
+              {enhanced ? <View style={styles.buttonRow}><SecondaryButton label={playerStatus.playing && playbackSource === 'enhanced' ? 'Pause Enhanced' : 'Play Enhanced'} onPress={() => playerStatus.playing && playbackSource === 'enhanced' ? player.pause() : onPlayAudio('enhanced')} /><SecondaryButton label="Delete Enhanced Copy" onPress={onDeleteEnhanced} /></View> : null}
+              {!computerPaired ? <Text style={styles.meta}>Pair Laptop AI in Settings to generate a private enhanced copy.</Text> : null}
+            </View>
+            {lecture.marks.length ? <View style={styles.infoCard}><Text style={styles.infoTitle}>Marked moments</Text>{lecture.marks.map((mark) => <Pressable key={mark.id} onPress={() => onSeekOriginal(mark.timeMs / 1000)}><Text style={styles.sourceLink}>{formatDuration(mark.timeMs)} · {mark.label}</Text></Pressable>)}</View> : null}
             <DangerButton label="Delete lecture & original audio" onPress={onDelete} />
           </>
         )}
         {detailTab === 'transcript' && (
           <>
-            <View style={styles.infoCard}><Text style={styles.infoTitle}>{lecture.englishTranscript?.length ? 'Editable English transcript' : 'Timestamped transcript'}</Text><Text style={styles.infoText}>The original audio remains the source of truth. Correcting transcript text never modifies the recording.</Text>{lecture.sourceLanguage ? <Text style={styles.infoText}>Detected source language: {lecture.sourceLanguage}{lecture.sourceLanguageProbability != null ? ` · detection probability ${Number(lecture.sourceLanguageProbability).toFixed(3)} (not transcription accuracy)` : ''}</Text> : null}{lecture.transcriptionAccuracyNote ? <Text style={styles.infoText}>{lecture.transcriptionAccuracyNote}</Text> : null}</View>
-            {!lecture.transcript.length ? <Empty title="No transcript yet" body={computerPaired ? 'Use your paired Windows computer for local faster-whisper transcription, or import timestamped transcript JSON.' : 'Pair your Windows computer in Settings for free local faster-whisper transcription, or import timestamped transcript JSON.'} action={<><PrimaryButton label={transcriptionBusy ? 'Transcribing…' : 'Transcribe on paired computer'} onPress={onComputerTranscribe} disabled={transcriptionBusy} /><SecondaryButton label="Import transcript JSON" onPress={onImportTranscript} /></>} /> : lecture.transcript.map((segment) => (
+            <View style={styles.infoCard}><Text style={styles.infoTitle}>Transcription audio source</Text><Text style={styles.infoText}>Transcribe Original keeps the protected file untouched and uses the selected {cleanupMode} mode only on disposable Windows sections, with bounded quality fallback. Transcribe Enhanced uses the retained derived copy. Either choice keeps every timestamp aligned to the original recording.</Text><PrimaryButton label={`Transcribe Original (${cleanupMode} cleanup)`} onPress={() => onComputerTranscribe('original')} disabled={transcriptionBusy} />{enhanced ? <SecondaryButton label={`Transcribe Enhanced (${enhanced.cleanupMode})`} onPress={() => onComputerTranscribe('enhanced')} disabled={transcriptionBusy} /> : <Text style={styles.meta}>Enhanced audio: Not generated. Create it from the Audio tab whenever you want.</Text>}</View>
+            <View style={styles.infoCard}><Text style={styles.infoTitle}>Editable source transcript</Text><Text style={styles.infoText}>The original mixed-language speech remains authoritative. English/Arabic views are separate and never replace it.</Text>{lecture.sourceLanguage ? <Text style={styles.infoText}>Detected source language: {lecture.sourceLanguage}{lecture.sourceLanguageProbability != null ? ` · detection probability ${Number(lecture.sourceLanguageProbability).toFixed(3)} (not transcription accuracy)` : ' · detected independently by audio window'}</Text> : null}{lecture.transcriptionAccuracyNote ? <Text style={styles.infoText}>{lecture.transcriptionAccuracyNote}</Text> : null}</View>
+            {!lecture.transcript.length ? <Empty title="No transcript yet" body={computerPaired ? 'Choose Original or Enhanced above for local faster-whisper transcription, or import timestamped transcript JSON.' : 'Pair your Windows computer in Settings for free local faster-whisper transcription, or import timestamped transcript JSON.'} action={<SecondaryButton label="Import transcript JSON" onPress={onImportTranscript} />} /> : lecture.transcript.map((segment) => (
               <View key={segment.id} style={[styles.transcriptRow, segment.uncertain && styles.uncertainRow]}>
-                <Pressable onPress={() => { player.seekTo(segment.startTime); player.play(); }}><Text style={styles.timestamp}>{formatTime(segment.startTime)} – {formatTime(segment.endTime)}</Text></Pressable>
+                <Pressable onPress={() => onSeekOriginal(segment.startTime)}><Text style={styles.timestamp}>{formatTime(segment.startTime)} – {formatTime(segment.endTime)}</Text></Pressable>
                 <TextInput multiline style={styles.transcriptInput} defaultValue={segment.editedText} onEndEditing={(event) => onSaveTranscriptEdit(segment.id, event.nativeEvent.text)} />
                 <Text style={styles.meta}>{segment.uncertain ? 'Needs verification against audio' : segment.manuallyReviewed ? 'Reviewed' : 'Machine/imported text'} · {segment.speaker || 'Speaker'}</Text>
               </View>
             ))}
-            {lecture.transcript.length ? <View style={styles.buttonRow}><SecondaryButton label="Retranscribe on computer" onPress={onComputerTranscribe} disabled={transcriptionBusy} /><SecondaryButton label="Replace JSON transcript" onPress={onImportTranscript} /></View> : null}
-            {lecture.sourceTranscript?.length ? <View style={styles.infoCard}><Text style={styles.infoTitle}>Original-language transcript · read-only</Text><Text style={styles.infoText}>This is the preserved source-language recognition pass. It is separate from the editable English transcript.</Text>{lecture.sourceTranscript.map((segment) => <View key={`source-${segment.id}`} style={[styles.transcriptRow, segment.uncertain && styles.uncertainRow]}><Pressable accessibilityRole="button" accessibilityLabel={`Play source transcript at ${formatTime(segment.startTime)}`} onPress={() => { player.seekTo(segment.startTime); player.play(); }}><Text style={styles.timestamp}>{formatTime(segment.startTime)} – {formatTime(segment.endTime)}</Text></Pressable><Text style={styles.studyText}>{segment.editedText || segment.originalText}</Text><Text style={styles.meta}>{segment.uncertain ? 'Needs verification against audio' : 'Machine transcript'} · {segment.speaker || 'Speaker'}</Text></View>)}</View> : null}
+            {lecture.transcript.length ? <View style={styles.infoCard}><Text style={styles.infoTitle}>Share / Export Transcript</Text><Text style={styles.infoText}>Send or save transcript files through the normal iPhone/iPad share sheet. Sharing or cancelling never changes the transcript or protected original audio.</Text><PrimaryButton label="Share current transcript" onPress={() => onShareTranscript('current')} />{lecture.englishTranscript?.length ? <SecondaryButton label="Share English transcript" onPress={() => onShareTranscript('english')} /> : null}{lecture.sourceTranscript?.length ? <SecondaryButton label="Share original-language transcript" onPress={() => onShareTranscript('source')} /> : null}</View> : null}
+            {lecture.transcript.length ? <View style={styles.buttonRow}>{savedJob?.id && savedJob.status !== 'applied' ? <SecondaryButton label={jobActionLabel} onPress={() => onComputerTranscribe(savedJob.audioInputSource || 'original')} disabled={transcriptionBusy} /> : null}<SecondaryButton label="Replace JSON transcript" onPress={onImportTranscript} /></View> : null}
+            {lecture.sourceTranscript?.length ? <View style={styles.infoCard}><Text style={styles.infoTitle}>Original-language transcript · read-only</Text><Text style={styles.infoText}>This is the preserved source-language recognition pass. It is separate from the editable English transcript.</Text>{lecture.sourceTranscript.map((segment) => <View key={`source-${segment.id}`} style={[styles.transcriptRow, segment.uncertain && styles.uncertainRow]}><Pressable accessibilityRole="button" accessibilityLabel={`Play source transcript at ${formatTime(segment.startTime)}`} onPress={() => onSeekOriginal(segment.startTime)}><Text style={styles.timestamp}>{formatTime(segment.startTime)} – {formatTime(segment.endTime)}</Text></Pressable><Text style={styles.studyText}>{segment.editedText || segment.originalText}</Text><Text style={styles.meta}>{segment.uncertain ? 'Needs verification against audio' : 'Machine transcript'} · {segment.speaker || 'Speaker'}</Text></View>)}</View> : null}
           </>
         )}
-        {detailTab === 'notes' && <StudyPackView lecture={lecture} mode="notes" fresh={fresh} onGenerate={onGenerateStudy} player={player} />}
-        {detailTab === 'study' && <StudyPackView lecture={lecture} mode="study" fresh={fresh} onGenerate={onGenerateStudy} player={player} />}
+        {detailTab === 'notes' && <StudyPackView lecture={lecture} mode="notes" fresh={fresh} onGenerate={onGenerateStudy} onSeekOriginal={onSeekOriginal} />}
+        {detailTab === 'study' && <StudyPackView lecture={lecture} mode="study" fresh={fresh} onGenerate={onGenerateStudy} onSeekOriginal={onSeekOriginal} />}
       </ScrollView>
     </View>
   );
 }
 
-function StudyPackView({ lecture, mode, fresh, onGenerate, player }) {
+function StudyPackView({ lecture, mode, fresh, onGenerate, onSeekOriginal }) {
   const pack = lecture.studyPack;
   if (!lecture.transcript.length) return <Empty title="A transcript is required" body="Study material should never be invented without source text. Import or generate a timestamped transcript first." />;
   if (!pack || !fresh) return <Empty title={pack ? 'Transcript changed' : 'Study pack not generated yet'} body={pack ? 'Your transcript is newer than the current notes. Update derived content so corrections propagate instead of leaving stale notes.' : 'Generate a source-grounded pack from trustworthy transcript sections across the whole lecture.'} action={<PrimaryButton label={pack ? 'Update derived content' : 'Generate study pack'} onPress={onGenerate} />} />;
-  const sourceList = (sectionTitle, items) => items?.length ? <View style={styles.studySection}><Text style={styles.studyHeading}>{sectionTitle}</Text>{items.map((item, index) => <View key={`${sectionTitle}-${index}`} style={styles.studyItem}><Text style={styles.studyText}>{item.text}</Text>{item.source ? <Pressable onPress={() => { player.seekTo(item.source.startTime); player.play(); }}><Text style={styles.sourceLink}>▶ {formatTime(item.source.startTime)} source audio</Text></Pressable> : null}</View>)}</View> : null;
+  const sourceList = (sectionTitle, items) => items?.length ? <View style={styles.studySection}><Text style={styles.studyHeading}>{sectionTitle}</Text>{items.map((item, index) => <View key={`${sectionTitle}-${index}`} style={styles.studyItem}><Text style={styles.studyText}>{item.text}</Text>{item.source ? <Pressable onPress={() => onSeekOriginal(item.source.startTime)}><Text style={styles.sourceLink}>▶ {formatTime(item.source.startTime)} original source audio</Text></Pressable> : null}</View>)}</View> : null;
   return (
     <>
       {pack.warning ? <View style={styles.warningCard}><Text style={styles.warningText}>{pack.warning}</Text></View> : null}
@@ -1266,6 +1639,9 @@ const styles = StyleSheet.create({
   lead: { color: '#587066', fontSize: 15, lineHeight: 22, marginTop: 9 },
   card: { backgroundColor: '#FFF', borderWidth: 1, borderColor: '#DFE8E3', borderRadius: 22, padding: 18, marginTop: 20 },
   cardTitle: { color: '#173129', fontWeight: '900', fontSize: 19 },
+  fieldLabel: { color: '#527064', fontWeight: '900', fontSize: 11, letterSpacing: .4 },
+  protectedLabel: { color: '#1F6B4F', fontSize: 13, fontWeight: '800', marginTop: 4 },
+  derivedLabel: { color: '#546B62', fontSize: 13, fontWeight: '700', marginTop: 4 },
   titleInput: { borderBottomWidth: 1, borderBottomColor: '#DDE5E0', paddingVertical: 10, color: '#173129', fontSize: 18, fontWeight: '800' },
   textField: { borderWidth: 1, borderColor: '#D4DFD9', backgroundColor: '#FAFCFB', borderRadius: 13, paddingHorizontal: 12, paddingVertical: 11, marginTop: 10, color: '#173129', fontSize: 14 },
   inlineCode: { fontFamily: 'monospace', fontWeight: '800' },
@@ -1318,6 +1694,7 @@ const styles = StyleSheet.create({
   switchKnob: { width: 20, height: 20, borderRadius: 20, backgroundColor: '#FFF' },
   switchKnobOn: { alignSelf: 'flex-end' },
   connectionMessage: { color: '#315F4B', fontSize: 12, fontWeight: '800', marginTop: 10, lineHeight: 18 },
+  linkText: { color: '#226FA8', fontSize: 13, fontWeight: '800', marginTop: 12 },
   tabBar: { minHeight: 66, flexDirection: 'row', borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: '#D9E2DD', backgroundColor: '#FBFCFA', paddingHorizontal: 8, paddingBottom: 4 },
   tabButton: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 2, borderRadius: 13, marginVertical: 5 },
   tabButtonActive: { backgroundColor: '#E9F0EC' },
@@ -1327,6 +1704,7 @@ const styles = StyleSheet.create({
   detailHeader: { padding: 18, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: '#D9E2DD' },
   back: { color: '#315F4B', fontWeight: '800', fontSize: 13, marginBottom: 10 },
   detailTitle: { color: '#173129', fontWeight: '900', fontSize: 24 },
+  renameCard: { backgroundColor: '#FFF', borderWidth: 1, borderColor: '#D8E4DE', borderRadius: 16, padding: 13 },
   detailTabs: { flexDirection: 'row', paddingHorizontal: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: '#D9E2DD' },
   detailTab: { flex: 1, alignItems: 'center', paddingVertical: 12, borderBottomWidth: 2, borderBottomColor: 'transparent' },
   detailTabActive: { borderBottomColor: '#315F4B' },

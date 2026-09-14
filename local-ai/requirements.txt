@@ -1,6 +1,9 @@
 faster-whisper>=1.1,<2
+av>=14,<19
+numpy>=1.26,<3
 fastapi>=0.115,<1
 uvicorn>=0.34,<1
 python-multipart>=0.0.20,<1
 psutil>=6,<8
 pypdf>=5,<7
+qrcode[pil]>=7.4,<9

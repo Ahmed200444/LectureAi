@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { deleteAudioChunks, finalizeAudio, saveAudioChunk } from '../lib/db';
+import { finalizeAudio, saveAudioChunk } from '../lib/db';
 import { assertLiveMicrophoneStream, validatePlayableAudio, verifyMicrophoneCapture } from '../lib/audio-validation';
 import { applyLectureAudioPreferences, lectureAudioConstraints, preferredRecordingMimeType } from '../lib/device';
 import { setRecordingSessionActive } from '../lib/recording-session';
@@ -154,8 +154,8 @@ export function useRecorder() {
       let recorder: MediaRecorder;
       try {
         recorder = requestedMimeType
-          ? new MediaRecorder(acquiredStream, { mimeType: requestedMimeType, audioBitsPerSecond: 192_000 })
-          : new MediaRecorder(acquiredStream, { audioBitsPerSecond: 192_000 });
+          ? new MediaRecorder(acquiredStream, { mimeType: requestedMimeType, audioBitsPerSecond: 128_000 })
+          : new MediaRecorder(acquiredStream, { audioBitsPerSecond: 128_000 });
       } catch {
         recorder = new MediaRecorder(acquiredStream);
       }
@@ -394,7 +394,6 @@ export function useRecorder() {
     try {
       const verified = await validatePlayableAudio(blob);
       if (verified.duration) elapsedRef.current = verified.duration;
-      await deleteAudioChunks(lectureIdRef.current);
     } catch (validationError) {
       recorderRef.current = null;
       recorderStoppedRef.current = null;
@@ -416,6 +415,9 @@ export function useRecorder() {
     setIsPaused(false);
     setDuration(elapsedRef.current);
     stopMeters();
+    // Checkpoints intentionally remain until the caller has durably committed the
+    // finished lecture metadata. If the app closes between audio assembly and that
+    // metadata write, recovery can still rebuild the same original recording.
     return { blob, duration: elapsedRef.current, mimeType: blob.type, chunkCount: chunkIndexRef.current, recoveredFromInterruption };
   }, [stopMeters]);
 

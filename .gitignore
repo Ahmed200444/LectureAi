@@ -37,6 +37,8 @@ next-env.d.ts
 /outputs/
 /work/
 /.seo-god/
+/.lectureai-runtime/
+/LectureAI-Pairing-QR.png
 
 # LectureAI private/local data and model downloads
 /.venv/
@@ -57,3 +59,10 @@ __pycache__/
 *.mp3
 *.flac
 *.ogg
+/expo-recorder/node_modules/
+/expo-recorder/.expo/
+/expo-recorder/dist/
+/expo-recorder/dist-ios/
+/expo-recorder/dist-android/
+/expo-recorder/.expo-smoke-ios/
+/expo-recorder/.expo-smoke-android/

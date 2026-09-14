@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pairing import MAX_PAIRING_ATTEMPTS_PER_WINDOW, PairingStore, is_private_client
+from pairing import MAX_PAIRING_ATTEMPTS_PER_WINDOW, PairingStore, is_private_client, laptop_pairing_qr
 
 
 def expect_raises(error_type, callback):
@@ -16,13 +16,17 @@ def run():
     assert is_private_client("192.168.1.25")
     assert is_private_client("10.0.0.7")
     assert is_private_client("172.16.10.2")
-    assert is_private_client("169.254.10.4")
+    assert not is_private_client("169.254.10.4")
     assert is_private_client("::1")
     assert is_private_client("fd00::10")
     assert not is_private_client("8.8.8.8")
     assert not is_private_client("100.64.0.1"), "Carrier-grade NAT is not the trusted private LAN allowlist"
     assert not is_private_client("203.0.113.5"), "Documentation/reserved ranges must not be accepted just because ipaddress marks them non-global"
     assert not is_private_client("example.com")
+    assert laptop_pairing_qr("http://192.168.1.25:8765", "abcdefgh") == "lectureai-pair:v1|http://192.168.1.25:8765|ABCDEFGH"
+    expect_raises(ValueError, lambda: laptop_pairing_qr("https://192.168.1.25:8765", "ABCDEFGH"))
+    expect_raises(ValueError, lambda: laptop_pairing_qr("http://8.8.8.8:8765", "ABCDEFGH"))
+    expect_raises(ValueError, lambda: laptop_pairing_qr("http://192.168.1.25:8765/path", "ABCDEFGH"))
 
     clock = [1_000.0]
     store = PairingStore(code="ABCDEFGH", now=lambda: clock[0])
@@ -50,7 +54,7 @@ def run():
     limited_clock[0] += 61
     assert limited.pair("192.168.1.30", "ABCDEFGH").token
 
-    print("✓ authenticated private-LAN pairing safeguards passed")
+    print("[PASS] authenticated private-LAN pairing safeguards passed")
 
 
 if __name__ == "__main__":

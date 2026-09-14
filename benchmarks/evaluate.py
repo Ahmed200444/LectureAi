@@ -37,8 +37,13 @@ class Score:
     technical_total: int
     number_hits: int
     number_total: int
+    uncertain_segment_count: int | None
+    segment_count: int | None
     manual_review_seconds: float | None
     hallucination_count: int | None
+    audio_duration_seconds: float | None
+    processing_duration_seconds: float | None
+    real_time_factor: float | None
 
 
 def normalize_text(text: str, *, arabic_friendly: bool = False) -> str:
@@ -149,6 +154,20 @@ def score_record(record: dict) -> Score:
     reference_numbers = normalized_numbers(reference)
     hypothesis_numbers = normalized_numbers(hypothesis)
     number_hits, number_total = multiset_hits(reference_numbers, hypothesis_numbers)
+    audio_duration = optional_float(record, "audio_duration_seconds")
+    processing_duration = optional_float(record, "processing_duration_seconds")
+    if audio_duration == 0:
+        raise ValueError("audio_duration_seconds must be greater than zero when provided")
+    measured_rtf = optional_float(record, "real_time_factor")
+    calculated_rtf = processing_duration / audio_duration if audio_duration is not None and processing_duration is not None else None
+    uncertain_segment_count = optional_int(record, "uncertain_segment_count")
+    segment_count = optional_int(record, "segment_count")
+    if segment_count == 0:
+        raise ValueError("segment_count must be greater than zero when provided")
+    if uncertain_segment_count is not None and segment_count is None:
+        raise ValueError("segment_count is required with uncertain_segment_count")
+    if uncertain_segment_count is not None and segment_count is not None and uncertain_segment_count > segment_count:
+        raise ValueError("uncertain_segment_count cannot exceed segment_count")
 
     return Score(
         wer=error_rate(reference, hypothesis),
@@ -159,8 +178,13 @@ def score_record(record: dict) -> Score:
         technical_total=len(technical_terms),
         number_hits=number_hits,
         number_total=number_total,
+        uncertain_segment_count=uncertain_segment_count,
+        segment_count=segment_count,
         manual_review_seconds=optional_float(record, "manual_review_seconds"),
         hallucination_count=optional_int(record, "hallucination_count"),
+        audio_duration_seconds=audio_duration,
+        processing_duration_seconds=processing_duration,
+        real_time_factor=calculated_rtf if calculated_rtf is not None else measured_rtf,
     )
 
 
@@ -184,7 +208,7 @@ def main() -> None:
     if not isinstance(records, list) or not records:
         raise SystemExit("Benchmark manifest must be a non-empty JSON array.")
 
-    groups: dict[tuple[str, str, str], list[Score]] = defaultdict(list)
+    groups: dict[tuple[str, str, str, str, str, str], list[Score]] = defaultdict(list)
     for index, record in enumerate(records, start=1):
         if not isinstance(record, dict):
             raise SystemExit(f"Record {index} must be a JSON object.")
@@ -192,25 +216,34 @@ def main() -> None:
         score = score_record(record)
         groups[(
             str(record.get("model", "unknown")),
+            str(record.get("device", "unknown")),
+            str(record.get("compute_type", "unknown")),
             str(record.get("language", "unknown")),
             str(record.get("condition", "unknown")),
+            str(record.get("enhancement", "unknown")),
         )].append(score)
 
     columns = [
-        "model", "language", "condition", "clips",
+        "model", "device", "compute", "language", "condition", "enhancement", "clips",
         "WER", "CER", "ArabicNormWER", "ArabicNormCER",
-        "TechTermRecall", "NumberRecall", "AvgReviewSec", "AvgHallucinations",
+        "TechTermRecall", "NumberRecall", "UncertainRate", "AvgReviewSec", "AvgHallucinations",
+        "AudioSec", "ProcessingSec", "RTF",
     ]
     print("\t".join(columns))
-    for (model, language, condition), scores in sorted(groups.items()):
+    for (model, device, compute_type, language, condition, enhancement), scores in sorted(groups.items()):
         technical_hits = sum(score.technical_hits for score in scores)
         technical_total = sum(score.technical_total for score in scores)
         number_hits = sum(score.number_hits for score in scores)
         number_total = sum(score.number_total for score in scores)
+        uncertain_hits = sum(score.uncertain_segment_count or 0 for score in scores)
+        uncertain_total = sum(score.segment_count or 0 for score in scores)
         values = [
             model,
+            device,
+            compute_type,
             language,
             condition,
+            enhancement,
             str(len(scores)),
             f"{sum(score.wer for score in scores) / len(scores):.3f}",
             f"{sum(score.cer for score in scores) / len(scores):.3f}",
@@ -218,8 +251,12 @@ def main() -> None:
             f"{sum(score.arabic_cer for score in scores) / len(scores):.3f}",
             ratio(technical_hits, technical_total),
             ratio(number_hits, number_total),
+            ratio(uncertain_hits, uncertain_total),
             mean_optional([score.manual_review_seconds for score in scores]),
             mean_optional([score.hallucination_count for score in scores]),
+            mean_optional([score.audio_duration_seconds for score in scores]),
+            mean_optional([score.processing_duration_seconds for score in scores]),
+            mean_optional([score.real_time_factor for score in scores]),
         ]
         print("\t".join(values))
 

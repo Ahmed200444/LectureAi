@@ -4,9 +4,11 @@ import ipaddress
 import secrets
 import threading
 import time
+from urllib.parse import urlsplit
 from dataclasses import dataclass
 
 PAIRING_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+PAIRING_QR_PREFIX = "lectureai-pair:v1"
 SESSION_TTL_SECONDS = 12 * 60 * 60
 PAIRING_WINDOW_SECONDS = 60
 MAX_PAIRING_ATTEMPTS_PER_WINDOW = 10
@@ -21,6 +23,37 @@ def generate_pairing_code(length: int = 8) -> str:
     return "".join(secrets.choice(PAIRING_ALPHABET) for _ in range(length))
 
 
+def laptop_pairing_qr(address: str, code: str) -> str:
+    """Return the deliberately small, non-secret QR payload used by Expo Go.
+
+    The bearer token is never encoded here; it is minted only after the phone
+    submits this short-lived, visible pairing code to the private LAN helper.
+    """
+    normalized_address = str(address or "").strip().rstrip("/")
+    normalized_code = str(code or "").strip().upper()
+    try:
+        parsed = urlsplit(normalized_address)
+        host = parsed.hostname or ""
+        port = parsed.port
+    except ValueError as error:
+        raise ValueError("Pairing QR requires a valid private-LAN address.") from error
+    if parsed.scheme != "http" or not host or parsed.username or parsed.password or parsed.path or parsed.query or parsed.fragment:
+        raise ValueError("Pairing QR requires only an http private-LAN base address.")
+    if not is_private_lan_ipv4(host) or port is None:
+        raise ValueError("Pairing QR requires a private IPv4 address and port.")
+    if len(normalized_code) != 8 or any(character not in PAIRING_ALPHABET for character in normalized_code):
+        raise ValueError("Pairing QR requires an eight-character pairing code.")
+    return f"{PAIRING_QR_PREFIX}|{normalized_address}|{normalized_code}"
+
+
+def is_private_lan_ipv4(host: str) -> bool:
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return isinstance(address, ipaddress.IPv4Address) and any(address in network for network in IPV4_PRIVATE_NETWORKS)
+
+
 def is_private_client(host: str | None) -> bool:
     if not host:
         return False
@@ -31,10 +64,10 @@ def is_private_client(host: str | None) -> bool:
     except ValueError:
         return False
 
-    if address.is_loopback or address.is_link_local:
+    if address.is_loopback:
         return True
     if isinstance(address, ipaddress.IPv4Address):
-        return any(address in network for network in IPV4_PRIVATE_NETWORKS)
+        return is_private_lan_ipv4(host)
     return address in IPV6_UNIQUE_LOCAL
 
 

@@ -60,6 +60,43 @@ class AccuracyEvaluatorTests(unittest.TestCase):
                 "hallucination_count": -1,
             })
 
+    def test_performance_metrics_calculate_real_time_factor(self) -> None:
+        score = evaluate.score_record({
+            "reference": "source transcript",
+            "hypothesis": "source transcript",
+            "audio_duration_seconds": 2700,
+            "processing_duration_seconds": 900,
+            "model": "medium",
+            "device": "cpu",
+            "compute_type": "int8",
+        })
+        self.assertAlmostEqual(score.real_time_factor or 0, 1 / 3)
+        with self.assertRaisesRegex(ValueError, "greater than zero"):
+            evaluate.score_record({
+                "reference": "source transcript",
+                "hypothesis": "source transcript",
+                "audio_duration_seconds": 0,
+                "processing_duration_seconds": 10,
+            })
+
+    def test_uncertain_segment_rate_requires_consistent_counts(self) -> None:
+        score = evaluate.score_record({
+            "reference": "اشرح pointer رقم 42",
+            "hypothesis": "اشرح pointer رقم 42",
+            "uncertain_segment_count": 1,
+            "segment_count": 5,
+            "enhancement": "speech-focused-balanced",
+        })
+        self.assertEqual(score.uncertain_segment_count, 1)
+        self.assertEqual(score.segment_count, 5)
+        with self.assertRaisesRegex(ValueError, "cannot exceed"):
+            evaluate.score_record({
+                "reference": "speech",
+                "hypothesis": "speech",
+                "uncertain_segment_count": 2,
+                "segment_count": 1,
+            })
+
 
 if __name__ == "__main__":
     unittest.main()

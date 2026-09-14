@@ -66,10 +66,12 @@ assert.match(recorder, /did not confirm the recorder’s final stop event/);
 assert.match(recorder, /kept all completed checkpoints for recovery/);
 assert.match(database, /new Blob\(chunks\.map\(\(chunk\) => chunk\.blob\)/);
 assert.match(recorder, /validatePlayableAudio\(blob\)/);
-assert.match(recorder, /deleteAudioChunks/);
+assert.doesNotMatch(recorder, /deleteAudioChunks/);
+assert.match(flow, /await saveLecture\(updated\)/);
+assert.match(flow, /await deleteAudioChunks\(lecture\.id\)/);
 
 // Long sessions have no LectureAI-imposed duration quota and storage failure stays a failure.
-assert.match(recorder, /audioBitsPerSecond: 192_000/);
+assert.match(recorder, /audioBitsPerSecond: 128_000/);
 assert.match(recorder, /delayed a recording checkpoint/);
 assert.match(recorder, /did not mark this lecture as safely saved/);
 assert.doesNotMatch(app, /8 GB local safety limit/);

@@ -84,8 +84,8 @@ export async function verifyMicrophoneCapture(stream: MediaStream, timeoutMs = 1
   let recorder: MediaRecorder;
   try {
     recorder = preferredMimeType
-      ? new MediaRecorder(stream, { mimeType: preferredMimeType, audioBitsPerSecond: 192_000 })
-      : new MediaRecorder(stream, { audioBitsPerSecond: 192_000 });
+      ? new MediaRecorder(stream, { mimeType: preferredMimeType, audioBitsPerSecond: 128_000 })
+      : new MediaRecorder(stream, { audioBitsPerSecond: 128_000 });
   } catch {
     recorder = new MediaRecorder(stream);
   }

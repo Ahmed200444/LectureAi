@@ -1,6 +1,4 @@
 import type { TranscriptionProgress } from './transcription.ts';
-import type { TranscriptSegment } from './types.ts';
-import { translateTranscriptView } from './translation.ts';
 import { isIOSDevice } from './device.ts';
 
 type WorkerMessage = {
@@ -33,9 +31,10 @@ type WorkerPayload = {
 };
 
 const SAMPLE_RATE = 16_000;
-const WINDOW_SECONDS = 180;
-const OVERLAP_SECONDS = 5;
+const WINDOW_SECONDS = 90;
+const OVERLAP_SECONDS = 4;
 const MAX_FAR_FIELD_GAIN = 16;
+const WINDOW_WATCHDOG_MS = 12 * 60_000;
 
 let sharedWorker: Worker | null = null;
 let preparedModel: { model: string } | null = null;
@@ -64,30 +63,6 @@ function preferredPhoneModelStartIndex() {
 
 function releasePhoneTranscriptionWorker() {
   if (sharedWorker) resetWorker(sharedWorker);
-}
-
-function guessLanguage(text: string): TranscriptSegment['detectedLanguage'] {
-  const arabic = (text.match(/[\u0600-\u06FF]/g) || []).length;
-  const english = (text.match(/[A-Za-z]/g) || []).length;
-  if (arabic && english) return 'mixed';
-  if (arabic) return 'ar';
-  if (english) return 'en';
-  return 'unknown';
-}
-
-function asTranscriptSegments(segments: WorkerSegment[], lectureId: string): TranscriptSegment[] {
-  return segments.map((segment, index) => ({
-    id: `${lectureId}-phone-source-${index + 1}`,
-    lectureId,
-    startTime: segment.start,
-    endTime: segment.end,
-    originalText: segment.text,
-    editedText: segment.text,
-    detectedLanguage: guessLanguage(segment.text),
-    confidence: undefined,
-    manuallyReviewed: false,
-    speaker: segment.speaker || 'Professor',
-  }));
 }
 
 function sampledRms(channel: Float32Array) {
@@ -238,6 +213,7 @@ function runWorkerChunk(
   return new Promise<WorkerPayload>((resolve, reject) => {
     const instance = worker();
     const cleanUp = () => {
+      window.clearTimeout(watchdog);
       instance.removeEventListener('message', listener);
       instance.removeEventListener('error', workerError);
       instance.removeEventListener('messageerror', messageError);
@@ -249,6 +225,7 @@ function runWorkerChunk(
     };
     const workerError = () => fail('The on-device speech worker stopped unexpectedly.', true);
     const messageError = () => fail('The device could not communicate with the on-device speech worker.', true);
+    const watchdog = window.setTimeout(() => fail('This on-device transcription section stopped making progress. Completed sections remain saved; use Resume or move the original recording to Windows.', true), WINDOW_WATCHDOG_MS);
     const listener = (event: MessageEvent<WorkerMessage>) => {
       const message = event.data;
       if (message.type === 'model-progress') {
@@ -369,6 +346,10 @@ export async function transcribeOnPhone(
   audio: Blob,
   onProgress: (update: TranscriptionProgress) => void,
   onModelReady: () => void,
+  options: {
+    checkpoint?: { audioIdentity?: string; completedWindow?: number; segments?: WorkerSegment[] };
+    onCheckpoint?: (checkpoint: Record<string, unknown>) => Promise<void> | void;
+  } = {},
 ) {
   const isIOS = isIOSDevice();
   onProgress({
@@ -401,6 +382,10 @@ export async function transcribeOnPhone(
     [decoded] = await Promise.all([decodeTo16Khz(audio), warmup.then(() => undefined)]);
   }
   const { pcm, signal, channelInfo } = decoded;
+  const audioIdentity = `${audio.size}:${audio.type}:${pcm.length}`;
+  if (options.checkpoint?.audioIdentity && options.checkpoint.audioIdentity !== audioIdentity) {
+    throw new Error('The saved phone transcription checkpoint belongs to a different audio file. The original and checkpoint were left unchanged.');
+  }
 
   const channelMessage = channelInfo.selectedChannel === undefined ? '' : ` · using the stronger audio channel ${channelInfo.selectedChannel + 1}`;
   if (signal.gain > 1.03) {
@@ -415,13 +400,17 @@ export async function transcribeOnPhone(
   const starts: number[] = [];
   for (let start = 0; start < pcm.length; start += stepSamples) starts.push(start);
 
-  const segments: WorkerSegment[] = [];
+  const segments: WorkerSegment[] = Array.isArray(options.checkpoint?.segments)
+    ? options.checkpoint.segments.map((segment) => ({ ...segment }))
+    : [];
+  const completedWindow = Number(options.checkpoint?.completedWindow ?? -1);
   let finalModel = preparedModel?.model || 'multilingual Whisper';
   let finalPrecision = '';
-  let successfulWindows = 0;
+  let successfulWindows = Math.max(0, completedWindow + 1);
   let failedWindows = 0;
 
   for (let index = 0; index < starts.length; index += 1) {
+    if (index <= completedWindow) continue;
     const startSample = starts[index];
     const endSample = Math.min(pcm.length, startSample + windowSamples);
     const startSeconds = startSample / SAMPLE_RATE;
@@ -457,6 +446,18 @@ export async function transcribeOnPhone(
       onProgress({ progress: 75, message: 'One section could not be processed after automatic retries. LectureAI kept the rest of the transcript and marked this section for review.' });
     }
 
+    await options.onCheckpoint?.({
+      schemaVersion: 1,
+      engine: 'transformers.js-browser-worker',
+      audioIdentity,
+      completedWindow: index,
+      completedAudioSeconds: endSeconds,
+      totalAudioSeconds: pcm.length / SAMPLE_RATE,
+      segments,
+      model: finalModel,
+      precision: finalPrecision,
+      updatedAt: new Date().toISOString(),
+    });
     if (endSample >= pcm.length) break;
   }
 
@@ -464,45 +465,13 @@ export async function transcribeOnPhone(
     throw new Error('The iPhone/iPad could not process any transcription section after automatic model retries. The original recording is still safe.');
   }
 
-  const sourceSegments = asTranscriptSegments(segments, lectureId);
-
-  // Translation uses separate local models. Release Whisper first so the speech
-  // model and translation model are never resident together on memory-constrained
-  // iPhone Safari. Browser-cached model files remain cached for the next lecture.
-  onProgress({ progress: 93, message: 'Original transcript ready · releasing speech model memory before translation…' });
+  // Source speech is available first. Translation is an explicit later action, so
+  // the speech model and translation model never overlap and translation failure
+  // cannot invalidate a completed source transcript.
+  onProgress({ progress: 96, message: 'SOURCE TRANSCRIPT READY · releasing browser speech-model memory…' });
   releasePhoneTranscriptionWorker();
   await new Promise((resolve) => setTimeout(resolve, 80));
-
-  let englishTranslation: TranscriptSegment[] = [];
-  let arabicTranslation: TranscriptSegment[] = [];
-  const translationWarnings: string[] = [];
-
-  try {
-    onProgress({ progress: 94, message: 'Original transcript ready · preparing the English view from detected speech…' });
-    englishTranslation = await translateTranscriptView(sourceSegments, 'en', ({ message }) => {
-      onProgress({ progress: 95, message: `${message} Original audio remains playable and unchanged.` });
-    });
-  } catch (error) {
-    translationWarnings.push(`English translation: ${error instanceof Error ? error.message : 'unavailable'}`);
-  }
-
-  try {
-    onProgress({ progress: 97, message: 'Preparing the Arabic view from detected speech…' });
-    arabicTranslation = await translateTranscriptView(sourceSegments, 'ar', ({ message }) => {
-      onProgress({ progress: 98, message: `${message} Original audio remains playable and unchanged.` });
-    });
-  } catch (error) {
-    translationWarnings.push(`Arabic translation: ${error instanceof Error ? error.message : 'unavailable'}`);
-  }
-
-  onProgress({
-    progress: 99,
-    message: translationWarnings.length
-      ? `Transcript assembled · ${translationWarnings.join(' · ')}`
-      : failedWindows
-        ? `Transcript and translations assembled · ${failedWindows} section${failedWindows === 1 ? '' : 's'} marked for review.`
-        : 'Transcript and English/Arabic views assembled successfully on this device.',
-  });
+  onProgress({ progress: 99, message: failedWindows ? `Source transcript assembled · ${failedWindows} section${failedWindows === 1 ? '' : 's'} marked for review.` : 'Source transcript assembled. English/Arabic convenience views can be generated separately.' });
 
   return {
     engine: 'transformers.js',
@@ -511,8 +480,9 @@ export async function transcribeOnPhone(
     windowed: true,
     failedWindows,
     segments,
-    englishTranslation,
-    arabicTranslation,
-    translationWarnings,
+    englishTranslation: [],
+    arabicTranslation: [],
+    translationWarnings: [],
+    translationDeferred: true,
   };
 }

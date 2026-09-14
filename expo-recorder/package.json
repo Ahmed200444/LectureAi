@@ -4,8 +4,9 @@
   "private": true,
   "main": "index.js",
   "scripts": {
-    "start": "expo start --tunnel",
+    "start": "expo start --lan",
     "start:lan": "expo start --lan",
+    "start:tunnel": "expo start --tunnel",
     "ios": "expo start --ios",
     "android": "expo start --android",
     "web": "expo start --web",
@@ -14,9 +15,10 @@
     "build:ios:production": "npx --yes eas-cli@latest build --platform ios --profile production"
   },
   "dependencies": {
-    "expo": "~57.0.19",
+    "expo": "~57.0.21",
     "expo-asset": "~57.0.16",
     "expo-audio": "~57.0.4",
+    "expo-camera": "~57.0.4",
     "expo-constants": "~57.0.17",
     "expo-document-picker": "~57.0.1",
     "expo-file-system": "~57.0.6",
@@ -28,6 +30,7 @@
     "react-native": "0.86.3"
   },
   "devDependencies": {
+    "@expo/ngrok": "^4.1.0",
     "@types/react": "~19.2.2",
     "typescript": "~6.0.3"
   }

@@ -56,7 +56,9 @@ def recommendation(hardware: Hardware) -> dict[str, str]:
         choice, reason = "large-v3", "NVIDIA GPU with enough VRAM for the strongest practical multilingual model."
     elif hardware.nvidia_gpu and (hardware.gpu_vram_gb or 0) >= 6 and hardware.ram_gb >= 12:
         choice, reason = "medium", "Balanced multilingual accuracy and GPU memory use."
-    elif hardware.ram_gb >= 16:
+    # A marketed 16 GB Windows machine normally reports roughly 15–15.8 GiB
+    # after firmware reservations. Treat that as the intended 16 GB tier.
+    elif hardware.ram_gb >= 15:
         choice, reason = "medium", "Strong CPU-mode accuracy; processing will be slower than real time."
     else:
         choice, reason = "small", "Lower memory use while retaining multilingual support."

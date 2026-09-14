@@ -150,6 +150,33 @@ test('runs the automatic Windows job flow and generates editable notes', async (
   assert.ok(progress.includes(48));
 });
 
+test('reconnects to a persisted Windows job without uploading the original again', async () => {
+  const lecture = lectureFixture('reconnect-flow');
+  const requests: Array<{ url: string; method: string }> = [];
+  const fetcher = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    requests.push({ url, method: String(init?.method || 'GET') });
+    return new Response(JSON.stringify({
+      id: 'saved-job-1',
+      status: 'complete',
+      progress: 100,
+      message: 'SOURCE TRANSCRIPT READY',
+      result: { segments: [{ start: 0, end: 2, text: 'Recovered without another upload.' }] },
+    }), { headers: { 'content-type': 'application/json' } });
+  }) as typeof fetch;
+  const payload = await transcribeWithWindowsHelper(
+    lecture,
+    undefined,
+    new Blob(['protected-original'], { type: 'audio/webm' }),
+    () => undefined,
+    fetcher,
+    async () => undefined,
+    { existingJobId: 'saved-job-1' },
+  ) as { segments: Array<{ text: string }> };
+  assert.equal(payload.segments[0].text, 'Recovered without another upload.');
+  assert.deepEqual(requests, [{ url: 'http://127.0.0.1:8765/jobs/saved-job-1', method: 'GET' }]);
+});
+
 test('persists transcript edits and deletes the recording with all lecture data', async () => {
   const db = await getDatabase();
   const lecture = lectureFixture('delete-me');
@@ -224,7 +251,7 @@ test('keeps multilingual phone transcription fallbacks and predownload support',
   assert.match(worker, /whisper-tiny/);
   assert.match(worker, /mode === 'prepare'/);
   assert.match(phone, /preparePhoneTranscriptionModel/);
-  assert.match(phone, /WINDOW_SECONDS = 180/);
+  assert.match(phone, /WINDOW_SECONDS = 90/);
 });
 
 let failed = 0;

@@ -10,7 +10,8 @@ const exportsSource = readFileSync(new URL('../expo-recorder/src/exports.js', im
 assert.match(app, /Transcript edit was not saved/);
 assert.match(app, /await upsertLecture\(updated\)/);
 assert.match(app, /TextInput multiline/);
-assert.match(app, /player\.seekTo\(segment\.startTime\)/);
+assert.match(app, /onSeekOriginal\(segment\.startTime\)/);
+assert.match(app, /timestampReference: 'original'/);
 assert.match(storage, /const version = Number\(lecture\.transcriptVersion \|\| 0\) \+ 1/);
 assert.match(storage, /staleDerivedContent: true/);
 assert.match(storage, /clearSourceMetadata/);

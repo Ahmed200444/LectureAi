@@ -1,6 +1,19 @@
 import Storage from 'expo-sqlite/kv-store';
 import * as SecureStore from 'expo-secure-store';
 import { Directory, File, Paths } from 'expo-file-system';
+import {
+  assertOriginalIntegrity,
+  buildEnhancedAudioMetadata,
+  currentEnhancedAudio,
+  normalizeAudioCleanupMode,
+  selectTranscriptionAudio,
+  withoutEnhancedAudio,
+} from './audio-derivatives';
+import {
+  lectureDisplayTitle,
+  migrateLectureMetadata,
+  safeFilenameStem,
+} from './lecture-metadata';
 
 const LIBRARY_KEY = 'lectureai.unified.library.v1';
 const SETTINGS_KEY = 'lectureai.unified.settings.v1';
@@ -16,6 +29,7 @@ export const defaultSettings = {
   computerAddress: '',
   computerToken: '',
   computerTokenExpiresAt: null,
+  computerLastConnectedAt: null,
 };
 
 function nowIso() {
@@ -33,6 +47,12 @@ function ensureRecordingDirectory() {
   const recordings = new Directory(root, 'Recordings');
   if (!recordings.exists) recordings.create();
   return recordings;
+}
+
+function ensureDerivedAudioDirectory() {
+  const derived = new Directory(ensureRootDirectory(), 'DerivedAudio');
+  if (!derived.exists) derived.create();
+  return derived;
 }
 
 function libraryBackupFile() {
@@ -68,15 +88,6 @@ function newestUpdate(lectures) {
   }, 0);
 }
 
-function safeName(value) {
-  return String(value || 'Lecture')
-    .normalize('NFKC')
-    .replace(/[\\/:*?"<>|\u0000-\u001f]/g, '-')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 80) || 'Lecture';
-}
-
 function stableRecoveryId(file) {
   const source = `${file.name}:${file.size}:${file.creationTime || file.modificationTime || 0}`;
   let hash = 2166136261;
@@ -89,7 +100,7 @@ function stableRecoveryId(file) {
 
 function recoveryTitle(file) {
   const withoutExtension = file.name.replace(/\.[^.]+$/, '');
-  return safeName(withoutExtension.replace(/-[a-z0-9]{8}$/i, '') || 'Recovered lecture');
+  return lectureDisplayTitle(withoutExtension.replace(/-[a-z0-9]{8}$/i, ''), file.creationTime || file.modificationTime);
 }
 
 function defaultPlaybackChecks() {
@@ -102,6 +113,7 @@ function recoveredLectureFromFile(file) {
   return {
     id: stableRecoveryId(file),
     title: recoveryTitle(file),
+    lectureTitleMetadataVersion: 1,
     course: '',
     professor: '',
     createdAt,
@@ -112,6 +124,8 @@ function recoveredLectureFromFile(file) {
     audioFilename: file.name,
     audioMd5: file.md5 || null,
     audioSource: 'recovered-document-file',
+    originalAudioProtected: true,
+    enhancedAudio: null,
     audioVerification: 'needs-listen-check',
     audioPlaybackChecks: defaultPlaybackChecks(),
     recoveryNotice: 'LectureAI recovered this original audio file from document storage after its library metadata was missing or unreadable. Listen to the beginning, middle, and end before trusting its duration or metadata.',
@@ -120,6 +134,7 @@ function recoveredLectureFromFile(file) {
     transcriptVersion: 0,
     transcriptStatus: 'not-started',
     transcriptEngine: null,
+    windowsTranscriptionJob: null,
     translations: { en: [], ar: [] },
     translationsSourceVersion: null,
     studyPack: null,
@@ -172,8 +187,11 @@ export async function loadLibrary() {
   if (!primaryReadable) parsed = backup;
   else if (backup.length && newestUpdate(backup) > newestUpdate(parsed)) parsed = backup;
 
-  const recovered = sortLibrary(recoverOrphanedAudioFiles(parsed));
-  if (!primaryReadable || recovered.length !== parsed.length || newestUpdate(backup) > newestUpdate(parsed)) {
+  const recoveredRows = recoverOrphanedAudioFiles(parsed);
+  const migrated = recoveredRows.map(migrateLectureMetadata);
+  const metadataChanged = migrated.some((lecture, index) => lecture !== recoveredRows[index]);
+  const recovered = sortLibrary(migrated);
+  if (!primaryReadable || recovered.length !== parsed.length || newestUpdate(backup) > newestUpdate(parsed) || metadataChanged) {
     try { await Storage.setItem(LIBRARY_KEY, JSON.stringify(recovered)); } catch { /* audio remains authoritative */ }
     writeLibraryBackup(recovered);
   }
@@ -181,7 +199,7 @@ export async function loadLibrary() {
 }
 
 export async function saveLibrary(lectures) {
-  const clean = sortLibrary(lectures);
+  const clean = sortLibrary((lectures || []).map(migrateLectureMetadata));
   // Write the secondary document backup first so a failed primary KV write cannot
   // prevent the newest metadata from being recoverable on the next launch.
   writeLibraryBackup(clean);
@@ -256,40 +274,201 @@ export async function preserveAudioFile(sourceUri, lectureId, title, extension =
   } catch { /* hash may be unavailable */ }
 
   const recordings = ensureRecordingDirectory();
-  const filename = `${safeName(title)}-${lectureId.slice(0, 8)}${normalizedExtension}`;
+  const filename = `${safeFilenameStem(title)}-${lectureId.slice(0, 8)}${normalizedExtension}`;
   const destination = new File(recordings, filename);
   if (destination.exists) throw new Error('LectureAI found an existing protected audio destination. It was not overwritten. Start a new save or recover the existing lecture first.');
 
-  // SDK 57 File.copy() is asynchronous. Waiting for it is required before checking
-  // the destination; otherwise a fast verification can race the native copy and
-  // incorrectly report that a valid recording was not preserved.
-  await source.copy(destination);
+  // SDK 57 File.copy() is asynchronous. Always wait for the copy, then
+  // verify the fresh destination. Any failed destination copy is removed while
+  // the original recorder/import file remains untouched.
+  let preserved = null;
 
-  // Re-open the destination and trust the fresh metadata snapshot rather than any
-  // properties cached on the pre-copy File instance.
-  const preserved = new File(destination.uri);
-  const info = preserved.info({ md5: true });
-  const destinationMd5 = info.md5 || preserved.md5 || null;
-  const destinationSize = Number(info.size ?? preserved.size ?? 0);
-  if (!info.exists || destinationSize < 1024) {
-    throw new Error('LectureAI could not verify the preserved audio file after copying it into permanent storage.');
+  try {
+    await source.copy(destination);
+
+    preserved = new File(destination.uri);
+    const info = preserved.info({ md5: true });
+    const destinationMd5 = info.md5 || preserved.md5 || null;
+    const destinationSize = Number(info.size ?? preserved.size ?? 0);
+
+    if (!info.exists || destinationSize < 1024) {
+      throw new Error(
+        'LectureAI could not verify the preserved audio file after copying it into permanent storage.'
+      );
+    }
+
+    if (!Number.isFinite(sourceSize) || sourceSize < 1024 || destinationSize !== sourceSize) {
+      throw new Error(
+        'The permanent audio copy size did not match the recorder file. The source was not modified; retry preservation before trusting this lecture.'
+      );
+    }
+
+    if (
+      sourceMd5
+      && destinationMd5
+      && sourceMd5.toLowerCase() !== destinationMd5.toLowerCase()
+    ) {
+      throw new Error(
+        'The permanent audio copy did not match the recorder file. The source was not modified; retry preservation before trusting this lecture.'
+      );
+    }
+
+    return {
+      uri: preserved.uri,
+      size: destinationSize,
+      md5: destinationMd5,
+      filename,
+    };
+  } catch (error) {
+    try {
+      const partial = preserved || new File(destination.uri);
+      if (partial.exists) partial.delete();
+    } catch {
+      // Cleanup is best effort. The original source remains authoritative.
+    }
+
+    throw error;
   }
-  if (!Number.isFinite(sourceSize) || sourceSize < 1024 || destinationSize !== sourceSize) {
-    throw new Error('The permanent audio copy size did not match the recorder file. The source was not modified; retry preservation before trusting this lecture.');
+}
+
+function audioFileObservation(uri) {
+  if (!uri) return { exists: false, uri: '', size: 0, md5: null };
+  const file = new File(uri);
+  if (!file.exists) return { exists: false, uri: file.uri, size: 0, md5: null };
+  let info = {};
+  try { info = file.info({ md5: true }); } catch { info = {}; }
+  return {
+    exists: Boolean(info.exists ?? file.exists),
+    uri: file.uri,
+    filename: file.name,
+    size: Number(info.size ?? file.size ?? 0),
+    md5: info.md5 || file.md5 || null,
+  };
+}
+
+function managedDerivedFile(uri) {
+  if (!uri) return null;
+  const directory = ensureDerivedAudioDirectory();
+  const file = new File(uri);
+  const root = String(directory.uri).replace(/\/+$/, '') + '/';
+  if (!String(file.uri).startsWith(root) || String(file.uri) === root) {
+    throw new Error('Safety check refused to modify an audio file outside LectureAI derived storage.');
   }
-  if (sourceMd5 && destinationMd5 && sourceMd5.toLowerCase() !== destinationMd5.toLowerCase()) {
-    try { preserved.delete(); } catch { /* fail closed */ }
-    throw new Error('The permanent audio copy did not match the recorder file. The source was not modified; retry preservation before trusting this lecture.');
+  return file;
+}
+
+export function inspectProtectedOriginal(lecture) {
+  const observation = audioFileObservation(lecture?.audioUri);
+  return { ...observation, ...assertOriginalIntegrity(lecture, observation) };
+}
+
+export function prepareTranscriptionAudio(lecture, requestedSource = 'original') {
+  const original = inspectProtectedOriginal(lecture);
+  const selected = selectTranscriptionAudio(lecture, requestedSource);
+  if (selected.source === 'enhanced') {
+    const enhanced = audioFileObservation(selected.uri);
+    if (!enhanced.exists || enhanced.size < 1024) throw new Error('The enhanced copy is unavailable. The protected original remains ready to transcribe.');
+    if (selected.md5 && enhanced.md5 && String(selected.md5).toLowerCase() !== String(enhanced.md5).toLowerCase()) {
+      throw new Error('The enhanced copy failed its integrity check. Delete or regenerate it; the protected original is unchanged.');
+    }
+    const metadata = currentEnhancedAudio(lecture);
+    if (metadata?.sourceMd5 && original.md5 && String(metadata.sourceMd5).toLowerCase() !== String(original.md5).toLowerCase()) {
+      throw new Error('The enhanced copy belongs to an older original hash and was not transcribed. Regenerate it safely.');
+    }
+  }
+  return selected;
+}
+
+export async function installEnhancedAudioFile(lecture, stagedUri, cleanupMode, serverMetadata = {}) {
+  const mode = normalizeAudioCleanupMode(cleanupMode);
+  const sourceBefore = audioFileObservation(lecture?.audioUri);
+  const sourceIdentity = assertOriginalIntegrity(lecture, sourceBefore);
+  const serverSourceMd5 = String(serverMetadata.source_md5 || '').toLowerCase();
+  if (serverSourceMd5 && sourceIdentity.md5 && serverSourceMd5 !== sourceIdentity.md5) {
+    throw new Error('Windows enhanced a different source hash. The result was rejected and the protected original remains unchanged.');
   }
 
-  return { uri: preserved.uri, size: destinationSize, md5: destinationMd5, filename };
+  const staged = audioFileObservation(stagedUri);
+  if (!staged.exists || staged.size < 1024) throw new Error('The downloaded enhanced copy is missing or incomplete. The original recording is unchanged.');
+  const expectedEnhancedSize = Number(serverMetadata.enhanced_size || 0);
+  if (expectedEnhancedSize > 0 && staged.size !== expectedEnhancedSize) {
+    throw new Error('The enhanced download size did not match Windows. The protected original remains unchanged.');
+  }
+  const expectedEnhancedMd5 = String(serverMetadata.enhanced_md5 || '').toLowerCase();
+  if (expectedEnhancedMd5 && staged.md5 && expectedEnhancedMd5 !== String(staged.md5).toLowerCase()) {
+    throw new Error('The enhanced download failed its integrity check. The protected original remains unchanged.');
+  }
+
+  const directory = ensureDerivedAudioDirectory();
+  const filename = `${safeFilenameStem(lecture.title)}-${String(lecture.id).slice(0, 8)}-${mode}-${Date.now().toString(36)}.wav`;
+  const destination = new File(directory, filename);
+  if (destination.exists || destination.uri === lecture.audioUri) throw new Error('LectureAI refused an unsafe enhanced-audio destination. The original was not modified.');
+
+  try {
+    await new File(stagedUri).copy(destination);
+    const derived = audioFileObservation(destination.uri);
+    if (!derived.exists || derived.size !== staged.size || (staged.md5 && derived.md5 && String(staged.md5).toLowerCase() !== String(derived.md5).toLowerCase())) {
+      throw new Error('LectureAI could not verify the private enhanced-audio copy. The original recording is unchanged.');
+    }
+    const sourceAfter = audioFileObservation(lecture.audioUri);
+    const enhancedAudio = buildEnhancedAudioMetadata({
+      lecture,
+      cleanupMode: mode,
+      derived: {
+        ...derived,
+        sampleRate: serverMetadata.sample_rate,
+        channels: serverMetadata.channels,
+        processingTechnology: serverMetadata.technology,
+        speechActivityGuided: serverMetadata.vad_guided,
+        vadTrimming: serverMetadata.vad_trimming,
+        stationaryNoiseAttenuationDb: serverMetadata.stationary_noise_attenuation_db,
+        transientEventsAttenuated: serverMetadata.transient_events_attenuated,
+      },
+      sourceBefore,
+      sourceAfter,
+    });
+    return {
+      lecture: {
+        ...lecture,
+        audioMd5: lecture.audioMd5 || sourceIdentity.md5,
+        originalAudioProtected: true,
+        enhancedAudio,
+        updatedAt: nowIso(),
+      },
+      previousEnhancedUri: currentEnhancedAudio(lecture)?.uri || null,
+    };
+  } catch (error) {
+    try { if (destination.exists) destination.delete(); } catch { /* Derived-only cleanup is best effort. */ }
+    throw error;
+  }
+}
+
+export function removeReplacedEnhancedAudio(previousUri, currentUri) {
+  if (!previousUri || previousUri === currentUri) return;
+  const file = managedDerivedFile(previousUri);
+  if (file?.exists) file.delete();
+}
+
+export function deleteEnhancedAudioCopy(lecture) {
+  const enhanced = currentEnhancedAudio(lecture);
+  const before = audioFileObservation(lecture?.audioUri);
+  assertOriginalIntegrity(lecture, before);
+  if (enhanced?.uri) {
+    if (enhanced.uri === lecture.audioUri) throw new Error('Safety check refused to delete a derived copy that points at the protected original.');
+    const file = managedDerivedFile(enhanced.uri);
+    if (file?.exists) file.delete();
+  }
+  const after = audioFileObservation(lecture?.audioUri);
+  assertOriginalIntegrity(lecture, before, after);
+  return withoutEnhancedAudio({ ...lecture, originalAudioProtected: true, audioMd5: lecture.audioMd5 || before.md5 });
 }
 
 export function createLecture({ id, title, audio, durationMs, marks = [], source = 'recorded' }) {
   const createdAt = nowIso();
   return {
     id,
-    title: safeName(title),
+    title: lectureDisplayTitle(title, createdAt),
+    lectureTitleMetadataVersion: 1,
     course: '',
     professor: '',
     createdAt,
@@ -300,6 +479,8 @@ export function createLecture({ id, title, audio, durationMs, marks = [], source
     audioFilename: audio.filename,
     audioMd5: audio.md5,
     audioSource: source,
+    originalAudioProtected: true,
+    enhancedAudio: null,
     audioVerification: 'needs-listen-check',
     audioPlaybackChecks: defaultPlaybackChecks(),
     marks,
@@ -307,6 +488,7 @@ export function createLecture({ id, title, audio, durationMs, marks = [], source
     transcriptVersion: 0,
     transcriptStatus: 'not-started',
     transcriptEngine: null,
+    windowsTranscriptionJob: null,
     translations: { en: [], ar: [] },
     translationsSourceVersion: null,
     studyPack: null,
@@ -317,7 +499,7 @@ export function createLecture({ id, title, audio, durationMs, marks = [], source
 
 export async function upsertLecture(lecture) {
   const library = await loadLibrary();
-  const next = { ...lecture, updatedAt: nowIso() };
+  const next = migrateLectureMetadata({ ...lecture, updatedAt: nowIso() });
   const remaining = library.filter((item) => (
     item.id !== lecture.id
     && (!lecture.audioUri || item.audioUri !== lecture.audioUri)
@@ -336,6 +518,13 @@ export async function removeLecture(lecture) {
       }
       if (file.exists) throw new Error('LectureAI could not confirm deletion of the protected original, so its metadata was kept.');
     }
+  }
+  const enhanced = currentEnhancedAudio(lecture);
+  if (enhanced?.uri && enhanced.uri !== lecture?.audioUri) {
+    try {
+      const file = managedDerivedFile(enhanced.uri);
+      if (file?.exists) file.delete();
+    } catch { /* Full lecture deletion already removed the explicitly selected original. */ }
   }
   const library = await loadLibrary();
   await saveLibrary(library.filter((item) => (
@@ -370,12 +559,27 @@ export function markAudioVerified(lecture) {
 
 export function replaceTranscript(lecture, segments, engine = 'import', { clearSourceMetadata = false } = {}) {
   const version = Number(lecture.transcriptVersion || 0) + 1;
+  const corrected = (lecture.transcript || []).filter((segment) => (
+    segment.manuallyReviewed
+    || String(segment.editedText || '').trim() !== String(segment.originalText || '').trim()
+  ));
+  const transcriptCorrectionHistory = corrected.length ? [
+    ...(lecture.transcriptCorrectionHistory || []),
+    {
+      transcriptVersion: Number(lecture.transcriptVersion || 0),
+      archivedAt: nowIso(),
+      engine: lecture.transcriptEngine || null,
+      segments: corrected,
+    },
+  ] : (lecture.transcriptCorrectionHistory || []);
   return {
     ...lecture,
     transcript: segments,
     transcriptVersion: version,
     transcriptStatus: segments.length ? 'ready' : 'not-started',
     transcriptEngine: engine,
+    rawTranscript: segments.map((segment) => ({ ...segment })),
+    transcriptCorrectionHistory,
     translations: { en: [], ar: [] },
     translationsSourceVersion: null,
     ...(clearSourceMetadata ? {

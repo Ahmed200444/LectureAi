@@ -78,7 +78,7 @@ export function MicTest({ onVerified, onReset }: { onVerified?: () => void; onRe
       const mimeType = preferredRecordingMimeType();
       let recorder: MediaRecorder;
       try {
-        recorder = mimeType ? new MediaRecorder(stream, { mimeType, audioBitsPerSecond: 192_000 }) : new MediaRecorder(stream, { audioBitsPerSecond: 192_000 });
+        recorder = mimeType ? new MediaRecorder(stream, { mimeType, audioBitsPerSecond: 128_000 }) : new MediaRecorder(stream, { audioBitsPerSecond: 128_000 });
       } catch {
         recorder = new MediaRecorder(stream);
       }

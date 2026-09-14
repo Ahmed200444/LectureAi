@@ -33,6 +33,17 @@ No USB cable or paid Apple Developer membership is required for this testing pat
 - An active recording journal stores recovery metadata/pointers. It is **not** fake encoded-audio checkpointing.
 - If the underlying recorder unexpectedly changes from active to stopped (for example after an audio-route change), LectureAI attempts to preserve the exposed file automatically and marks it for careful verification.
 
+## Original and enhanced audio
+
+- Existing lectures need no destructive migration. Missing enhancement metadata means **Enhanced audio: Not generated**.
+- Every future recording/import starts with `originalAudioProtected: true` and a null enhanced copy.
+- Every old and future library row has a persistent Lecture Name. Missing/blank legacy titles receive a safe date/time-based `Untitled Lecture` fallback, and the detail workspace can rename them without touching audio, enhancement, transcript, timestamp, or Windows-job identity.
+- The record screen accepts an optional Lecture Name before or during recording; a blank name never blocks capture. The library shows and searches the title prominently, while exports use a sanitized copy of the name only for their new filenames.
+- **Generate Enhanced** uses the paired Windows helper to create a separate bounded-memory mono 16 kHz WAV, then installs it under `Paths.document/LectureAI/DerivedAudio` only after source/derived integrity checks.
+- Off performs required decode/resampling only. Balanced is the recommended local speech-aware spectral cleanup: it reduces stationary noise while retaining conservative speech-band floors and never trims quiet frames. Strong increases non-speech suppression and displays a difficult/overlapping-speech warning. Both use bounded gain and only attenuate isolated transients when surrounding energy does not resemble sustained speech; neither attempts voice isolation.
+- Regeneration replaces only derived metadata/files. **Delete Enhanced Copy** is restricted to the managed derived directory.
+- Original/Enhanced playback and transcription are explicit choices. All transcript, mark, note-source, and study-source timestamps seek in the protected original.
+
 ## Playback verification gate
 
 A file existing is not enough to call a lecture verified. LectureAI requires playback checks at the **beginning, middle, and end**, followed by explicit user confirmation that the samples were clear. Recovered/interrupted files keep a warning until this gate passes.

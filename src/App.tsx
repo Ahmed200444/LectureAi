@@ -8,7 +8,7 @@ import { clearAllDataForDevelopmentTest, createBackup, getAudio, initializeDatab
 import { exportBackupJson } from '../lib/export';
 import { formatBytes, formatDuration, formatTime, friendlyDate } from '../lib/format';
 import { transcribeOnPhone } from '../lib/phone-transcription';
-import { completeTranscription, isPhoneOrTablet, phoneTranscriptionSupported, transcribeWithWindowsHelper, windowsHelperAvailable } from '../lib/transcription';
+import { completeTranscriptNotes, completeTranscription, isPhoneOrTablet, phoneTranscriptionSupported, transcribeWithWindowsHelper, windowsHelperAvailable } from '../lib/transcription';
 import type { AppSettings, Course, Lecture, ViewName } from '../lib/types';
 import { validatePlayableAudio } from '../lib/audio-validation';
 import { detectDeviceKind, deviceLabel } from '../lib/device';
@@ -120,14 +120,70 @@ export default function LectureAI() {
         await update({ status: 'preparing', processingProgress: 3, statusMessage: 'Original audio preserved · starting automatic transcription' });
 
         if (detectDeviceKind() === 'windows' && await windowsHelperAvailable()) {
-          const payload = await transcribeWithWindowsHelper(working, course, audio.blob, (event) => { void progress(event); });
-          await update(completeTranscription(working, payload, 'windows', 'Configured faster-whisper multilingual model'));
+          const savedJob = working.windowsTranscriptionJob;
+          const payload = await transcribeWithWindowsHelper(working, course, audio.blob, (event) => { void progress(event); }, fetch, (milliseconds) => new Promise((resolve) => window.setTimeout(resolve, milliseconds)), {
+            existingJobId: savedJob?.id,
+            resume: Boolean(savedJob && ['failed', 'interrupted', 'stalled', 'cancelled'].includes(savedJob.status)),
+            enhancement: 'balanced',
+            onJobUpdate: async (job) => {
+              await update({
+                windowsTranscriptionJob: {
+                  id: job.id,
+                  status: job.status,
+                  progress: job.progress,
+                  message: job.message,
+                  completedAudioSeconds: job.completed_audio_seconds,
+                  totalAudioSeconds: job.total_audio_seconds,
+                  resumeAvailable: job.resume_available,
+                  stage: job.stage,
+                  elapsedSeconds: job.elapsed_seconds,
+                  model: job.model,
+                  device: job.device,
+                  computeType: job.compute_type,
+                  baseTranscriptVersion: savedJob?.baseTranscriptVersion ?? Number(working.transcriptVersion || 0),
+                  updatedAt: new Date().toISOString(),
+                },
+              });
+            },
+          });
+          if (payload && typeof payload === 'object' && 'pending' in payload && payload.pending) {
+            await update({ status: 'transcribing', processingProgress: payload.job?.progress, statusMessage: payload.message || 'Windows owns this saved job. Open the lecture to check or resume it later.' });
+            return;
+          }
+          const completed = completeTranscription(working, payload, 'windows', 'Configured faster-whisper multilingual model', { generateNotes: false });
+          await update({
+            ...completed,
+            windowsTranscriptionJob: working.windowsTranscriptionJob
+              ? { ...working.windowsTranscriptionJob, status: 'applied', progress: 100, message: 'Source transcript applied', updatedAt: new Date().toISOString() }
+              : undefined,
+          });
+          await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+          await update(completeTranscriptNotes(working));
           return;
         }
 
         if (settings.phoneModelInstalled && phoneTranscriptionSupported()) {
-          const payload = await transcribeOnPhone(working.id, audio.blob, (event) => { void progress(event); }, () => undefined);
-          await update(completeTranscription(working, payload, 'phone', 'Whisper multilingual model'));
+          if (['iphone', 'ipad'].includes(detectDeviceKind()) && working.duration > 30 * 60) {
+            await update({
+              status: 'needs-transcription',
+              processingProgress: undefined,
+              statusMessage: 'Original audio preserved · this browser path must decode the whole recording into PCM, so use Windows faster-whisper for a lecture over 30 minutes',
+            });
+            return;
+          }
+          const payload = await transcribeOnPhone(working.id, audio.blob, (event) => { void progress(event); }, () => undefined, {
+            checkpoint: working.phoneTranscriptionCheckpoint,
+            onCheckpoint: async (checkpoint) => {
+              await update({
+                phoneTranscriptionCheckpoint: checkpoint as unknown as Lecture['phoneTranscriptionCheckpoint'],
+                status: 'transcribing',
+                statusMessage: `Browser checkpoint saved through ${formatTime(Number(checkpoint.completedAudioSeconds || 0))} / ${formatTime(Number(checkpoint.totalAudioSeconds || 0))}`,
+              });
+            },
+          });
+          await update(completeTranscription(working, payload, 'phone', 'Whisper multilingual model', { generateNotes: false }));
+          await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+          await update(completeTranscriptNotes(working));
           return;
         }
 
@@ -139,7 +195,11 @@ export default function LectureAI() {
             : 'Original audio preserved · start the Windows transcription helper or use the on-device model',
         });
       } catch (error) {
-        await update({ status: 'needs-transcription', processingProgress: undefined, statusMessage: `Original audio preserved · ${error instanceof Error ? error.message : 'automatic transcription could not finish'}` });
+        const sourceReady = Boolean(working.segments.length && working.transcriptGeneratedAt);
+        const resumable = Boolean(working.windowsTranscriptionJob?.id || working.phoneTranscriptionCheckpoint);
+        await update(sourceReady
+          ? { status: 'done', processingProgress: 100, statusMessage: `SOURCE TRANSCRIPT READY · notes can be retried · ${error instanceof Error ? error.message : 'note generation failed'}` }
+          : { status: resumable ? 'interrupted' : 'needs-transcription', processingProgress: undefined, statusMessage: `${resumable ? 'Completed sections and ' : ''}original audio preserved · ${error instanceof Error ? error.message : 'automatic transcription could not finish'}` });
       } finally {
         processingLectures.current.delete(queued.id);
       }

@@ -7,6 +7,7 @@ const transcript = readFileSync(new URL('../lib/transcript.ts', import.meta.url)
 const phoneWorker = readFileSync(new URL('../lib/phone-transcriber.worker.ts', import.meta.url), 'utf8');
 const windowsEngine = readFileSync(new URL('../local-ai/engine.py', import.meta.url), 'utf8');
 const windowsServer = readFileSync(new URL('../local-ai/server.py', import.meta.url), 'utf8');
+const accuracyEvaluator = readFileSync(new URL('../benchmarks/evaluate.py', import.meta.url), 'utf8');
 
 assert.match(translation, /function splitScriptRuns/);
 assert.match(translation, /charScript/);
@@ -24,7 +25,7 @@ assert.match(translationWorker, /await new Promise\(\(resolve\) => setTimeout\(r
 assert.match(windowsEngine, /"speaker": "Speaker"/);
 assert.doesNotMatch(windowsEngine, /"speaker": "Professor"/);
 assert.match(windowsEngine, /"language": "en" if translated else language/);
-assert.match(windowsEngine, /"language_scope": "translation" if translated else "lecture"/);
+assert.match(windowsEngine, /"language_scope": "translation" if translated else "window-detected"/);
 assert.match(windowsEngine, /"source_language": detected_language/);
 assert.match(windowsEngine, /"source_segments": source_segments/);
 assert.match(windowsEngine, /"english_segments": english_segments/);
@@ -34,10 +35,13 @@ assert.match(transcript, /: 'Speaker'/);
 assert.doesNotMatch(transcript, /: 'Professor'/);
 
 assert.match(windowsServer, /transcription_slot = threading\.Semaphore\(1\)/);
-assert.match(windowsServer, /JOB_RETENTION_SECONDS = 60 \* 60/);
 assert.match(windowsServer, /def cleanup_jobs/);
+assert.match(windowsServer, /JOB_STORE\.cleanup\(now\)/);
 assert.match(windowsServer, /finished_at=time\.time\(\)/);
 assert.match(windowsServer, /with transcription_slot:/);
 assert.match(windowsServer, /max_concurrent_transcriptions/);
+assert.match(accuracyEvaluator, /str\(record\.get\("enhancement", "unknown"\)\)/);
+assert.match(accuracyEvaluator, /uncertain_segment_count/);
+assert.match(accuracyEvaluator, /"UncertainRate"/);
 
 console.log('✓ code-switch translation, speaker truthfulness, dual language metadata, and Windows helper resource safeguards are present');

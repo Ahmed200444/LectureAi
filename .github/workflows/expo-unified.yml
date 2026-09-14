@@ -28,10 +28,10 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: expo-recorder/package.json
+          cache-dependency-path: expo-recorder/package-lock.json
 
       - name: Install Expo project dependencies
-        run: npm install --no-audit --no-fund
+        run: npm ci --no-audit --no-fund
 
       - name: Verify Expo SDK dependency compatibility
         run: npx expo install --check
@@ -57,7 +57,7 @@ jobs:
           node-version: 22
 
       - name: Install Expo project dependencies
-        run: npm install --no-audit --no-fund
+        run: npm ci --no-audit --no-fund
 
       - name: Verify Expo SDK dependency compatibility
         run: npx expo install --check
