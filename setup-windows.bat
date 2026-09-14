@@ -39,6 +39,18 @@ call npm install
 if errorlevel 1 goto :failed
 
 echo.
+echo Checking optional speech-enhancement tool...
+where ffmpeg >nul 2>nul
+if errorlevel 1 (
+  echo FFmpeg was not found. LectureAI transcription will still work from the untouched original audio.
+  echo For optional gentle AC/fan/room-noise reduction on a temporary transcription copy, install FFmpeg once with:
+  echo   winget install --id Gyan.FFmpeg -e --accept-package-agreements --accept-source-agreements
+  echo Then close and reopen PowerShell/Command Prompt so the updated PATH is visible.
+) else (
+  echo FFmpeg found. LectureAI can create a non-destructive speech-oriented transcription copy.
+)
+
+echo.
 echo Hardware detection and model selection
 python "local-ai\setup_model.py"
 if errorlevel 1 goto :failed

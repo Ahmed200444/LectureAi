@@ -8,6 +8,10 @@ from pathlib import Path
 from engine import MODEL_INFO, read_context_files, transcribe_audio
 
 
+def progress_line(value: int, message: str) -> None:
+    print(f"[{max(0, min(100, int(value))):3d}%] {message}", flush=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Transcribe a LectureAI recording locally with timestamped multilingual segments.")
     parser.add_argument("audio", type=Path, help="Original audio file; it is never modified")
@@ -17,9 +21,16 @@ def main() -> None:
     parser.add_argument("--context", type=Path, action="append", default=[], help="Local PDF/TXT/MD terminology source")
     parser.add_argument(
         "--enhance",
+        "--enhancement",
+        dest="enhance",
         choices=("off", "balanced", "strong", "automatic", "original", "enhanced"),
         default="balanced",
         help="Derived transcription audio cleanup: off, balanced (recommended), or strong. Legacy names remain accepted for retained scripts.",
+    )
+    parser.add_argument(
+        "--source-only",
+        action="store_true",
+        help="Compatibility flag: durable transcription is always source-first and defers optional translation.",
     )
     parser.add_argument("--checkpoint", type=Path, help="Optional resumable checkpoint JSON path")
     args = parser.parse_args()
@@ -53,15 +64,12 @@ def main() -> None:
         total = float(payload.get("total_audio_seconds") or 0)
         print(f"Checkpoint saved: {completed:.1f} / {total:.1f} seconds")
 
-    def report(_value: int, message: str) -> None:
-        print(message)
-
     result = transcribe_audio(
         audio,
         args.model,
         models_dir,
         glossary,
-        report,
+        progress_line,
         checkpoint=checkpoint,
         checkpoint_callback=save_checkpoint,
         enhancement=args.enhance,
@@ -74,6 +82,9 @@ def main() -> None:
     print(f"Audio duration: {result.get('duration', 0)} seconds")
     print(f"Processing duration: {result.get('processing_seconds', 0)} seconds")
     print(f"Real-time factor (RTF): {result.get('real_time_factor', 0)}")
+    print(f"Runtime: {result.get('device', 'unknown')} / {result.get('compute_type', 'unknown')}")
+    print(f"Audio enhancement: {args.enhance} (disposable transcription sections only)")
+    print("English translation pass: deferred; the source transcript is saved first")
     print("The original audio was read only. All preprocessing used disposable derived WAV sections.")
     print("Import this JSON from the LectureAI lecture page. Notes will generate automatically.")
 

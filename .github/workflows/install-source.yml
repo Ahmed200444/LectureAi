@@ -33,6 +33,7 @@ jobs:
           python -m py_compile local-ai/*.py benchmarks/evaluate.py benchmarks/test_evaluate.py
           python benchmarks/test_evaluate.py
           (cd local-ai && python test_pairing.py)
+          (cd local-ai && python test_audio_enhancement.py)
 
       - name: Smoke test built site
         shell: bash
